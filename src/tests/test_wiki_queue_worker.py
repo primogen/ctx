@@ -55,6 +55,17 @@ def test_process_next_entity_upsert_succeeds_and_refreshes_index(
         wiki_queue.STATUS_SUCCEEDED
     )
     update_index.assert_called_once_with(str(wiki), ["alpha"], subject_type="skills")
+    jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
+    assert [job.kind for job in jobs] == [
+        wiki_queue.ENTITY_UPSERT_JOB,
+        wiki_queue.GRAPH_EXPORT_JOB,
+    ]
+    assert jobs[1].status == wiki_queue.STATUS_PENDING
+    assert jobs[1].payload == {
+        "graph_only": True,
+        "incremental": True,
+        "source": "entity-upsert",
+    }
 
 
 def test_process_next_retries_hash_mismatch(
@@ -144,6 +155,39 @@ def test_process_next_graph_export_job_uses_maintenance_handler(
     assert result.status == wiki_queue.STATUS_SUCCEEDED
     assert result.message == "graph exported"
     assert calls == [(wiki, {"graph_only": True, "source": "test"})]
+
+    db_path = wiki_queue.queue_db_path(wiki)
+    stolen_job = wiki_queue.enqueue_maintenance_job(
+        wiki,
+        kind=wiki_queue.GRAPH_EXPORT_JOB,
+        payload={"graph_only": True},
+        source="lease-stolen-test",
+        now=30.0,
+    )
+
+    def steal_lease(_path: Path, _payload: dict[str, Any]) -> str:
+        stolen = wiki_queue.lease_next(db_path, worker_id="worker-b", now=46.0)
+        assert stolen is not None
+        assert stolen.id == stolen_job.id
+        return "graph exported too late"
+
+    monkeypatch.setitem(
+        wiki_queue_worker.MAINTENANCE_HANDLERS,
+        wiki_queue.GRAPH_EXPORT_JOB,
+        steal_lease,
+    )
+
+    with pytest.raises(RuntimeError, match="not leased by worker worker-a"):
+        wiki_queue_worker.process_next(
+            wiki,
+            worker_id="worker-a",
+            lease_seconds=5.0,
+            now=40.0,
+        )
+
+    current = wiki_queue.get_job(db_path, stolen_job.id)
+    assert current.status == wiki_queue.STATUS_RUNNING
+    assert current.worker_id == "worker-b"
 
 
 def test_process_next_maintenance_job_retries_handler_failure(
