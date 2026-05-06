@@ -138,6 +138,25 @@ def test_enqueue_maintenance_job_rejects_unknown_kind(tmp_path: Path) -> None:
         )
 
 
+def test_count_jobs_by_status_and_list_recent_jobs_are_bounded(tmp_path: Path) -> None:
+    db_path = tmp_path / "wiki-queue.sqlite3"
+    jobs = [
+        wiki_queue.enqueue(
+            db_path,
+            kind="graph-export",
+            payload={"n": index},
+            now=float(index),
+        )
+        for index in range(25)
+    ]
+
+    assert wiki_queue.count_jobs_by_status(db_path) == {wiki_queue.STATUS_PENDING: 25}
+    assert [job.id for job in wiki_queue.list_recent_jobs(db_path, limit=5)] == [
+        job.id for job in reversed(jobs[-5:])
+    ]
+    assert wiki_queue.list_recent_jobs(db_path, limit=0) == []
+
+
 def test_lease_next_claims_oldest_available_job(tmp_path: Path) -> None:
     db_path = tmp_path / "wiki-queue.sqlite3"
     first = wiki_queue.enqueue(db_path, kind="graph-export", payload={"n": 1}, now=10.0)

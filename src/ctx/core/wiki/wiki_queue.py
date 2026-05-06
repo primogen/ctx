@@ -397,6 +397,54 @@ def list_jobs(
     return [_row_to_job(row) for row in rows]
 
 
+def count_jobs_by_status(db_path: Path) -> dict[str, int]:
+    """Return queue job counts grouped by status."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS count
+              FROM wiki_queue_jobs
+             GROUP BY status
+            """,
+        ).fetchall()
+    return {str(row["status"]): int(row["count"]) for row in rows}
+
+
+def list_recent_jobs(
+    db_path: Path,
+    *,
+    limit: int = 20,
+    statuses: Iterable[str] | None = None,
+) -> list[QueueJob]:
+    """List the newest queue jobs, bounded in SQLite."""
+    bounded_limit = max(0, int(limit))
+    if bounded_limit == 0:
+        return []
+    status_filter = tuple(statuses or ())
+    with _connect(db_path) as conn:
+        if status_filter:
+            placeholders = ",".join("?" for _ in status_filter)
+            rows = conn.execute(
+                f"""
+                SELECT * FROM wiki_queue_jobs
+                 WHERE status IN ({placeholders})
+                 ORDER BY id DESC
+                 LIMIT ?
+                """,
+                (*status_filter, bounded_limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM wiki_queue_jobs
+                 ORDER BY id DESC
+                 LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+    return [_row_to_job(row) for row in rows]
+
+
 @contextmanager
 def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     path = Path(db_path)

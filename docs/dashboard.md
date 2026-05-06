@@ -34,7 +34,10 @@ generated graph/wiki artifacts that ctx can ship or consume. It reports:
 - queue DB availability and job counts by state (`pending`, `running`,
   `succeeded`, `failed`)
 - the 20 most recent queue jobs with kind, attempts, source, worker, and
-  last error
+  last error; counts and the recent-job window are bounded in the queue DB,
+  not by loading the whole queue into dashboard memory
+- a visible queue DB error callout when the queue file exists but cannot be
+  opened or queried
 - artifact presence and byte size for generated
   `~/.claude/skill-wiki/graphify-out/{graph.json,graph-delta.json,communities.json}`
   plus `wiki-graph.tar.gz` and `skills-sh-catalog.json.gz` from

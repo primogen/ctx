@@ -419,7 +419,8 @@ def _queue_status() -> dict[str, Any]:
             "recent_jobs": [],
         }
     try:
-        jobs = wiki_queue.list_jobs(db_path)
+        raw_counts = wiki_queue.count_jobs_by_status(db_path)
+        recent = wiki_queue.list_recent_jobs(db_path, limit=20)
     except Exception as exc:  # noqa: BLE001
         return {
             "available": False,
@@ -429,13 +430,12 @@ def _queue_status() -> dict[str, Any]:
             "recent_jobs": [],
             "error": str(exc),
         }
-    for job in jobs:
-        counts[job.status] = counts.get(job.status, 0) + 1
-    recent = sorted(jobs, key=lambda job: job.id, reverse=True)[:20]
+    for status, count in raw_counts.items():
+        counts[status] = count
     return {
         "available": True,
         "db_path": str(db_path),
-        "total": len(jobs),
+        "total": sum(raw_counts.values()),
         "counts": counts,
         "recent_jobs": [_queue_job_summary(job) for job in recent],
     }
@@ -789,6 +789,8 @@ code, pre { background: rgba(0,0,0,0.06); padding: 0 0.3rem; border-radius: 3px;
             font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.85rem; }
 pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 .muted { color: #6b7280; font-size: 0.85rem; }
+.error { color: #991b1b; background: #fee2e2; border: 1px solid #fecaca;
+         border-radius: 6px; padding: 0.5rem 0.65rem; }
 .nav { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
 .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem 1.25rem;
         margin-bottom: 1rem; }
@@ -798,6 +800,8 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
     tr:hover { background: rgba(255,255,255,0.03); }
     .card { border-color: #334155; }
     code, pre { background: rgba(255,255,255,0.06); }
+    .error { color: #fecaca; background: rgba(127,29,29,0.25);
+             border-color: rgba(248,113,113,0.35); }
 }
 """
 
@@ -2023,10 +2027,18 @@ def _render_status() -> str:
         for row in artifacts.get("promotions", [])
     ) or "<tr><td colspan='4' class='muted'>No promotion metadata recorded.</td></tr>"
 
-    availability = (
-        "available"
-        if queue.get("available")
-        else f"not initialized ({html.escape(str(queue.get('db_path') or ''))})"
+    queue_error = queue.get("error")
+    if queue_error:
+        availability = f"error ({html.escape(str(queue.get('db_path') or ''))})"
+    elif queue.get("available"):
+        availability = "available"
+    else:
+        availability = f"not initialized ({html.escape(str(queue.get('db_path') or ''))})"
+    queue_error_html = (
+        "<p class='error'>Queue DB error: "
+        f"{html.escape(str(queue_error))}</p>"
+        if queue_error
+        else ""
     )
     body = (
         "<h1>Status</h1>"
@@ -2035,6 +2047,7 @@ def _render_status() -> str:
         f"<p class='muted'>Durable worker DB: {availability}. "
         f"Total jobs: {int(queue.get('total') or 0)}. "
         "<a href='/api/status.json'>JSON</a></p>"
+        f"{queue_error_html}"
         f"<div>{count_pills}</div>"
         "</div>"
         "<div class='card'><strong>Recent queue jobs</strong>"

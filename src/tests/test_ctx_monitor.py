@@ -398,6 +398,33 @@ def test_status_page_and_api_show_queue_and_artifacts(
         server.server_close()
 
 
+def test_status_page_shows_queue_db_errors(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = wiki_queue.queue_db_path(fake_claude / "skill-wiki")
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"exists")
+
+    def fail_count_jobs_by_status(_db_path: Path) -> dict[str, int]:
+        raise RuntimeError("cannot read queue")
+
+    monkeypatch.setattr(
+        cm.wiki_queue,
+        "count_jobs_by_status",
+        fail_count_jobs_by_status,
+    )
+
+    status = cm._queue_status()
+    html_out = cm._render_status()
+
+    assert status["available"] is False
+    assert status["error"] == "cannot read queue"
+    assert "Queue DB error" in html_out
+    assert "cannot read queue" in html_out
+    assert "Durable worker DB: error" in html_out
+
+
 def test_render_loaded_shows_manifest_entries(fake_claude: Path) -> None:
     (fake_claude / "skill-manifest.json").write_text(
         json.dumps({
