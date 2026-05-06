@@ -218,6 +218,13 @@ class TestToolPolicy:
 
 
 class TestRunCommand:
+    def _write_model_profile(self, root: Path, data: dict[str, Any]) -> None:
+        root.mkdir(parents=True)
+        (root / "ctx-model-profile.json").write_text(
+            json.dumps(data),
+            encoding="utf-8",
+        )
+
     def test_happy_path_writes_session(
         self, fake_litellm: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -238,6 +245,101 @@ class TestRunCommand:
         # Stdout is the final answer; stderr has the [ctx] status lines.
         captured = capsys.readouterr()
         assert "final answer" in captured.out
+
+    def test_run_uses_ctx_init_model_profile_when_model_omitted(
+        self,
+        fake_litellm: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        claude = tmp_path / "claude"
+        sessions = tmp_path / "sessions"
+        self._write_model_profile(
+            claude,
+            {
+                "mode": "custom",
+                "provider": "openai",
+                "model": "openai/gpt-5.5",
+                "api_key_env": "OPENAI_API_KEY",
+                "base_url": "https://api.example.test/v1",
+                "goal": "build agents",
+            },
+        )
+        monkeypatch.setattr(run_cli, "_claude_dir", lambda: claude)
+        monkeypatch.setenv("OPENAI_API_KEY", "profile-secret")
+
+        exit_code = main(
+            [
+                "run",
+                "--task", "say hi",
+                "--sessions-dir", str(sessions),
+                "--session-id", "profile-run",
+                "--no-ctx-tools",
+                "--quiet",
+            ],
+        )
+
+        assert exit_code == 0
+        call = fake_litellm._calls[0]
+        assert call["model"] == "openai/gpt-5.5"
+        assert call["api_key"] == "profile-secret"
+        assert call["api_base"] == "https://api.example.test/v1"
+        first_line = (sessions / "profile-run.jsonl").read_text(
+            encoding="utf-8",
+        ).splitlines()[0]
+        event = json.loads(first_line)
+        assert event["model"] == "openai/gpt-5.5"
+        assert event["provider"] == "openai"
+        assert event["api_key_env"] == "OPENAI_API_KEY"
+        captured = capsys.readouterr()
+        assert "final answer" in captured.out
+
+    def test_cli_model_override_does_not_inherit_stale_profile_provider(
+        self,
+        fake_litellm: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        claude = tmp_path / "claude"
+        sessions = tmp_path / "sessions"
+        self._write_model_profile(
+            claude,
+            {
+                "mode": "custom",
+                "provider": "openai",
+                "model": "openai/gpt-5.5",
+                "api_key_env": "OPENAI_API_KEY",
+                "base_url": "https://api.example.test/v1",
+            },
+        )
+        monkeypatch.setattr(run_cli, "_claude_dir", lambda: claude)
+        monkeypatch.setenv("OPENAI_API_KEY", "profile-secret")
+
+        exit_code = main(
+            [
+                "run",
+                "--model", "ollama/qwen",
+                "--task", "say hi",
+                "--sessions-dir", str(sessions),
+                "--session-id", "override-run",
+                "--no-ctx-tools",
+                "--quiet",
+            ],
+        )
+
+        assert exit_code == 0
+        call = fake_litellm._calls[0]
+        assert call["model"] == "ollama/qwen"
+        assert "api_key" not in call
+        assert "api_base" not in call
+        first_line = (sessions / "override-run.jsonl").read_text(
+            encoding="utf-8",
+        ).splitlines()[0]
+        event = json.loads(first_line)
+        assert event["provider"] == "ollama"
+        assert event["api_key_env"] == ""
+        assert event["base_url"] == ""
 
     def test_session_id_flag_pins_id(
         self, fake_litellm: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str],
@@ -397,10 +499,15 @@ class TestRunCommand:
         assert "session_id" in payload
 
     def test_model_required(
-        self, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        with pytest.raises(SystemExit):
-            main(["run", "--task", "hi"])
+        monkeypatch.setattr(run_cli, "_claude_dir", lambda: tmp_path / "claude")
+
+        assert main(["run", "--task", "hi"]) == 2
+        assert "--model is required" in capsys.readouterr().err
 
     def test_task_required(
         self, capsys: pytest.CaptureFixture[str],

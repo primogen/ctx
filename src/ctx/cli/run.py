@@ -55,6 +55,7 @@ from ctx.adapters.generic.tools import McpRouter, McpServerConfig
 
 _logger = logging.getLogger(__name__)
 _CTX_SESSION_MARKER = "ctx runtime session id:"
+_MODEL_PROFILE_NAME = "ctx-model-profile.json"
 
 
 # ── Provider key-env defaults ───────────────────────────────────────────────
@@ -90,6 +91,53 @@ def _resolve_api_key_env(
     prefix = provider or _model_provider_prefix(model)
     key = _PROVIDER_KEY_ENV.get(prefix)
     return key if key else None
+
+
+def _claude_dir() -> Path:
+    return Path(os.path.expanduser("~/.claude"))
+
+
+def _load_model_profile() -> dict[str, Any]:
+    path = _claude_dir() / _MODEL_PROFILE_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        _logger.warning("ctx model profile could not be loaded: %s", exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _profile_str(profile: dict[str, Any], key: str) -> str | None:
+    value = profile.get(key)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _apply_model_profile_defaults(args: argparse.Namespace) -> str | None:
+    """Apply ctx-init's saved model profile to `ctx run` args."""
+    profile = _load_model_profile()
+    profile_model = _profile_str(profile, "model")
+    if not args.model and profile_model:
+        args.model = profile_model
+    if not args.model:
+        return (
+            "error: --model is required unless "
+            f"{_claude_dir() / _MODEL_PROFILE_NAME} contains a model"
+        )
+    if profile_model != args.model:
+        return None
+
+    if args.provider is None:
+        args.provider = _profile_str(profile, "provider")
+    if args.api_key_env is None and isinstance(profile.get("api_key_env"), str):
+        args.api_key_env = profile["api_key_env"]
+    if args.base_url is None:
+        args.base_url = _profile_str(profile, "base_url")
+    return None
 
 
 # ── MCP spec parsing ───────────────────────────────────────────────────────
@@ -413,11 +461,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     r.add_argument(
         "--model",
-        required=True,
         help=(
             "Model slug in LiteLLM form, e.g. "
             "'openrouter/anthropic/claude-opus-4.7', "
-            "'ollama/llama3.1:70b', 'openai/gpt-5.5'."
+            "'ollama/llama3.1:70b', 'openai/gpt-5.5'. "
+            "Default: ~/.claude/ctx-model-profile.json when configured."
         ),
     )
     r.add_argument(
@@ -649,6 +697,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    profile_error = _apply_model_profile_defaults(args)
+    if profile_error:
+        print(profile_error, file=sys.stderr)
+        return 2
+
     sdir = Path(args.sessions_dir) if args.sessions_dir else default_sessions_dir()
 
     api_key_env = _resolve_api_key_env(args.api_key_env, args.model, args.provider)
