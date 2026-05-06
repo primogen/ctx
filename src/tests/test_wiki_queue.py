@@ -4,18 +4,50 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from ctx.core.wiki import wiki_queue
 
 
-def test_init_queue_enables_wal_and_creates_schema(tmp_path: Path) -> None:
+def test_init_queue_enables_wal_and_creates_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     db_path = tmp_path / "wiki-queue.sqlite3"
+    raw_connect = sqlite3.connect
+    closed = 0
+
+    class TrackingConnection:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._conn, name)
+
+        @property
+        def row_factory(self) -> Any:
+            return self._conn.row_factory
+
+        @row_factory.setter
+        def row_factory(self, value: Any) -> None:
+            self._conn.row_factory = value
+
+        def close(self) -> None:
+            nonlocal closed
+            closed += 1
+            self._conn.close()
+
+    def tracking_connect(*args: Any, **kwargs: Any) -> TrackingConnection:
+        return TrackingConnection(raw_connect(*args, **kwargs))
+
+    monkeypatch.setattr(wiki_queue.sqlite3, "connect", tracking_connect)
 
     wiki_queue.init_queue(db_path)
 
-    with sqlite3.connect(db_path) as conn:
+    assert closed == 1
+    with raw_connect(db_path) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         table_count = conn.execute(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='wiki_queue_jobs'",
@@ -48,6 +80,7 @@ def test_enqueue_is_idempotent_by_key(tmp_path: Path) -> None:
 
 def test_enqueue_maintenance_job_is_idempotent_by_payload(tmp_path: Path) -> None:
     wiki = tmp_path / "wiki"
+    db_path = wiki_queue.queue_db_path(wiki)
 
     first = wiki_queue.enqueue_maintenance_job(
         wiki,
@@ -68,7 +101,31 @@ def test_enqueue_maintenance_job_is_idempotent_by_payload(tmp_path: Path) -> Non
     assert second.kind == wiki_queue.GRAPH_EXPORT_JOB
     assert second.payload["source"] == "test"
     assert second.payload["graph_only"] is True
-    assert wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki)) == [first]
+    assert wiki_queue.list_jobs(db_path) == [first]
+
+    leased = wiki_queue.lease_next(db_path, worker_id="worker-a", now=20.0)
+    assert leased is not None
+    wiki_queue.mark_succeeded(db_path, leased.id, worker_id="worker-a", now=21.0)
+
+    third = wiki_queue.enqueue_maintenance_job(
+        wiki,
+        kind=wiki_queue.GRAPH_EXPORT_JOB,
+        payload={"incremental": True, "graph_only": True},
+        source="test",
+        now=30.0,
+    )
+    fourth = wiki_queue.enqueue_maintenance_job(
+        wiki,
+        kind=wiki_queue.GRAPH_EXPORT_JOB,
+        payload={"graph_only": True, "incremental": True},
+        source="test",
+        now=31.0,
+    )
+
+    assert third.id != first.id
+    assert third.status == wiki_queue.STATUS_PENDING
+    assert fourth.id == third.id
+    assert [job.id for job in wiki_queue.list_jobs(db_path)] == [first.id, third.id]
 
 
 def test_enqueue_maintenance_job_rejects_unknown_kind(tmp_path: Path) -> None:
@@ -79,6 +136,25 @@ def test_enqueue_maintenance_job_rejects_unknown_kind(tmp_path: Path) -> None:
             payload={},
             source="test",
         )
+
+
+def test_count_jobs_by_status_and_list_recent_jobs_are_bounded(tmp_path: Path) -> None:
+    db_path = tmp_path / "wiki-queue.sqlite3"
+    jobs = [
+        wiki_queue.enqueue(
+            db_path,
+            kind="graph-export",
+            payload={"n": index},
+            now=float(index),
+        )
+        for index in range(25)
+    ]
+
+    assert wiki_queue.count_jobs_by_status(db_path) == {wiki_queue.STATUS_PENDING: 25}
+    assert [job.id for job in wiki_queue.list_recent_jobs(db_path, limit=5)] == [
+        job.id for job in reversed(jobs[-5:])
+    ]
+    assert wiki_queue.list_recent_jobs(db_path, limit=0) == []
 
 
 def test_lease_next_claims_oldest_available_job(tmp_path: Path) -> None:
@@ -179,6 +255,28 @@ def test_expired_running_job_is_recovered_for_retry(tmp_path: Path) -> None:
     assert recovered.id == job.id
     assert recovered.worker_id == "worker-b"
     assert recovered.attempts == 2
+
+    with pytest.raises(RuntimeError, match="not leased by worker worker-a"):
+        wiki_queue.mark_succeeded(db_path, job.id, worker_id="worker-a", now=27.0)
+
+    current = wiki_queue.get_job(db_path, job.id)
+    assert current.status == wiki_queue.STATUS_RUNNING
+    assert current.worker_id == "worker-b"
+
+    with pytest.raises(RuntimeError, match="not leased by worker worker-a"):
+        wiki_queue.mark_failed(
+            db_path,
+            job.id,
+            worker_id="worker-a",
+            error="late failure",
+            retry=True,
+            now=27.0,
+        )
+
+    current = wiki_queue.get_job(db_path, job.id)
+    assert current.status == wiki_queue.STATUS_RUNNING
+    assert current.worker_id == "worker-b"
+    assert current.last_error is None
 
 
 def test_mark_succeeded_makes_job_unavailable(tmp_path: Path) -> None:

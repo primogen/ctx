@@ -23,7 +23,7 @@ The runtime recommendation paths use this graph in two ways:
 
 | File | Contents |
 |---|---|
-| `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, communities, external catalogs, and Obsidian metadata |
+| `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, external catalogs, and Obsidian metadata |
 | `skills-sh-catalog.json.gz` | Compressed Skills.sh catalog for the 89,463 body-backed entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
 | `viz-overview.html` / `.png` | Plotly overview of the graph |
@@ -43,6 +43,8 @@ The runtime recommendation paths use this graph in two ways:
 - `concepts/` - community concept pages
 - `external-catalogs/skills-sh/` - Skills.sh catalog, summary, and coverage metadata
 - `graphify-out/graph.json` - NetworkX node-link graph
+- `graphify-out/graph-delta.json` - delta export for the latest graph generation
+- `graphify-out/graph-export-manifest.json` - export manifest tying graph, delta, communities, and report to one generation
 - `graphify-out/communities.json` - community export
 - `SCHEMA.md`, `index.md`, `log.md`, `catalog.md` - wiki contract and indexes
 - `.obsidian/` - vault metadata for local graph browsing
@@ -128,16 +130,17 @@ tar --force-local -czf /path/to/ctx/graph/wiki-graph.tar.gz \
     --exclude='./.embedding-cache' \
     --exclude='./.ingest-checkpoint' \
     --exclude='./.enrich-checkpoint' \
-    --exclude='./graphify-out/graph-delta.json' \
     --exclude='./graphify-out/graph.pickle' \
     --exclude='*.original' \
     --exclude='*.lock' \
     .
 ```
 
-The excluded paths are regenerable local caches or trace files. They are omitted
-to keep the release artifact small and to prevent raw long skill bodies from
-being loaded by users.
+The graph, delta, communities, report, and export manifest are shipped together.
+They carry the same export ID so validation can reject mixed or partially
+refreshed graph generations. The excluded paths are regenerable local caches or
+trace files. They are omitted to keep the release artifact small and to prevent
+raw long skill bodies from being loaded by users.
 
 ## Implementation Notes
 

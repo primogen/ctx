@@ -61,6 +61,7 @@ def process_next(
         failed = wiki_queue.mark_failed(
             db_path,
             job.id,
+            worker_id=worker_id,
             error=str(exc),
             retry=True,
             delay_seconds=retry_delay_seconds,
@@ -73,7 +74,7 @@ def process_next(
             message=str(failed.last_error or exc),
         )
 
-    succeeded = wiki_queue.mark_succeeded(db_path, job.id, now=now)
+    succeeded = wiki_queue.mark_succeeded(db_path, job.id, worker_id=worker_id, now=now)
     return ProcessResult(
         job_id=succeeded.id,
         kind=succeeded.kind,
@@ -136,6 +137,12 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
         )
 
     update_index(str(wiki_path), [slug], subject_type=subject_type)
+    wiki_queue.enqueue_maintenance_job(
+        wiki_path,
+        kind=wiki_queue.GRAPH_EXPORT_JOB,
+        payload={"graph_only": True, "incremental": True},
+        source="entity-upsert",
+    )
     return f"refreshed {subject_type} index for {slug}"
 
 

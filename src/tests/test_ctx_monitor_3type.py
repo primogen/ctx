@@ -206,6 +206,38 @@ class TestWikiIndexEntries:
 # ────────────────────────────────────────────────────────────────────
 
 
+def test_wiki_index_sampling_is_sorted_by_slug(wiki_3type: Path) -> None:
+    (wiki_3type / "entities" / "skills" / "aaa-first.md").write_text(
+        "---\ntype: skill\ndescription: first\n---\n# aaa-first\n",
+        encoding="utf-8",
+    )
+
+    entries = _cm._wiki_index_entries(limit_per_type=1)
+    skill_entries = [entry for entry in entries if entry["type"] == "skill"]
+
+    assert [entry["slug"] for entry in skill_entries] == ["aaa-first"]
+
+
+def test_wiki_entity_page_marks_truncated_body_and_frontmatter(
+    wiki_3type: Path,
+) -> None:
+    long_description = "x" * 160
+    long_body = "body-line\n" * 1400
+    (wiki_3type / "entities" / "skills" / "long-page.md").write_text(
+        "---\n"
+        f"description: {long_description}\n"
+        "type: skill\n"
+        "---\n"
+        f"{long_body}",
+        encoding="utf-8",
+    )
+
+    html = _cm._render_wiki_entity("long-page", entity_type="skill")
+
+    assert "Body preview truncated at 12,000 characters." in html
+    assert "(truncated)" in html
+
+
 class TestRenderHome3Type:
     def test_wiki_card_shows_mcp_count(self, wiki_3type, monkeypatch):
         # Other dependencies of _render_home need shims that don't touch

@@ -20,7 +20,8 @@ memory that gets smarter every session.
     ```
 
     Optional extras: `pip install "claude-ctx[embeddings]"` for the
-    semantic backend, `pip install "claude-ctx[dev]"` for the
+    semantic backend, `pip install "claude-ctx[harness]"` for local/API
+    model harness runs, `pip install "claude-ctx[dev]"` for the
     pytest/mypy/ruff toolchain. After install the `ctx-scan-repo`,
     `ctx-skill-quality`, `ctx-skill-health`, and `ctx-toolbox` console
     scripts are on PATH.
@@ -181,7 +182,7 @@ ones are flagged. New ones self-ingest.
     ---
 
     **v0.7.x** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
-    3,626 tests collected. Ships console scripts including `ctx-init`,
+    3,645 tests collected. Ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
     skills, agents, and MCP servers, plus harness wiki/graph browsing),
     `ctx-dedup-check` (pre-ship near-duplicate gate), and

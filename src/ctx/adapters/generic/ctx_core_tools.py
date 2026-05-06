@@ -135,6 +135,20 @@ class CtxCoreToolbox:
                             "minimum": 1,
                             "maximum": 5,
                         },
+                        "model_provider": {
+                            "type": "string",
+                            "description": (
+                                "Optional custom/local model provider, used only "
+                                "for companion harness recommendations."
+                            ),
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Optional model slug, used only for companion "
+                                "harness recommendations."
+                            ),
+                        },
                     },
                     "required": ["query"],
                 },
@@ -331,7 +345,24 @@ class CtxCoreToolbox:
             }
             for r in raw
         ]
-        return json.dumps({"query": query, "tags": tags, "results": results})
+        model_provider = _optional_str(args.get("model_provider"))
+        model = _optional_str(args.get("model"))
+        companion_harnesses = (
+            _recommend_companion_harnesses(
+                query,
+                top_k=top_k,
+                model_provider=model_provider,
+                model=model,
+            )
+            if model_provider or model
+            else []
+        )
+        return json.dumps({
+            "query": query,
+            "tags": tags,
+            "results": results,
+            "companion_harnesses": companion_harnesses,
+        })
 
     def _dispatch_graph_query(self, args: dict[str, Any]) -> str:
         seeds_raw = args.get("seeds") or []
@@ -567,6 +598,48 @@ def _query_to_tags(query: str) -> list[str]:
     from ctx.core.resolve.recommendations import query_to_tags  # noqa: PLC0415
 
     return query_to_tags(query)
+
+
+def _optional_str(raw: Any) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    return value or None
+
+
+def _recommend_companion_harnesses(
+    query: str,
+    *,
+    top_k: int,
+    model_provider: str | None,
+    model: str | None,
+) -> list[dict[str, Any]]:
+    try:
+        from ctx_init import recommend_harnesses  # noqa: PLC0415
+
+        raw = recommend_harnesses(
+            query,
+            top_k=top_k,
+            model_provider=model_provider,
+            model=model,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("ctx harness companion recommendation failed: %s", exc)
+        return []
+    return [
+        {
+            "name": row.get("name"),
+            "type": "harness",
+            "fit_score": row.get("fit_score"),
+            "normalized_score": row.get("normalized_score"),
+            "matching_tags": row.get("matching_tags", []),
+            "provider_match": row.get("provider_match"),
+            "detail_url": row.get("detail_url"),
+            "install_command": row.get("install_command"),
+        }
+        for row in raw
+        if row.get("name")
+    ]
 
 
 def _lifecycle_tool_definitions() -> list[ToolDefinition]:

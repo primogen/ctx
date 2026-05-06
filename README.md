@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![PyPI](https://img.shields.io/pypi/v/claude-ctx.svg)](https://pypi.org/project/claude-ctx/)
-[![Tests](https://img.shields.io/badge/Tests-3626_collected-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/Tests-3645_collected-brightgreen.svg)](#)
 [![Graph](https://img.shields.io/badge/Graph-102%2C696_nodes_/_2.9M_edges-red.svg)](graph/)
 [![Docs](https://img.shields.io/badge/docs-MkDocs_Material-blue.svg)](https://stevesolun.github.io/ctx/)
 
@@ -37,7 +37,7 @@ ctx-init --model-mode skip  # non-interactive setup for automation
 ctx-init --model-mode custom --model openai/gpt-5.5 --goal "build a CAD agent"
 ```
 
-Optional extras: `pip install "claude-ctx[embeddings]"` for the semantic backend, `pip install "claude-ctx[dev]"` for the test toolchain.
+Optional extras: `pip install "claude-ctx[embeddings]"` for the semantic backend, `pip install "claude-ctx[harness]"` for local/API model harness runs, `pip install "claude-ctx[dev]"` for the test toolchain.
 
 ### Pre-built knowledge graph (optional)
 

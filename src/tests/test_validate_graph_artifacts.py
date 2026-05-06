@@ -5,6 +5,7 @@ import json
 import tarfile
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml  # type: ignore[import-untyped]
@@ -48,8 +49,20 @@ def _write_archive(
     include_converted: bool = True,
     include_original: bool = False,
     include_lock: bool = False,
+    include_delta: bool = True,
+    include_report: bool = True,
+    include_manifest: bool = True,
+    graph_export_id: str = "export-test",
+    delta_export_id: str = "export-test",
+    communities_export_id: str | None = None,
+    report_export_id: str | None = None,
+    manifest_export_id: str | None = None,
 ) -> None:
+    communities_export_id = communities_export_id or graph_export_id
+    report_export_id = report_export_id or graph_export_id
+    manifest_export_id = manifest_export_id or graph_export_id
     graph = {
+        "graph": {"export_id": graph_export_id},
         "nodes": [
             {
                 "id": "skill:skills-sh-example-skill",
@@ -69,7 +82,39 @@ def _write_archive(
     with tarfile.open(graph_dir / "wiki-graph.tar.gz", "w:gz") as tf:
         _add_text(tf, "./index.md", "# Wiki\n")
         _add_text(tf, "./graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
-        _add_text(tf, "./graphify-out/communities.json", json.dumps({"total_communities": 1}))
+        if include_delta:
+            _add_text(
+                tf,
+                "./graphify-out/graph-delta.json",
+                json.dumps({"export_id": delta_export_id, "nodes": [], "edges": []}),
+            )
+        _add_text(
+            tf,
+            "./graphify-out/communities.json",
+            json.dumps({"export_id": communities_export_id, "total_communities": 1}),
+        )
+        if include_report:
+            _add_text(
+                tf,
+                "./graphify-out/graph-report.md",
+                f"# Graph Report\n\n> Export ID: {report_export_id}\n",
+            )
+        if include_manifest:
+            _add_text(
+                tf,
+                "./graphify-out/graph-export-manifest.json",
+                json.dumps({
+                    "version": 1,
+                    "export_id": manifest_export_id,
+                    "artifacts": {
+                        "graph": "graph.json",
+                        "delta": "graph-delta.json",
+                        "communities": "communities.json",
+                        "report": "graph-report.md",
+                    },
+                    "counts": {"nodes": 2, "edges": 1, "communities": 1},
+                }),
+            )
         _add_text(tf, "./external-catalogs/skills-sh/catalog.json", "{}")
         _add_text(tf, "./entities/skills/skills-sh-example-skill.md", "# Example\n")
         _add_text(tf, "./entities/harnesses/langgraph.md", "# LangGraph\n")
@@ -143,6 +188,79 @@ def test_validate_graph_artifacts_checks_catalog_paths_and_deep_graph_stats(
             expected_harnesses={"langgraph"},
             expected_nodes=2,
         )
+
+
+def test_validate_graph_artifacts_rejects_mixed_export_generation(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    (tmp_path / "communities.json").write_text("{}", encoding="utf-8")
+    _write_archive(tmp_path, graph_export_id="new-export", delta_export_id="old-export")
+
+    with pytest.raises(GraphArtifactError, match="export_id mismatch"):
+        validate_graph_artifacts(
+            tmp_path,
+            deep=True,
+            min_nodes=2,
+            min_edges=1,
+            min_skills_sh_nodes=1,
+            min_semantic_edges=1,
+            expected_harnesses={"langgraph"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("archive_kwargs", "missing_name"),
+    [
+        ({"include_delta": False}, "graph-delta.json"),
+        ({"include_report": False}, "graph-report.md"),
+        ({"include_manifest": False}, "graph-export-manifest.json"),
+    ],
+)
+def test_validate_graph_artifacts_rejects_missing_graph_export_files(
+    tmp_path: Path,
+    archive_kwargs: dict[str, Any],
+    missing_name: str,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    (tmp_path / "communities.json").write_text("{}", encoding="utf-8")
+    _write_archive(tmp_path, **archive_kwargs)
+
+    with pytest.raises(GraphArtifactError, match=missing_name):
+        validate_graph_artifacts(tmp_path, expected_harnesses={"langgraph"})
+
+
+@pytest.mark.parametrize(
+    "archive_kwargs",
+    [
+        {"graph_export_id": "artifact-export", "manifest_export_id": "manifest-export"},
+        {"delta_export_id": "artifact-export", "manifest_export_id": "manifest-export"},
+        {
+            "communities_export_id": "artifact-export",
+            "manifest_export_id": "manifest-export",
+        },
+        {"report_export_id": "artifact-export", "manifest_export_id": "manifest-export"},
+    ],
+)
+def test_validate_graph_artifacts_rejects_artifact_export_id_mismatch(
+    tmp_path: Path,
+    archive_kwargs: dict[str, Any],
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    (tmp_path / "communities.json").write_text("{}", encoding="utf-8")
+    _write_archive(tmp_path, **archive_kwargs)
+
+    with pytest.raises(GraphArtifactError, match="export_id mismatch"):
+        validate_graph_artifacts(tmp_path, expected_harnesses={"langgraph"})
 
 
 def test_validate_graph_artifacts_rejects_missing_converted_catalog_path(
@@ -242,7 +360,46 @@ def test_scan_graph_json_handles_pretty_printed_graph() -> None:
     }
     payload = json.dumps(graph, indent=2).encode("utf-8")
 
-    assert _scan_graph_json(BytesIO(payload)) == (2, 2, 1, 1, 1)
+    assert _scan_graph_json(BytesIO(payload)) == (2, 2, 1, 1, 1, None)
+
+
+def test_scan_graph_json_extracts_top_level_graph_export_id() -> None:
+    graph = {
+        "directed": False,
+        "graph": {
+            "source_catalog_nodes": {"skills.sh": 1},
+            "source_catalog_edges": {"skills.sh": 0},
+            "export_id": "graph-export",
+        },
+        "nodes": [
+            {
+                "id": "skill:skills-sh-example-skill",
+                "type": "skill",
+                "source_catalog": "skills.sh",
+            },
+        ],
+        "edges": [],
+    }
+    payload = json.dumps(graph, separators=(",", ":")).encode("utf-8")
+
+    assert _scan_graph_json(BytesIO(payload)) == (1, 0, 0, 1, 0, "graph-export")
+
+
+def test_scan_graph_json_ignores_node_level_export_id() -> None:
+    graph = {
+        "nodes": [
+            {
+                "id": "skill:skills-sh-example-skill",
+                "type": "skill",
+                "source_catalog": "skills.sh",
+                "export_id": "node-export",
+            },
+        ],
+        "edges": [],
+    }
+    payload = json.dumps(graph, separators=(",", ":")).encode("utf-8")
+
+    assert _scan_graph_json(BytesIO(payload)) == (1, 0, 0, 1, 0, None)
 
 
 def test_graph_only_workflow_uses_exact_release_counts() -> None:

@@ -318,6 +318,58 @@ class TestRuntimeLifecycle:
 # ── recommend_bundle ───────────────────────────────────────────────────────
 
 
+def test_session_state_suppresses_current_dev_window_unloads(
+    toolbox: CtxCoreToolbox,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ctx.adapters.generic import runtime_lifecycle
+
+    timestamps = iter([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
+    monkeypatch.setattr(runtime_lifecycle.time, "time", lambda: next(timestamps))
+
+    for name, arguments in [
+        ("ctx__observe_dev_event", {
+            "session_id": "s-window",
+            "event_type": "task",
+        }),
+        ("ctx__load_entity", {
+            "session_id": "s-window",
+            "entity_type": "skill",
+            "slug": "fastapi-pro",
+        }),
+    ]:
+        toolbox.dispatch(ToolCall(id="c1", name=name, arguments=arguments))
+
+    current_window = json.loads(
+        toolbox.dispatch(ToolCall(
+            id="c1",
+            name="ctx__session_state",
+            arguments={"session_id": "s-window"},
+        ))
+    )
+    assert current_window["unload_candidates"] == []
+
+    for name, arguments in [
+        ("ctx__session_end", {"session_id": "s-window"}),
+        ("ctx__observe_dev_event", {
+            "session_id": "s-window",
+            "event_type": "resume",
+        }),
+    ]:
+        toolbox.dispatch(ToolCall(id="c1", name=name, arguments=arguments))
+
+    next_window = json.loads(
+        toolbox.dispatch(ToolCall(
+            id="c1",
+            name="ctx__session_state",
+            arguments={"session_id": "s-window"},
+        ))
+    )
+    assert [entry["slug"] for entry in next_window["unload_candidates"]] == [
+        "fastapi-pro",
+    ]
+
+
 class TestRecommendBundle:
     def test_happy_path_ranks_by_tag_overlap(
         self, toolbox: CtxCoreToolbox
@@ -337,6 +389,97 @@ class TestRecommendBundle:
         # python + web + api should score fastapi-pro highly (3 tags match).
         names = [r["name"] for r in result["results"]]
         assert "fastapi-pro" in names
+
+    def test_companion_harnesses_are_separate_from_dev_results(
+        self,
+        toolbox: CtxCoreToolbox,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import ctx_init
+
+        calls: list[dict[str, Any]] = []
+
+        def fake_recommend_harnesses(
+            goal: str,
+            *,
+            top_k: int = 5,
+            model_provider: str | None = None,
+            model: str | None = None,
+        ) -> list[dict[str, Any]]:
+            calls.append({
+                "goal": goal,
+                "top_k": top_k,
+                "model_provider": model_provider,
+                "model": model,
+            })
+            return [{
+                "name": "langgraph",
+                "fit_score": 0.92,
+                "normalized_score": 0.88,
+                "matching_tags": ["agents"],
+                "provider_match": "openai",
+                "detail_url": "https://example.test/langgraph",
+                "install_command": "ctx-harness-install langgraph",
+            }]
+
+        monkeypatch.setattr(ctx_init, "recommend_harnesses", fake_recommend_harnesses)
+
+        result = json.loads(
+            toolbox.dispatch(
+                ToolCall(
+                    id="c1",
+                    name="ctx__recommend_bundle",
+                    arguments={
+                        "query": "python agent workflow",
+                        "top_k": 5,
+                        "model_provider": "openai",
+                        "model": "openai/gpt-5.5",
+                    },
+                )
+            )
+        )
+
+        assert calls == [{
+            "goal": "python agent workflow",
+            "top_k": 5,
+            "model_provider": "openai",
+            "model": "openai/gpt-5.5",
+        }]
+        assert all(row["type"] != "harness" for row in result["results"])
+        assert result["companion_harnesses"] == [{
+            "name": "langgraph",
+            "type": "harness",
+            "fit_score": 0.92,
+            "normalized_score": 0.88,
+            "matching_tags": ["agents"],
+            "provider_match": "openai",
+            "detail_url": "https://example.test/langgraph",
+            "install_command": "ctx-harness-install langgraph",
+        }]
+
+    def test_companion_harnesses_can_be_empty(
+        self,
+        toolbox: CtxCoreToolbox,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import ctx_init
+
+        monkeypatch.setattr(ctx_init, "recommend_harnesses", lambda *a, **kw: [])
+
+        result = json.loads(
+            toolbox.dispatch(
+                ToolCall(
+                    id="c1",
+                    name="ctx__recommend_bundle",
+                    arguments={
+                        "query": "python web api",
+                        "model_provider": "ollama",
+                    },
+                )
+            )
+        )
+
+        assert result["companion_harnesses"] == []
 
     def test_empty_query(self, toolbox: CtxCoreToolbox) -> None:
         result = json.loads(

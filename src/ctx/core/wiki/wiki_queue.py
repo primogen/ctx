@@ -7,13 +7,14 @@ future processor leases jobs with explicit worker IDs.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import sqlite3
 import time
 from hashlib import sha256
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from ctx.utils._fs_utils import reject_symlink_path
 
@@ -21,6 +22,8 @@ STATUS_PENDING = "pending"
 STATUS_RUNNING = "running"
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
+TERMINAL_STATUSES = (STATUS_SUCCEEDED, STATUS_FAILED)
+ACTIVE_STATUSES = (STATUS_PENDING, STATUS_RUNNING)
 
 ENTITY_UPSERT_JOB = "entity-upsert"
 GRAPH_EXPORT_JOB = "graph-export"
@@ -160,6 +163,7 @@ def enqueue_maintenance_job(
         content_hash=content_hash,
         max_attempts=max_attempts,
         available_at=available_at,
+        reuse_terminal=False,
         now=now,
     )
 
@@ -173,6 +177,7 @@ def enqueue(
     content_hash: str | None = None,
     max_attempts: int = 3,
     available_at: float | None = None,
+    reuse_terminal: bool = True,
     now: float | None = None,
 ) -> QueueJob:
     """Insert a pending job or return the existing job for an idempotency key."""
@@ -186,14 +191,24 @@ def enqueue(
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if idempotency_key and not reuse_terminal and content_hash:
+                row = _select_active_duplicate(conn, kind, content_hash)
+                if row is not None:
+                    conn.execute("COMMIT")
+                    return _row_to_job(row)
             if idempotency_key:
                 row = conn.execute(
                     "SELECT * FROM wiki_queue_jobs WHERE idempotency_key = ?",
                     (idempotency_key,),
                 ).fetchone()
                 if row is not None:
-                    conn.execute("COMMIT")
-                    return _row_to_job(row)
+                    existing = _row_to_job(row)
+                    if reuse_terminal or existing.status not in TERMINAL_STATUSES:
+                        conn.execute("COMMIT")
+                        return existing
+                    idempotency_key = (
+                        f"{idempotency_key}:run:{timestamp:.6f}:{time.monotonic_ns()}"
+                    )
             cur = conn.execute(
                 """
                 INSERT INTO wiki_queue_jobs (
@@ -234,8 +249,7 @@ def lease_next(
     now: float | None = None,
 ) -> QueueJob | None:
     """Lease the oldest available pending job, recovering expired leases first."""
-    if not worker_id.strip():
-        raise ValueError("worker_id must be non-empty")
+    claimed_worker_id = _validate_worker_id(worker_id)
     if lease_seconds <= 0:
         raise ValueError(f"lease_seconds must be > 0 (got {lease_seconds})")
     timestamp = _now(now)
@@ -264,7 +278,7 @@ def lease_next(
                 """,
                 (
                     STATUS_RUNNING,
-                    worker_id,
+                    claimed_worker_id,
                     timestamp + float(lease_seconds),
                     timestamp,
                     job_id,
@@ -278,13 +292,21 @@ def lease_next(
             raise
 
 
-def mark_succeeded(db_path: Path, job_id: int, *, now: float | None = None) -> QueueJob:
+def mark_succeeded(
+    db_path: Path,
+    job_id: int,
+    *,
+    worker_id: str | None = None,
+    now: float | None = None,
+) -> QueueJob:
     """Mark a leased job as succeeded and clear lease metadata."""
     timestamp = _now(now)
+    expected_worker_id = _validate_worker_id(worker_id) if worker_id is not None else None
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            _select_job(conn, job_id)
+            current = _row_to_job(_select_job(conn, job_id))
+            _assert_job_leased_by_worker(current, expected_worker_id)
             conn.execute(
                 """
                 UPDATE wiki_queue_jobs
@@ -309,6 +331,7 @@ def mark_failed(
     db_path: Path,
     job_id: int,
     *,
+    worker_id: str | None = None,
     error: str,
     retry: bool,
     delay_seconds: float = 0.0,
@@ -317,10 +340,12 @@ def mark_failed(
     """Record a job failure, retrying if allowed and attempts remain."""
     timestamp = _now(now)
     delay = max(0.0, float(delay_seconds))
+    expected_worker_id = _validate_worker_id(worker_id) if worker_id is not None else None
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             current = _row_to_job(_select_job(conn, job_id))
+            _assert_job_leased_by_worker(current, expected_worker_id)
             should_retry = retry and current.attempts < current.max_attempts
             status = STATUS_PENDING if should_retry else STATUS_FAILED
             available_at = timestamp + delay if should_retry else current.available_at
@@ -372,19 +397,71 @@ def list_jobs(
     return [_row_to_job(row) for row in rows]
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+def count_jobs_by_status(db_path: Path) -> dict[str, int]:
+    """Return queue job counts grouped by status."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS count
+              FROM wiki_queue_jobs
+             GROUP BY status
+            """,
+        ).fetchall()
+    return {str(row["status"]): int(row["count"]) for row in rows}
+
+
+def list_recent_jobs(
+    db_path: Path,
+    *,
+    limit: int = 20,
+    statuses: Iterable[str] | None = None,
+) -> list[QueueJob]:
+    """List the newest queue jobs, bounded in SQLite."""
+    bounded_limit = max(0, int(limit))
+    if bounded_limit == 0:
+        return []
+    status_filter = tuple(statuses or ())
+    with _connect(db_path) as conn:
+        if status_filter:
+            placeholders = ",".join("?" for _ in status_filter)
+            rows = conn.execute(
+                f"""
+                SELECT * FROM wiki_queue_jobs
+                 WHERE status IN ({placeholders})
+                 ORDER BY id DESC
+                 LIMIT ?
+                """,
+                (*status_filter, bounded_limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM wiki_queue_jobs
+                 ORDER BY id DESC
+                 LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+    return [_row_to_job(row) for row in rows]
+
+
+@contextmanager
+def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     path = Path(db_path)
     reject_symlink_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     reject_symlink_path(path)
     conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 30000")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(_SCHEMA)
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(_SCHEMA)
+        yield conn
+    finally:
+        conn.close()
 
 
 def _recover_expired_leases(conn: sqlite3.Connection, now: float) -> None:
@@ -450,6 +527,24 @@ def _select_next_ready(
     ).fetchone()
 
 
+def _select_active_duplicate(
+    conn: sqlite3.Connection,
+    kind: str,
+    content_hash: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT * FROM wiki_queue_jobs
+         WHERE kind = ?
+           AND content_hash = ?
+           AND status IN (?, ?)
+         ORDER BY id DESC
+         LIMIT 1
+        """,
+        (kind, content_hash, *ACTIVE_STATUSES),
+    ).fetchone()
+
+
 def _select_job(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row:
     row = conn.execute(
         "SELECT * FROM wiki_queue_jobs WHERE id = ?",
@@ -503,10 +598,27 @@ def _validate_kind(kind: str) -> None:
         raise ValueError("kind must be a non-empty string")
 
 
+def _validate_worker_id(worker_id: str) -> str:
+    if not isinstance(worker_id, str) or not worker_id.strip():
+        raise ValueError("worker_id must be non-empty")
+    return worker_id.strip()
+
+
 def _validate_maintenance_kind(kind: str) -> None:
     _validate_kind(kind)
     if kind not in MAINTENANCE_JOB_KINDS:
         raise ValueError(f"unsupported maintenance job kind: {kind}")
+
+
+def _assert_job_leased_by_worker(job: QueueJob, worker_id: str | None) -> None:
+    if worker_id is None:
+        return
+    if job.status != STATUS_RUNNING or job.worker_id != worker_id:
+        actual = job.worker_id or "<none>"
+        raise RuntimeError(
+            f"queue job {job.id} is not leased by worker {worker_id} "
+            f"(status={job.status}, worker_id={actual})"
+        )
 
 
 def _now(now: float | None) -> float:
