@@ -32,6 +32,8 @@ _NODE_ID_RE = re.compile(rb'"id"\s*:')
 _EDGE_TARGET_RE = re.compile(rb'"target"\s*:')
 _SOURCE_SKILLS_SH_RE = re.compile(rb'"source_catalog"\s*:\s*"skills\.sh"')
 _HARNESS_TYPE_RE = re.compile(rb'"type"\s*:\s*"harness"')
+_GRAPH_KEY_RE = re.compile(rb'"graph"\s*:\s*\{')
+_REPORT_EXPORT_ID_RE = re.compile(r"^>\s*Export ID:\s*(\S+)\s*$", re.MULTILINE)
 _SEMANTIC_SIM_RE = re.compile(
     rb'"semantic_sim"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)',
 )
@@ -101,12 +103,17 @@ def _count_lines(payload: bytes) -> int:
     return len(payload.decode("utf-8", errors="replace").splitlines())
 
 
-def _scan_graph_json(stream: IO[bytes]) -> tuple[int, int, int, int, int]:
+def _scan_graph_json(stream: IO[bytes]) -> tuple[int, int, int, int, int, str | None]:
     nodes = edges = semantic_edges = skills_sh_nodes = harness_nodes = 0
+    export_id: str | None = None
     tail = b""
+    graph_probe = b""
     while chunk := stream.read(1024 * 1024):
         old_tail = tail
         data = tail + chunk
+        if export_id is None:
+            graph_probe = (graph_probe + chunk)[-1024 * 1024:]
+            export_id = _extract_graph_export_id(graph_probe)
         nodes += len(_NODE_ID_RE.findall(data)) - len(_NODE_ID_RE.findall(old_tail))
         edges += len(_EDGE_TARGET_RE.findall(data)) - len(_EDGE_TARGET_RE.findall(old_tail))
         semantic_edges += (
@@ -122,7 +129,59 @@ def _scan_graph_json(stream: IO[bytes]) -> tuple[int, int, int, int, int]:
             - len(_HARNESS_TYPE_RE.findall(old_tail))
         )
         tail = data[-512:]
-    return nodes, edges, semantic_edges, skills_sh_nodes, harness_nodes
+    return nodes, edges, semantic_edges, skills_sh_nodes, harness_nodes, export_id
+
+
+def _scan_graph_export_id(stream: IO[bytes], *, max_bytes: int = 1024 * 1024) -> str | None:
+    payload = stream.read(max_bytes)
+    return _extract_graph_export_id(payload)
+
+
+def _extract_graph_export_id(payload: bytes) -> str | None:
+    match = _GRAPH_KEY_RE.search(payload)
+    if match is None:
+        return None
+    start = match.end() - 1
+    end = _json_object_end(payload, start)
+    if end is None:
+        return None
+    try:
+        graph_meta = json.loads(payload[start : end + 1].decode("utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(graph_meta, dict):
+        return None
+    raw = graph_meta.get("export_id")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip()
+
+
+def _json_object_end(payload: bytes, start: int) -> int | None:
+    if start >= len(payload) or payload[start:start + 1] != b"{":
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(payload)):
+        char = payload[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == 0x5C:  # backslash
+                escaped = True
+            elif char == 0x22:  # double quote
+                in_string = False
+            continue
+        if char == 0x22:
+            in_string = True
+        elif char == 0x7B:  # {
+            depth += 1
+        elif char == 0x7D:  # }
+            depth -= 1
+            if depth == 0:
+                return idx
+    return None
 
 
 def _count_nonzero_semantic_matches(data: bytes) -> int:
@@ -200,6 +259,8 @@ def validate_graph_artifacts(
     harness_nodes = 0
     skill_pages = agent_pages = mcp_pages = harness_pages = skills_sh_converted = 0
     expected_harnesses = DEFAULT_HARNESSES if expected_harnesses is None else expected_harnesses
+    export_ids: dict[str, str] = {}
+    manifest: dict[str, Any] | None = None
 
     with tarfile.open(tarball, "r:gz") as tf:
         for member in tf:
@@ -221,17 +282,42 @@ def validate_graph_artifacts(
                 harness_pages += 1
             if name.startswith("converted/skills-sh-") and name.endswith("/SKILL.md"):
                 skills_sh_converted += 1
-            if member.isfile() and deep and name == "graphify-out/graph.json":
+            if member.isfile() and name == "graphify-out/graph.json":
                 f = tf.extractfile(member)
                 if f is None:
                     raise GraphArtifactError("graphify-out/graph.json could not be read")
-                (
-                    graph_nodes,
-                    graph_edges,
-                    graph_semantic_edges,
-                    skills_sh_nodes,
-                    harness_nodes,
-                ) = _scan_graph_json(f)
+                if deep:
+                    (
+                        graph_nodes,
+                        graph_edges,
+                        graph_semantic_edges,
+                        skills_sh_nodes,
+                        harness_nodes,
+                        graph_export_id,
+                    ) = _scan_graph_json(f)
+                else:
+                    graph_export_id = _scan_graph_export_id(f)
+                _record_export_id(export_ids, name, graph_export_id)
+            elif member.isfile() and name == "graphify-out/graph-delta.json":
+                data = _read_tar_json(tf, member, name)
+                _record_export_id(export_ids, name, _export_id_from_json(data, name))
+            elif member.isfile() and name == "graphify-out/communities.json":
+                data = _read_tar_json(tf, member, name)
+                _record_export_id(
+                    export_ids,
+                    name,
+                    _export_id_from_json(data, name),
+                )
+            elif member.isfile() and name == "graphify-out/graph-export-manifest.json":
+                data = _read_tar_json(tf, member, name)
+                if not isinstance(data, dict):
+                    raise GraphArtifactError(f"{name} did not contain a JSON object")
+                manifest = data
+            elif member.isfile() and name == "graphify-out/graph-report.md":
+                f = tf.extractfile(member)
+                if f is None:
+                    raise GraphArtifactError(f"{member.name} could not be read")
+                _record_export_id(export_ids, name, _export_id_from_report(f.read()))
             elif member.isfile() and deep and name.startswith("converted/skills-sh-"):
                 if name.endswith("/SKILL.md") or "/references/" in name:
                     f = tf.extractfile(member)
@@ -247,12 +333,24 @@ def validate_graph_artifacts(
     required_names = {
         "index.md",
         "graphify-out/graph.json",
+        "graphify-out/graph-delta.json",
         "graphify-out/communities.json",
+        "graphify-out/graph-report.md",
+        "graphify-out/graph-export-manifest.json",
         "external-catalogs/skills-sh/catalog.json",
     }
     missing_required = sorted(required_names - names)
     if missing_required:
         raise GraphArtifactError(f"wiki graph archive is missing: {missing_required}")
+    manifest_export_id = _validate_graph_export_manifest(manifest, names)
+    _record_export_id(
+        export_ids,
+        "graphify-out/graph-export-manifest.json",
+        manifest_export_id,
+    )
+    if "graphify-out/graph.json" not in export_ids:
+        raise GraphArtifactError("graphify-out/graph.json is missing export_id")
+    _validate_export_ids(export_ids, expected=manifest_export_id)
     missing_pages = sorted(required_skill_pages - names)
     if missing_pages:
         raise GraphArtifactError(f"missing Skills.sh entity pages: {missing_pages[:5]}")
@@ -328,6 +426,86 @@ def validate_graph_artifacts(
                 f"{field_name} exact count mismatch: expected {expected}, got {actual}",
             )
     return stats
+
+
+def _read_tar_json(tf: tarfile.TarFile, member: tarfile.TarInfo, name: str) -> Any:
+    f = tf.extractfile(member)
+    if f is None:
+        raise GraphArtifactError(f"{member.name} could not be read")
+    try:
+        return json.loads(f.read().decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise GraphArtifactError(f"{name} is not valid JSON: {exc}") from exc
+
+
+def _export_id_from_json(data: Any, name: str) -> str:
+    if not isinstance(data, dict):
+        raise GraphArtifactError(f"{name} did not contain a JSON object")
+    raw = data.get("export_id")
+    if not isinstance(raw, str) or not raw.strip():
+        raise GraphArtifactError(f"{name} is missing export_id")
+    return raw.strip()
+
+
+def _export_id_from_report(payload: bytes) -> str:
+    text = payload.decode("utf-8", errors="replace")
+    match = _REPORT_EXPORT_ID_RE.search(text)
+    if match is None:
+        raise GraphArtifactError("graphify-out/graph-report.md is missing Export ID")
+    return match.group(1).strip()
+
+
+def _record_export_id(export_ids: dict[str, str], key: str, export_id: str | None) -> None:
+    if not export_id:
+        raise GraphArtifactError(f"{key} is missing export_id")
+    export_ids[key] = export_id
+
+
+def _validate_graph_export_manifest(
+    manifest: dict[str, Any] | None,
+    names: set[str],
+) -> str:
+    if manifest is None:
+        raise GraphArtifactError("graphify-out/graph-export-manifest.json is missing")
+    if manifest.get("version") != 1:
+        raise GraphArtifactError("graph export manifest version must be 1")
+    export_id = _export_id_from_json(manifest, "graphify-out/graph-export-manifest.json")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise GraphArtifactError("graph export manifest missing artifacts map")
+    expected = {
+        "graph": "graph.json",
+        "delta": "graph-delta.json",
+        "communities": "communities.json",
+        "report": "graph-report.md",
+    }
+    if set(artifacts) != set(expected):
+        raise GraphArtifactError(
+            "graph export manifest artifacts map must contain exactly "
+            f"{sorted(expected)}",
+        )
+    for key, filename in expected.items():
+        actual = artifacts.get(key)
+        if actual != filename:
+            raise GraphArtifactError(
+                f"graph export manifest artifact {key!r} expected {filename!r}, got {actual!r}",
+            )
+        archive_name = f"graphify-out/{filename}"
+        if archive_name not in names:
+            raise GraphArtifactError(f"graph export manifest references missing {archive_name}")
+    return export_id
+
+
+def _validate_export_ids(export_ids: dict[str, str], *, expected: str) -> None:
+    mismatches = {
+        key: value
+        for key, value in sorted(export_ids.items())
+        if value != expected
+    }
+    if mismatches:
+        raise GraphArtifactError(
+            f"graph export_id mismatch: expected {expected}, mismatches={mismatches}",
+        )
 
 
 def main() -> None:
