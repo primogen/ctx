@@ -195,6 +195,14 @@ def _frontmatter_text(value: Any) -> str:
     return str(value)
 
 
+def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
+    if limit <= 0 or len(value) <= limit:
+        return value, False
+    if limit <= 3:
+        return value[:limit], True
+    return value[: limit - 3].rstrip() + "...", True
+
+
 def _frontmatter_tags(value: Any, *, limit: int | None = 6) -> list[str]:
     if isinstance(value, list):
         raw_items = value
@@ -1613,11 +1621,15 @@ def _render_wiki_entity(slug: str, entity_type: str | None = None) -> str:
         else ""
     )
 
-    fm_rows = "".join(
-        f"<tr><td class='muted'>{html.escape(k)}</td>"
-        f"<td><code>{html.escape(_frontmatter_text(v)[:120])}</code></td></tr>"
-        for k, v in sorted(meta.items())
-    )
+    fm_row_parts = []
+    for k, v in sorted(meta.items()):
+        value, truncated = _truncate_text(_frontmatter_text(v), 120)
+        marker = " <span class='muted'>(truncated)</span>" if truncated else ""
+        fm_row_parts.append(
+            f"<tr><td class='muted'>{html.escape(k)}</td>"
+            f"<td><code>{html.escape(value)}</code>{marker}</td></tr>"
+        )
+    fm_rows = "".join(fm_row_parts)
 
     sidecar_html = ""
     if sidecar is not None:
@@ -1633,12 +1645,19 @@ def _render_wiki_entity(slug: str, entity_type: str | None = None) -> str:
             "</div></div>"
         )
 
+    body_preview, body_truncated = _truncate_text(md_body, 12000)
+    body_truncated_html = (
+        "<p class='muted'>Body preview truncated at 12,000 characters.</p>"
+        if body_truncated
+        else ""
+    )
     body = (
         f"<h1>{html.escape(slug)}</h1>"
         + sidecar_html
         + "<div style='display:grid; grid-template-columns:1fr 280px; gap:1rem;'>"
         f"<div class='card'><pre style='white-space:pre-wrap; font-family:\"SF Mono\", Consolas, monospace; "
-        f"font-size:0.88rem;'>{html.escape(md_body[:12000])}</pre></div>"
+        f"font-size:0.88rem;'>{html.escape(body_preview)}</pre>"
+        f"{body_truncated_html}</div>"
         f"<div class='card'><strong>Frontmatter</strong>"
         "<table style='font-size:0.85rem;'>"
         "<tr><th>Field</th><th>Value</th></tr>"
@@ -1669,7 +1688,10 @@ def _wiki_index_entries(
         d = base / sub
         if not d.is_dir():
             continue
-        paths = d.rglob("*.md") if recursive else d.glob("*.md")
+        paths = sorted(
+            d.rglob("*.md") if recursive else d.glob("*.md"),
+            key=lambda path: (path.stem.lower(), path.relative_to(d).as_posix().lower()),
+        )
         seen_for_type = 0
         for path in paths:
             if limit_per_type is not None and seen_for_type >= limit_per_type:
@@ -1684,12 +1706,16 @@ def _wiki_index_entries(
                 continue
             meta, _ = _parse_frontmatter(head)
             all_tags = _frontmatter_tags(meta.get("tags", ""), limit=None)
+            description, _truncated = _truncate_text(
+                _frontmatter_text(meta.get("description", "")),
+                200,
+            )
             out.append({
                 "slug": slug,
                 "type": entity_type,
                 "tags": all_tags[:6],
                 "search_tags": all_tags,
-                "description": _frontmatter_text(meta.get("description", ""))[:200],
+                "description": description,
             })
             seen_for_type += 1
     return out

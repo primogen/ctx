@@ -48,7 +48,8 @@ generated graph/wiki artifacts that ctx can ship or consume. It reports:
 
 ### Browse the LLM wiki — `/wiki`
 
-The wiki tab is a filterable card grid over a bounded dashboard sample:
+The wiki tab is a filterable card grid over a deterministic, bounded
+dashboard sample:
 up to 500 pages per dashboard-supported entity type under
 `~/.claude/skill-wiki/entities/{skills,agents,mcp-servers,harnesses}/`.
 MCP server pages use the sharded layout
@@ -68,10 +69,11 @@ checkboxes. Pair them to
 answer questions like "show me all grade-B agents related to
 testing" — check `agent`, type `testing` in the search box.
 
-Dashboard-supported entity pages (`/wiki/<slug>?type=<entity>`) render the full
-markdown body, the frontmatter table on the right, and a quality banner
-with deep links to `/skill/<slug>` (sidecar detail) and
-`/graph?slug=<slug>&type=<entity>` (1-hop neighborhood).
+Dashboard-supported entity pages (`/wiki/<slug>?type=<entity>`) render a
+bounded markdown preview and a bounded frontmatter table on the right, plus a
+quality banner with deep links to `/skill/<slug>` (sidecar detail) and
+`/graph?slug=<slug>&type=<entity>` (1-hop neighborhood). Long body previews and
+frontmatter values are visibly marked as truncated.
 
 ### Explore the knowledge graph — `/graph`
 
