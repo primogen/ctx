@@ -242,6 +242,63 @@ _HARNESS_SIGNAL_ALIASES: dict[str, set[str]] = {
     "tools": {"tool", "tools"},
 }
 
+_DEFAULT_HARNESS_RELIABILITY_WEIGHTS = {
+    "context": 0.34,
+    "constraints": 0.33,
+    "convergence": 0.33,
+}
+
+_HARNESS_RELIABILITY_TERMS = {
+    "context": frozenset({
+        "context",
+        "contexts",
+        "document",
+        "documents",
+        "durable",
+        "knowledge",
+        "memory",
+        "persistent",
+        "replay",
+        "retrieval",
+        "state",
+        "wiki",
+    }),
+    "constraints": frozenset({
+        "access",
+        "approval",
+        "approvals",
+        "boundaries",
+        "boundary",
+        "governance",
+        "limits",
+        "permission",
+        "permissions",
+        "policy",
+        "policies",
+        "rules",
+        "sandbox",
+        "security",
+    }),
+    "convergence": frozenset({
+        "automated",
+        "check",
+        "checks",
+        "eval",
+        "evals",
+        "evaluation",
+        "gates",
+        "idempotence",
+        "monitoring",
+        "pytest",
+        "retries",
+        "retry",
+        "tests",
+        "tracing",
+        "validation",
+        "verify",
+    }),
+}
+
 _MODEL_VERSION_PREFIXES = (
     "claude",
     "codellama",
@@ -360,6 +417,7 @@ def recommend_harnesses(
             results.sort(
                 key=lambda row: (
                     -float(row.get("fit_score") or 0.0),
+                    -float(row.get("reliability_score") or 0.0),
                     -float(row.get("normalized_score") or 0.0),
                     str(row.get("name") or ""),
                 )
@@ -440,6 +498,7 @@ def _annotate_harness_fit(
         "fit_signals": sorted(matched_set),
         "missing_signals": missing[:8],
         "fit_reason": _harness_fit_reason(matched, scored_signals),
+        **_harness_reliability_metadata(terms),
     }
 
 
@@ -485,14 +544,102 @@ def _harness_candidate_terms(graph: Any, row: dict[str, Any]) -> set[str]:
     node_data = _harness_node_data(graph, slug)
     for key in ("label", "description", "summary", "source"):
         terms.update(_harness_tokens(str(node_data.get(key) or "")))
-    for key in ("tags", "capabilities", "model_providers", "runtimes"):
+    for key in (
+        "tags",
+        "capabilities",
+        "model_providers",
+        "runtimes",
+        "setup_commands",
+        "verify_commands",
+        "attach_modes",
+        "sources",
+    ):
         _add_harness_terms(terms, node_data.get(key))
     wiki_fm = _harness_frontmatter_from_wiki(slug)
     for key in ("title", "description", "summary", "repo_url", "docs_url"):
         terms.update(_harness_tokens(str(wiki_fm.get(key) or "")))
-    for key in ("tags", "capabilities", "model_providers", "runtimes"):
+    for key in (
+        "tags",
+        "capabilities",
+        "model_providers",
+        "runtimes",
+        "setup_commands",
+        "verify_commands",
+        "attach_modes",
+        "sources",
+    ):
         _add_harness_terms(terms, wiki_fm.get(key))
     return terms
+
+
+def _harness_reliability_metadata(terms: set[str]) -> dict[str, Any]:
+    """Score the harness-engineering 3C contract: context/constraints/convergence."""
+    weights = _harness_reliability_weights()
+    dimensions: dict[str, dict[str, Any]] = {}
+    weighted_total = 0.0
+    total_weight = 0.0
+    covered: list[str] = []
+
+    for dimension, required_terms in _HARNESS_RELIABILITY_TERMS.items():
+        matched = sorted(required_terms & terms)
+        score = _clamp_harness_score(len(matched) / 2.0)
+        weight = weights.get(dimension, 0.0)
+        weighted_total += weight * score
+        total_weight += weight
+        if matched:
+            covered.append(dimension)
+        dimensions[dimension] = {
+            "score": round(score, 4),
+            "matched_terms": matched[:8],
+        }
+
+    reliability_score = round(
+        _clamp_harness_score(weighted_total / total_weight)
+        if total_weight > 0 else 0.0,
+        4,
+    )
+    return {
+        "reliability_score": reliability_score,
+        "reliability_dimensions": dimensions,
+        "reliability_reason": _harness_reliability_reason(covered),
+    }
+
+
+def _harness_reliability_weights() -> dict[str, float]:
+    try:
+        from ctx_config import cfg  # noqa: PLC0415
+
+        raw = getattr(cfg, "harness_reliability_weights", None)
+    except Exception:
+        raw = None
+    if not isinstance(raw, dict):
+        return dict(_DEFAULT_HARNESS_RELIABILITY_WEIGHTS)
+    weights: dict[str, float] = {}
+    for dimension, default in _DEFAULT_HARNESS_RELIABILITY_WEIGHTS.items():
+        try:
+            value = float(raw.get(dimension, default))
+        except (TypeError, ValueError):
+            value = default
+        weights[dimension] = max(0.0, value)
+    total = sum(weights.values())
+    if total <= 0:
+        return dict(_DEFAULT_HARNESS_RELIABILITY_WEIGHTS)
+    return {dimension: value / total for dimension, value in weights.items()}
+
+
+def _harness_reliability_reason(covered: list[str]) -> str:
+    if not covered:
+        return "no harness reliability signals for context, constraints, or convergence"
+    missing = [
+        dimension for dimension in _DEFAULT_HARNESS_RELIABILITY_WEIGHTS
+        if dimension not in covered
+    ]
+    if not missing:
+        return "covers context, constraints, and convergence"
+    return (
+        "covers " + ", ".join(covered)
+        + "; missing " + ", ".join(missing)
+    )
 
 
 def _add_harness_terms(terms: set[str], raw: object) -> None:

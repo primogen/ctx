@@ -138,6 +138,30 @@ class Config:
                 self.harness_recommendation_min_normalized_score,
             )
         )
+        raw_reliability_weights = harness.get("reliability_weights", {})
+        if not isinstance(raw_reliability_weights, dict):
+            raw_reliability_weights = {}
+        default_reliability_weights = {
+            "context": 0.34,
+            "constraints": 0.33,
+            "convergence": 0.33,
+        }
+        self.harness_reliability_weights: dict[str, float] = {}
+        for dimension, default in default_reliability_weights.items():
+            value = float(raw_reliability_weights.get(dimension, default))
+            if value < 0:
+                raise ValueError(
+                    f"harness.reliability_weights.{dimension} must be >= 0 "
+                    f"(got {value})"
+                )
+            self.harness_reliability_weights[dimension] = value
+        reliability_weight_total = sum(self.harness_reliability_weights.values())
+        if reliability_weight_total <= 0:
+            raise ValueError("harness.reliability_weights must sum to > 0")
+        self.harness_reliability_weights = {
+            dimension: value / reliability_weight_total
+            for dimension, value in self.harness_reliability_weights.items()
+        }
         if not (0.0 <= self.harness_recommendation_min_normalized_score <= 1.0):
             raise ValueError(
                 "harness.recommendation_min_normalized_score must be in [0, 1] "
