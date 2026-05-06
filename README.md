@@ -37,7 +37,7 @@ ctx-init --model-mode skip  # non-interactive setup for automation
 ctx-init --model-mode custom --model openai/gpt-5.5 --goal "build a CAD agent"
 ```
 
-Optional extras: `pip install "claude-ctx[embeddings]"` for the semantic backend, `pip install "claude-ctx[dev]"` for the test toolchain.
+Optional extras: `pip install "claude-ctx[embeddings]"` for the semantic backend, `pip install "claude-ctx[harness]"` for local/API model harness runs, `pip install "claude-ctx[dev]"` for the test toolchain.
 
 ### Pre-built knowledge graph (optional)
 

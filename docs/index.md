@@ -20,7 +20,8 @@ memory that gets smarter every session.
     ```
 
     Optional extras: `pip install "claude-ctx[embeddings]"` for the
-    semantic backend, `pip install "claude-ctx[dev]"` for the
+    semantic backend, `pip install "claude-ctx[harness]"` for local/API
+    model harness runs, `pip install "claude-ctx[dev]"` for the
     pytest/mypy/ruff toolchain. After install the `ctx-scan-repo`,
     `ctx-skill-quality`, `ctx-skill-health`, and `ctx-toolbox` console
     scripts are on PATH.
