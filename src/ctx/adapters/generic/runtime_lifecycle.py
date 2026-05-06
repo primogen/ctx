@@ -116,8 +116,12 @@ class RuntimeLifecycleStore:
         unloaded: list[dict[str, Any]] = []
         min_age = max(0.0, float(min_unused_seconds))
         now = time.time()
+        latest_dev_event_epoch: float | None = None
 
         for event in self._events_for_session(session_id):
+            if event.get("action") == "dev_event":
+                latest_dev_event_epoch = float(event.get("created_at_epoch") or 0)
+                continue
             key = (str(event.get("entity_type") or ""), str(event.get("slug") or ""))
             if not key[0] or not key[1]:
                 continue
@@ -132,6 +136,7 @@ class RuntimeLifecycleStore:
                     "use_count": 0,
                     "last_used_at": None,
                     "evidence": [],
+                    "dev_event_epoch": latest_dev_event_epoch,
                 }
             elif event.get("action") == "used" and key in loaded:
                 loaded[key]["used"] = True
@@ -154,6 +159,7 @@ class RuntimeLifecycleStore:
         unload_candidates = [
             entry for entry in loaded_entries
             if not entry["used"]
+            and _loaded_before_latest_dev_event(entry, latest_dev_event_epoch)
             and (min_age == 0 or now - float(entry.get("loaded_at_epoch") or 0) >= min_age)
         ]
         return {
@@ -228,3 +234,15 @@ def _validate_slug(raw: str) -> str:
     value = raw.strip()
     validate_skill_name(value)
     return value
+
+
+def _loaded_before_latest_dev_event(
+    entry: dict[str, Any],
+    latest_dev_event_epoch: float | None,
+) -> bool:
+    if latest_dev_event_epoch is None:
+        return True
+    loaded_window = entry.get("dev_event_epoch")
+    if loaded_window is None:
+        return True
+    return float(loaded_window) < latest_dev_event_epoch

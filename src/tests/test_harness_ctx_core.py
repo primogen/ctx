@@ -318,6 +318,58 @@ class TestRuntimeLifecycle:
 # ── recommend_bundle ───────────────────────────────────────────────────────
 
 
+def test_session_state_suppresses_current_dev_window_unloads(
+    toolbox: CtxCoreToolbox,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ctx.adapters.generic import runtime_lifecycle
+
+    timestamps = iter([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
+    monkeypatch.setattr(runtime_lifecycle.time, "time", lambda: next(timestamps))
+
+    for name, arguments in [
+        ("ctx__observe_dev_event", {
+            "session_id": "s-window",
+            "event_type": "task",
+        }),
+        ("ctx__load_entity", {
+            "session_id": "s-window",
+            "entity_type": "skill",
+            "slug": "fastapi-pro",
+        }),
+    ]:
+        toolbox.dispatch(ToolCall(id="c1", name=name, arguments=arguments))
+
+    current_window = json.loads(
+        toolbox.dispatch(ToolCall(
+            id="c1",
+            name="ctx__session_state",
+            arguments={"session_id": "s-window"},
+        ))
+    )
+    assert current_window["unload_candidates"] == []
+
+    for name, arguments in [
+        ("ctx__session_end", {"session_id": "s-window"}),
+        ("ctx__observe_dev_event", {
+            "session_id": "s-window",
+            "event_type": "resume",
+        }),
+    ]:
+        toolbox.dispatch(ToolCall(id="c1", name=name, arguments=arguments))
+
+    next_window = json.loads(
+        toolbox.dispatch(ToolCall(
+            id="c1",
+            name="ctx__session_state",
+            arguments={"session_id": "s-window"},
+        ))
+    )
+    assert [entry["slug"] for entry in next_window["unload_candidates"]] == [
+        "fastapi-pro",
+    ]
+
+
 class TestRecommendBundle:
     def test_happy_path_ranks_by_tag_overlap(
         self, toolbox: CtxCoreToolbox
