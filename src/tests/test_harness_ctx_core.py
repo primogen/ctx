@@ -159,6 +159,8 @@ class TestToolDefinitions:
             "ctx__observe_dev_event",
             "ctx__load_entity",
             "ctx__mark_entity_used",
+            "ctx__record_validation",
+            "ctx__record_escalation",
             "ctx__unload_entity",
             "ctx__session_end",
             "ctx__session_state",
@@ -228,6 +230,19 @@ class TestRuntimeLifecycle:
                 "slug": "fastapi-pro",
                 "evidence": "used in implementation",
             }),
+            ("ctx__record_validation", {
+                "session_id": "s-1",
+                "check_name": "pytest",
+                "status": "passed",
+                "command": "python -m pytest",
+                "summary": "all tests passed",
+            }),
+            ("ctx__record_escalation", {
+                "session_id": "s-1",
+                "trigger": "destructive-action",
+                "reason": "delete requires user approval",
+                "severity": "blocking",
+            }),
             ("ctx__unload_entity", {
                 "session_id": "s-1",
                 "entity_type": "skill",
@@ -253,6 +268,8 @@ class TestRuntimeLifecycle:
             "dev_event",
             "load_requested",
             "used",
+            "validation",
+            "escalation",
             "unload_requested",
             "session_end",
         ]
@@ -315,7 +332,86 @@ class TestRuntimeLifecycle:
         ]
 
 
-# ── recommend_bundle ───────────────────────────────────────────────────────
+# -- runtime validation ledger ----------------------------------------------
+
+
+class TestRuntimeValidationLedger:
+    def test_session_state_surfaces_validation_and_escalation_ledger(
+        self,
+        toolbox: CtxCoreToolbox,
+    ) -> None:
+        for name, arguments in [
+            ("ctx__record_validation", {
+                "session_id": "s-ledger",
+                "check_name": "mypy",
+                "status": "failed",
+                "command": "python -m mypy src",
+                "summary": "type gate failed",
+                "payload": {"errors": 3},
+            }),
+            ("ctx__record_escalation", {
+                "session_id": "s-ledger",
+                "trigger": "validation-failed",
+                "reason": "mypy failed after retry",
+                "severity": "blocking",
+                "payload": {"check_name": "mypy"},
+            }),
+        ]:
+            result = json.loads(
+                toolbox.dispatch(ToolCall(id="c1", name=name, arguments=arguments))
+            )
+            assert result["ok"] is True
+
+        state = json.loads(
+            toolbox.dispatch(ToolCall(
+                id="c1",
+                name="ctx__session_state",
+                arguments={"session_id": "s-ledger"},
+            ))
+        )
+
+        assert state["validations"] == [{
+            "check_name": "mypy",
+            "status": "failed",
+            "command": "python -m mypy src",
+            "summary": "type gate failed",
+            "entity_type": None,
+            "slug": None,
+            "payload": {"errors": 3},
+        }]
+        assert state["escalations"] == [{
+            "trigger": "validation-failed",
+            "reason": "mypy failed after retry",
+            "severity": "blocking",
+            "status": "open",
+            "entity_type": None,
+            "slug": None,
+            "payload": {"check_name": "mypy"},
+        }]
+        assert state["latest_validation_status"] == "failed"
+        assert state["open_escalations"] == state["escalations"]
+
+    def test_invalid_validation_status_is_structured(
+        self,
+        toolbox: CtxCoreToolbox,
+    ) -> None:
+        result = json.loads(
+            toolbox.dispatch(ToolCall(
+                id="c1",
+                name="ctx__record_validation",
+                arguments={
+                    "session_id": "s-ledger",
+                    "check_name": "pytest",
+                    "status": "maybe",
+                },
+            ))
+        )
+
+        assert result["ok"] is False
+        assert "status" in result["error"]
+
+
+# -- recommend_bundle --------------------------------------------------------
 
 
 def test_session_state_suppresses_current_dev_window_unloads(

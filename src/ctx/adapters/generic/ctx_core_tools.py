@@ -270,6 +270,10 @@ class CtxCoreToolbox:
             return self._dispatch_lifecycle(args, "load_entity")
         if local_name == "mark_entity_used":
             return self._dispatch_lifecycle(args, "mark_entity_used")
+        if local_name == "record_validation":
+            return self._dispatch_lifecycle(args, "record_validation")
+        if local_name == "record_escalation":
+            return self._dispatch_lifecycle(args, "record_escalation")
         if local_name == "unload_entity":
             return self._dispatch_lifecycle(args, "unload_entity")
         if local_name == "session_end":
@@ -496,6 +500,28 @@ class CtxCoreToolbox:
                     slug=str(args.get("slug") or ""),
                     reason=str(args.get("reason") or "") or None,
                 )
+            elif name == "record_validation":
+                result = self._lifecycle.record_validation(
+                    session_id=str(args.get("session_id") or ""),
+                    check_name=str(args.get("check_name") or ""),
+                    status=str(args.get("status") or ""),
+                    command=str(args.get("command") or "") or None,
+                    summary=str(args.get("summary") or "") or None,
+                    entity_type=str(args.get("entity_type") or "") or None,
+                    slug=str(args.get("slug") or "") or None,
+                    payload=_dict_arg(args.get("payload")),
+                )
+            elif name == "record_escalation":
+                result = self._lifecycle.record_escalation(
+                    session_id=str(args.get("session_id") or ""),
+                    trigger=str(args.get("trigger") or ""),
+                    reason=str(args.get("reason") or ""),
+                    severity=str(args.get("severity") or "") or None,
+                    status=str(args.get("status") or "") or None,
+                    entity_type=str(args.get("entity_type") or "") or None,
+                    slug=str(args.get("slug") or "") or None,
+                    payload=_dict_arg(args.get("payload")),
+                )
             elif name == "session_end":
                 result = self._lifecycle.end_session(
                     session_id=str(args.get("session_id") or ""),
@@ -709,6 +735,63 @@ def _lifecycle_tool_definitions() -> list[ToolDefinition]:
             },
         ),
         ToolDefinition(
+            name=f"{_NAMESPACE}record_validation",
+            description=(
+                "Record a harness validation check result outside the chat "
+                "transcript so state can be inspected and replayed."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "session_id": session,
+                    "check_name": {
+                        "type": "string",
+                        "description": "Stable name of the check that ran.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["passed", "failed", "skipped", "error"],
+                    },
+                    "command": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "entity_type": entity_type,
+                    "slug": slug,
+                    "payload": {"type": "object"},
+                },
+                "required": ["session_id", "check_name", "status"],
+            },
+        ),
+        ToolDefinition(
+            name=f"{_NAMESPACE}record_escalation",
+            description=(
+                "Record that a predefined escalation condition was reached "
+                "so the host can ask the user instead of hiding state in chat."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "session_id": session,
+                    "trigger": {
+                        "type": "string",
+                        "description": "Stable escalation trigger name.",
+                    },
+                    "reason": {"type": "string"},
+                    "severity": {
+                        "type": "string",
+                        "enum": ["info", "warning", "blocking"],
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["open", "resolved", "ignored"],
+                    },
+                    "entity_type": entity_type,
+                    "slug": slug,
+                    "payload": {"type": "object"},
+                },
+                "required": ["session_id", "trigger", "reason"],
+            },
+        ),
+        ToolDefinition(
             name=f"{_NAMESPACE}unload_entity",
             description=(
                 "Record that the host/user chose to unload a ctx entity. "
@@ -742,8 +825,9 @@ def _lifecycle_tool_definitions() -> list[ToolDefinition]:
             name=f"{_NAMESPACE}session_state",
             description=(
                 "Read the current lifecycle state for a session, including "
-                "loaded entities, used entities, and unload candidates that "
-                "were loaded but have no usage evidence."
+                "loaded entities, used entities, validation checks, "
+                "escalations, and unload candidates that were loaded but "
+                "have no usage evidence."
             ),
             parameters={
                 "type": "object",

@@ -60,6 +60,8 @@ _EXPECTED_TOOL_NAMES = {
     "ctx__observe_dev_event",
     "ctx__load_entity",
     "ctx__mark_entity_used",
+    "ctx__record_validation",
+    "ctx__record_escalation",
     "ctx__unload_entity",
     "ctx__session_end",
     "ctx__session_state",
