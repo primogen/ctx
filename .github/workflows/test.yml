@@ -23,7 +23,9 @@ jobs:
     outputs:
       browser_changed: ${{ steps.classify.outputs.browser_changed }}
       ci_changed: ${{ steps.classify.outputs.ci_changed }}
+      docs_changed: ${{ steps.classify.outputs.docs_changed }}
       docs_only: ${{ steps.classify.outputs.docs_only }}
+      graph_artifact_changed: ${{ steps.classify.outputs.graph_artifact_changed }}
       graph_changed: ${{ steps.classify.outputs.graph_changed }}
       graph_only: ${{ steps.classify.outputs.graph_only }}
       package_changed: ${{ steps.classify.outputs.package_changed }}
@@ -261,7 +263,7 @@ jobs:
   docs-check:
     name: "Docs strict build"
     needs: classify
-    if: ${{ github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true' }}
+    if: ${{ github.event_name == 'pull_request' && needs.classify.outputs.docs_changed == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -285,7 +287,7 @@ jobs:
   graph-check:
     name: "Graph artifact check"
     needs: classify
-    if: ${{ github.event_name == 'pull_request' && needs.classify.outputs.graph_only == 'true' }}
+    if: ${{ github.event_name == 'pull_request' && needs.classify.outputs.graph_artifact_changed == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout graph artifacts

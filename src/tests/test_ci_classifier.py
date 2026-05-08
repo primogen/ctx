@@ -24,7 +24,9 @@ def test_docs_only_classification() -> None:
     assert flags == {
         "browser_changed": False,
         "ci_changed": False,
+        "docs_changed": True,
         "docs_only": True,
+        "graph_artifact_changed": False,
         "graph_changed": True,
         "graph_only": False,
         "package_changed": False,
@@ -37,6 +39,7 @@ def test_docs_tooling_changes_are_docs_only() -> None:
     flags = classify_paths(["mkdocs.yml", "requirements-docs.txt"])
 
     assert flags["docs_only"] is True
+    assert flags["docs_changed"] is True
     assert flags["graph_only"] is False
     assert flags["source_changed"] is False
 
@@ -44,17 +47,44 @@ def test_docs_tooling_changes_are_docs_only() -> None:
 def test_graph_artifacts_are_graph_only_not_docs_only() -> None:
     flags = classify_paths(["graph/wiki-graph.tar.gz", "graph/communities.json"])
 
+    assert flags["docs_changed"] is False
     assert flags["docs_only"] is False
+    assert flags["graph_artifact_changed"] is True
     assert flags["graph_changed"] is True
     assert flags["graph_only"] is True
     assert flags["similarity_changed"] is False
     assert flags["source_changed"] is False
 
 
+def test_graph_readme_is_docs_not_graph_artifact() -> None:
+    flags = classify_paths(["graph/README.md"])
+
+    assert flags["docs_changed"] is True
+    assert flags["docs_only"] is True
+    assert flags["graph_artifact_changed"] is False
+    assert flags["graph_changed"] is True
+    assert flags["graph_only"] is True
+
+
 def test_mixed_graph_and_source_change_is_not_graph_only() -> None:
     flags = classify_paths(["graph/wiki-graph.tar.gz", "src/ctx/adapters/generic/loop.py"])
 
+    assert flags["graph_artifact_changed"] is True
     assert flags["graph_changed"] is True
+    assert flags["graph_only"] is False
+    assert flags["source_changed"] is True
+
+
+def test_mixed_source_docs_and_graph_artifact_requests_specific_gates() -> None:
+    flags = classify_paths([
+        "src/ctx/core/wiki/wiki_graphify.py",
+        "docs/knowledge-graph.md",
+        "graph/wiki-graph.tar.gz",
+    ])
+
+    assert flags["docs_changed"] is True
+    assert flags["docs_only"] is False
+    assert flags["graph_artifact_changed"] is True
     assert flags["graph_only"] is False
     assert flags["source_changed"] is True
 
@@ -75,6 +105,7 @@ def test_workflow_change_fails_open_for_future_gates() -> None:
     assert flags["package_changed"] is True
     assert flags["similarity_changed"] is True
     assert flags["source_changed"] is True
+    assert flags["docs_changed"] is False
     assert flags["docs_only"] is False
 
 
@@ -184,7 +215,21 @@ def test_main_writes_github_outputs(tmp_path: Path, monkeypatch) -> None:
     written = output.read_text(encoding="utf-8").splitlines()
     assert "package_changed=true" in written
     assert "source_changed=true" in written
+    assert "docs_changed=false" in written
     assert "docs_only=false" in written
+
+
+def test_main_handles_utf8_bom_changed_files(tmp_path: Path, monkeypatch) -> None:
+    changed = tmp_path / "changed-files.txt"
+    output = tmp_path / "github-output.txt"
+    changed.write_text("\ufeffgraph/wiki-graph.tar.gz\n", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    assert main([str(changed)]) == 0
+
+    written = output.read_text(encoding="utf-8").splitlines()
+    assert "graph_artifact_changed=true" in written
+    assert "graph_only=true" in written
 
 
 def test_ci_required_allows_pr_policy_skip_on_push_only() -> None:
@@ -227,7 +272,12 @@ def test_ci_required_allows_heavy_jobs_to_skip_on_docs_only_pr() -> None:
     needs = _required_needs(
         classify={
             "result": "success",
-            "outputs": {"browser_changed": "false", "docs_only": "true"},
+            "outputs": {
+                "browser_changed": "false",
+                "docs_changed": "true",
+                "docs_only": "true",
+                "graph_artifact_changed": "false",
+            },
         },
         **{
             "graph-check": {"result": "skipped"},
@@ -250,7 +300,10 @@ def test_ci_required_allows_heavy_jobs_to_skip_on_docs_only_pr() -> None:
 
 def test_ci_required_rejects_missing_docs_check_on_docs_only_pr() -> None:
     needs = _required_needs(
-        classify={"result": "success", "outputs": {"docs_only": "true"}},
+        classify={
+            "result": "success",
+            "outputs": {"docs_changed": "true", "docs_only": "true"},
+        },
         **{"docs-check": {"result": "skipped"}},
     )
 
@@ -265,7 +318,9 @@ def test_ci_required_allows_heavy_jobs_to_skip_on_graph_only_pr() -> None:
             "result": "success",
             "outputs": {
                 "browser_changed": "false",
+                "docs_changed": "false",
                 "docs_only": "false",
+                "graph_artifact_changed": "true",
                 "graph_only": "true",
             },
         },
@@ -290,7 +345,10 @@ def test_ci_required_allows_heavy_jobs_to_skip_on_graph_only_pr() -> None:
 
 def test_ci_required_rejects_missing_graph_check_on_graph_only_pr() -> None:
     needs = _required_needs(
-        classify={"result": "success", "outputs": {"graph_only": "true"}},
+        classify={
+            "result": "success",
+            "outputs": {"graph_artifact_changed": "true", "graph_only": "true"},
+        },
         **{"graph-check": {"result": "skipped"}},
     )
 
@@ -315,7 +373,11 @@ def test_ci_required_rejects_missing_similarity_gate_on_source_pr() -> None:
     needs = _required_needs(
         classify={
             "result": "success",
-            "outputs": {"docs_only": "false", "graph_only": "false"},
+            "outputs": {
+                "docs_only": "false",
+                "graph_only": "false",
+                "similarity_changed": "true",
+            },
         },
         **{"similarity-integration": {"result": "skipped"}},
     )
@@ -363,4 +425,32 @@ def test_ci_required_rejects_browser_skip_when_classifier_requests_it() -> None:
 
     assert failed_required_jobs(needs, event_name="pull_request") == {
         "browser-security": "skipped",
+    }
+
+
+def test_ci_required_rejects_missing_docs_check_on_mixed_docs_pr() -> None:
+    needs = _required_needs(
+        classify={
+            "result": "success",
+            "outputs": {"docs_changed": "true", "docs_only": "false"},
+        },
+        **{"docs-check": {"result": "skipped"}},
+    )
+
+    assert failed_required_jobs(needs, event_name="pull_request") == {
+        "docs-check": "skipped",
+    }
+
+
+def test_ci_required_rejects_missing_graph_check_on_mixed_artifact_pr() -> None:
+    needs = _required_needs(
+        classify={
+            "result": "success",
+            "outputs": {"graph_artifact_changed": "true", "graph_only": "false"},
+        },
+        **{"graph-check": {"result": "skipped"}},
+    )
+
+    assert failed_required_jobs(needs, event_name="pull_request") == {
+        "graph-check": "skipped",
     }

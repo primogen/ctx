@@ -59,9 +59,17 @@ def failed_required_jobs(
         event_name == "pull_request"
         and _job_output(needs, "classify", "docs_only") == "true"
     )
+    docs_changed_pr = (
+        event_name == "pull_request"
+        and _job_output(needs, "classify", "docs_changed") == "true"
+    )
     graph_only_pr = (
         event_name == "pull_request"
         and _job_output(needs, "classify", "graph_only") == "true"
+    )
+    graph_artifact_changed_pr = (
+        event_name == "pull_request"
+        and _job_output(needs, "classify", "graph_artifact_changed") == "true"
     )
     cheap_pr = docs_only_pr or graph_only_pr
     for name, details in sorted(needs.items()):
@@ -80,14 +88,14 @@ def failed_required_jobs(
             event_name == "pull_request"
             and name == "docs-check"
             and result == "skipped"
-            and not docs_only_pr
+            and not docs_changed_pr
         ):
             continue
         if (
             event_name == "pull_request"
             and name == "graph-check"
             and result == "skipped"
-            and not graph_only_pr
+            and not graph_artifact_changed_pr
         ):
             continue
         if (
