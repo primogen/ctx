@@ -15,8 +15,8 @@ Routes:
     /skill/<slug>               Sidecar breakdown + timeline of audit events
     /wiki                       Wiki entity index — all pages with search
     /wiki/<slug>?type=<entity>  One wiki entity page (frontmatter + body)
-    /graph                      Cytoscape graph explorer + popular seeds
-    /graph?slug=<slug>&type=... Focus cytoscape on a specific entity
+    /graph                      Built-in graph explorer + popular seeds
+    /graph?slug=<slug>&type=... Focus graph view on a specific entity
     /status                     Durable queue + graph/wiki artifact state
     /kpi                        Grade / lifecycle / category KPIs
     /runtime                    Generic harness validation/escalation ledger
@@ -27,7 +27,7 @@ Routes:
     /api/status.json            Queue counts + artifact promotion metadata
     /api/runtime.json           Generic harness validation/escalation summary
     /api/skill/<slug>.json      Sidecar passthrough
-    /api/graph/<slug>.json      Cytoscape-shaped neighborhood; accepts type
+    /api/graph/<slug>.json      Dashboard-shaped neighborhood; accepts type
     /api/kpi.json               DashboardSummary passthrough
 
 Design notes:
@@ -899,7 +899,7 @@ def _graph_neighborhood(
     limit: int = 40,
     entity_type: str | None = None,
 ) -> dict:
-    """Return cytoscape-shaped {nodes, edges} for the N-hop neighborhood.
+    """Return dashboard-shaped {nodes, edges} for the N-hop neighborhood.
 
     Uses ``resolve_graph.load_graph`` so the NetworkX 'links' vs 'edges'
     schema is handled centrally. Returns an empty shape if the graph
@@ -1401,12 +1401,7 @@ def _top_degree_seeds(limit: int = 18) -> list[dict]:
 
 
 def _render_graph(focus: str | None = None, focus_type: str | None = None) -> str:
-    """Interactive graph view — cytoscape-rendered N-hop neighborhood.
-
-    Cytoscape.js is loaded from a CDN. This is a local-dev dashboard
-    so the cost of one external asset is acceptable; stdlib-only
-    remains the server invariant.
-    """
+    """Interactive graph view backed by the built-in list renderer."""
     focus_slug = focus or ""
     focus_js = json.dumps(focus_slug)
     focus_type_js = json.dumps(focus_type or "")
@@ -1441,7 +1436,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         f"signals (weight = final_weight). {stats_html}</p>"
         + seed_html
         # Two-column layout — filter sidebar on the left (mirrors /wiki),
-        # cytoscape canvas on the right. Client-side JS hides nodes by
+        # graph list on the right. Client-side JS hides nodes by
         # type + tag without hitting the server so a user can carve out
         # a subgraph without rebuilding anything.
         + "<div style='display:grid; grid-template-columns:240px 1fr; "
@@ -1491,11 +1486,10 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "</div>"
         "<div class='card'><span id='msg' class='muted'></span></div>"
         "</aside>"
-        # Right: cytoscape canvas
+        # Right: graph list panel
         "<div id='cy' style='width:100%; height:75vh; border:1px solid #ddd; "
         "border-radius:6px; background:#fafafa;'></div>"
         "</div>"
-        "<script src='https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js'></script>"
         "<script>\n"
         f"const initial = {focus_js};\n"
         f"const initialType = {focus_type_js};\n"
@@ -1527,48 +1521,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "    + '<div class=\"muted\" style=\"margin-bottom:0.5rem;\">Graph renderer unavailable; showing list view.</div>'\n"
         "    + rows + '</div>';\n"
         "}\n"
-        "if (typeof cytoscape === 'function') {\n"
-        "  cy = cytoscape({\n"
-        "    container: cyMount,\n"
-        "    style: [\n"
-        "      { selector: 'node', style: {\n"
-        "        'label': 'data(label)', 'font-size': '10px',\n"
-        "        'text-valign': 'center', 'color': '#111',\n"
-        "        'background-color': '#6366f1', 'width': 22, 'height': 22,\n"
-        "      }},\n"
-        "      { selector: 'node[type = \"agent\"]', style: {\n"
-        "        'background-color': '#f59e0b',\n"  # amber for agents
-        "      }},\n"
-        "      { selector: 'node[type = \"mcp-server\"]', style: {\n"
-        "        'background-color': '#ef4444',\n"  # red for MCPs so the
-        # dashboard entity types are visually distinct at a glance in the graph.
-        "        'shape': 'diamond', 'width': 24, 'height': 24,\n"
-        "      }},\n"
-        "      { selector: 'node[type = \"harness\"]', style: {\n"
-        "        'background-color': '#22c55e',\n"
-        "        'shape': 'hexagon', 'width': 26, 'height': 26,\n"
-        "      }},\n"
-        "      { selector: 'node[depth = 0]', style: {\n"
-        "        'background-color': '#10b981', 'width': 34, 'height': 34,\n"
-        "        'font-weight': 'bold',\n"
-        "      }},\n"
-        "      { selector: 'node.hidden-by-filter', style: {\n"
-        "        'display': 'none',\n"
-        "      }},\n"
-        "      { selector: 'edge.hidden-by-filter', style: {\n"
-        "        'display': 'none',\n"
-        "      }},\n"
-        "      { selector: 'edge', style: {\n"
-        "        'width': 'mapData(weight, 1, 10, 0.5, 4)',\n"
-        "        'line-color': '#cbd5e1', 'curve-style': 'straight',\n"
-        "      }},\n"
-        "    ],\n"
-        "    layout: { name: 'cose', animate: false, padding: 30 },\n"
-        "  });\n"
-        "  cy.on('tap', 'node', (e) => { window.location.href = wikiHref(e.target.data()); });\n"
-        "} else {\n"
-        "  cyMount.innerHTML = '<div data-testid=\"graph-fallback\" class=\"muted\" style=\"padding:0.75rem;\">Graph renderer unavailable; enter a slug to load list view.</div>';\n"
-        "}\n"
+        "cyMount.innerHTML = '<div data-testid=\"graph-fallback\" class=\"muted\" style=\"padding:0.75rem;\">Enter a slug to load graph list view.</div>';\n"
         # ── Client-side filtering (type + tag substring) ─────────────
         "function applyFilters() {\n"
         "  const allowedTypes = new Set(\n"
@@ -2609,6 +2562,21 @@ class _MonitorHandler(BaseHTTPRequestHandler):
             and secrets.compare_digest(token, _MONITOR_TOKEN)
         )
 
+    def _api_reads_enabled(self) -> bool:
+        return self._mutations_enabled()
+
+    def _send_security_headers(self, *, html_response: bool = False) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        if html_response:
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline'; connect-src 'self'; "
+                "object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            )
+
     def _content_length(self) -> int | None:
         raw = self.headers.get("Content-Length")
         if raw is None:
@@ -2665,6 +2633,12 @@ class _MonitorHandler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             qs = {k: v[0] for k, v in parse_qs(raw_query).items()}
         try:
+            if path.startswith("/api/") and not self._api_reads_enabled():
+                self._send_json_status(
+                    403,
+                    {"detail": "monitor read APIs disabled on non-loopback bind"},
+                )
+                return
             if path == "/":
                 self._send_html(_render_home())
             elif path == "/sessions":
@@ -2805,6 +2779,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -2813,6 +2788,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self._send_security_headers(html_response=True)
         self.end_headers()
         self.wfile.write(raw)
 
@@ -2821,6 +2797,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -2829,6 +2806,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers(html_response=True)
         self.end_headers()
         self.wfile.write(body)
 
@@ -2838,6 +2816,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(500)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers(html_response=True)
         self.end_headers()
         self.wfile.write(body)
 
@@ -2847,6 +2826,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
+        self._send_security_headers()
         self.end_headers()
 
         path = _audit_log_path()

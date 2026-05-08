@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -96,7 +97,16 @@ def _write_wiki_entity(root: Path, entity_type: str, slug: str, body: str) -> No
     path.write_text(body, encoding="utf-8")
 
 
-def test_graph_page_falls_back_when_cytoscape_cdn_is_blocked(
+def _wait_for_browser_state(page: Any, expression: str, *, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if page.evaluate(expression):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for browser state: {expression}")
+
+
+def test_graph_page_uses_builtin_list_renderer(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
     page: Any,
@@ -113,7 +123,6 @@ def test_graph_page_falls_back_when_cytoscape_cdn_is_blocked(
     _write_wiki_entity(fake_claude, "skill", "python-patterns", "# python-patterns\n")
     _write_wiki_entity(fake_claude, "agent", "code-reviewer", "# code-reviewer\n")
 
-    page.route("https://unpkg.com/**", lambda route: route.abort())
     harness = _start_monitor(monkeypatch, fake_load=False)
     try:
         page.goto(f"{harness.base_url}/graph?slug=python-patterns&type=skill")
@@ -122,9 +131,10 @@ def test_graph_page_falls_back_when_cytoscape_cdn_is_blocked(
         assert page.locator("[data-testid='graph-fallback-node']").count() == 4
 
         page.fill("#tag-filter", "review")
-        page.wait_for_function(
+        _wait_for_browser_state(
+            page,
             "() => document.getElementById('graph-match-count').textContent === '2 visible'",
-            timeout=5000,
+            timeout=5.0,
         )
         page.locator("[data-testid='graph-fallback-node'][data-slug='code-reviewer']").click()
         page.wait_for_url("**/wiki/code-reviewer?type=agent", timeout=5000)
@@ -262,9 +272,10 @@ def test_browser_sse_streams_do_not_block_json_requests(
               window.__ctxSourceB.onmessage = (event) => window.__ctxEvents.push(['b', event.data]);
             }
         """)
-        page.wait_for_function(
+        _wait_for_browser_state(
+            page,
             "() => window.__ctxOpenCount && window.__ctxOpenCount >= 2",
-            timeout=5000,
+            timeout=5.0,
         )
         audit_path.write_text(
             json.dumps({
@@ -275,9 +286,10 @@ def test_browser_sse_streams_do_not_block_json_requests(
             }) + "\n",
             encoding="utf-8",
         )
-        page.wait_for_function(
+        _wait_for_browser_state(
+            page,
             "() => window.__ctxEvents && window.__ctxEvents.length >= 2",
-            timeout=5000,
+            timeout=5.0,
         )
         events = page.evaluate("() => window.__ctxEvents")
         assert {row[0] for row in events} == {"a", "b"}

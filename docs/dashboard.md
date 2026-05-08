@@ -10,13 +10,14 @@ and cataloged harness wiki/graph browsing.
 ```bash
 ctx-monitor serve              # http://127.0.0.1:8765
 ctx-monitor serve --port 8888  # custom port
-ctx-monitor serve --host 0.0.0.0 --port 8888  # LAN-visible (explicit opt-in)
+ctx-monitor serve --host 0.0.0.0 --port 8888  # LAN-visible HTML only (explicit opt-in)
 ```
 
 Zero Python dependencies added by the dashboard. Everything runs on
 stdlib `http.server`, using daemon request threads so a live
 `/api/events.stream` client cannot block normal dashboard or JSON API
-requests. Cytoscape.js is loaded from a CDN on the `/graph` route only.
+requests. The graph page uses a built-in list renderer and does not load
+third-party JavaScript.
 
 ## Usage
 
@@ -84,7 +85,7 @@ frontmatter values are visibly marked as truncated.
 
 ### Explore the knowledge graph — `/graph`
 
-The graph tab is a cytoscape-rendered view over the dashboard-supported
+The graph tab is a built-in list view over the dashboard-supported
 skill/agent/MCP/harness graph. The shipped graph bundle also contains
 remote-cataloged Skills.sh `skill` nodes. Harness nodes are browsable
 and filterable here; install/update actions remain in `ctx-harness-install`.
@@ -93,24 +94,20 @@ slug selected, the page shows:
 
 - a stats line with the total node + edge counts
 - a **Popular seed slugs** panel — the 18 highest-degree entities
-  rendered as clickable chips (skills in indigo, agents in amber).
+  rendered as clickable entity-type chips.
   Click a chip to explore that entity's 1-hop neighborhood
 - a search box — type any valid skill, agent, MCP, or harness slug and press
   `explore` (or hit Enter)
-- the cytoscape canvas itself, which activates as soon as you pick a
+- the graph list panel itself, which activates as soon as you pick a
   seed
 
-Inside the cytoscape view, node colors mean:
+Inside the graph list view, entity pills identify the node type. The
+focus row has `depth=0` in the page data, and neighbor rows are filterable
+by entity type and shared tag/token text.
 
-- **emerald** — the focus node you searched for
-- **indigo** — skills
-- **amber** — agents
-- **red diamond** — MCP servers
-- **green hexagon** — harnesses
-
-Edge width encodes the blended graph `weight` attribute, combining semantic
-similarity, explicit tag overlap, and slug-token overlap where available.
-Thicker lines = stronger relationships. **Tap any node** to
+The JSON endpoint still includes blended graph edge weights, combining
+semantic similarity, explicit tag overlap, and slug-token overlap where
+available. **Tap any row** to
 navigate to that entity's wiki page. The type checkboxes hide or show
 skills, agents, MCP servers, and harnesses without reloading the graph.
 
@@ -171,8 +168,8 @@ per-process monitor token injected into the rendered page.
 | `/skill/<slug>` | Full sidecar breakdown: four-signal score (telemetry · intake · graph · routing), hard-floor reason, computed_at timestamp, per-skill audit timeline |
 | `/wiki` | **Wiki entity index** - bounded card-grid sample of up to 500 pages per dashboard-supported entity type under `~/.claude/skill-wiki/entities/{skills,agents,mcp-servers,harnesses}/`, including sharded MCP server pages and flat harness pages. Left sidebar: text search over the visible sample (slug, description, tag), skill/agent/MCP/harness checkboxes. |
 | `/wiki/<slug>?type=<entity>` | Dashboard-supported wiki entity page rendered: markdown body + full frontmatter table + grade banner + deep links to sidecar and graph-neighborhood views. The optional `type` query disambiguates duplicate slugs such as `langgraph`. |
-| `/graph` | **Graph explorer landing page** - node/edge count header, a "Popular seed slugs" block (18 highest-degree skill/agent/MCP/harness entities as clickable chips), search box for any skill/agent/MCP/harness slug, and the cytoscape canvas. Clicking a seed chip navigates to `/graph?slug=<slug>&type=<entity>`. |
-| `/graph?slug=<slug>&type=<entity>` | **Cytoscape-rendered** 1-hop neighborhood around the target skill/agent/MCP/harness slug. Node colors: emerald=focus, indigo=skill, amber=agent, red diamond=MCP server, green hexagon=harness. Edge width maps to blended graph weight. Tap any node to navigate to that entity's typed wiki page. Type and tag filters run client-side. |
+| `/graph` | **Graph explorer landing page** - node/edge count header, a "Popular seed slugs" block (18 highest-degree skill/agent/MCP/harness entities as clickable chips), search box for any skill/agent/MCP/harness slug, and the built-in graph list panel. Clicking a seed chip navigates to `/graph?slug=<slug>&type=<entity>`. |
+| `/graph?slug=<slug>&type=<entity>` | **Built-in** 1-hop neighborhood around the target skill/agent/MCP/harness slug. Entity pills identify skill, agent, MCP server, and harness rows. Tap any node to navigate to that entity's typed wiki page. Type and tag filters run client-side. |
 | `/status` | Durable queue and artifact status: job counts by state, recent queue jobs, graph/wiki artifact sizes, and crash-safe promotion metadata. |
 | `/kpi` | **KPI dashboard** — total entity count with subject breakdown, grade distribution pills, two-column tables for grade counts and lifecycle tiers (active · watch · demote · archive), hard-floor reasons with counts, **By category** table (count · avg score · A/B/C/D/F mix per category), **Top demotion candidates** (active/watch entries graded D or F, sorted by consecutive-D streak desc then score asc), and the **Archived** list. Same shape as `python -m kpi_dashboard render` but HTML |
 | `/runtime` | Generic harness runtime ledger from `CTX_RUNTIME_LIFECYCLE_DIR` or `~/.ctx/runtime/events.jsonl`: validation totals, failed/error checks, recent validation rows, and open escalations. |
@@ -196,8 +193,10 @@ per-process monitor token injected into the rendered page.
 
 ### Mutation endpoints
 
-Dashboard GET views are read-only. Both POST endpoints enforce same-origin (browser tab open on another
-origin can't forge a request), require the per-process
+Dashboard GET views are read-only. When `ctx-monitor` is bound to a
+non-loopback host, `/api/*` JSON and SSE routes are disabled; keep the
+default loopback bind for local automation. Both POST endpoints enforce
+same-origin (browser tab open on another origin can't forge a request), require the per-process
 `X-CTX-Monitor-Token` injected into the dashboard page, and reject any
 slug failing the shared safe-name validator. That validator blocks path
 separators, Windows drive-relative strings, malformed names, and Windows

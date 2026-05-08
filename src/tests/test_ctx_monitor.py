@@ -787,8 +787,19 @@ def test_monitor_non_loopback_bind_is_read_only(
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/loaded", timeout=5) as response:
             loaded_html = response.read().decode("utf-8")
+            csp = response.headers.get("Content-Security-Policy", "")
         assert "browser-token" not in loaded_html
         assert "Read-only mode" in loaded_html
+        assert "script-src 'self' 'unsafe-inline'" in csp
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/manifest.json",
+                timeout=5,
+            )
+        assert excinfo.value.code == 403
+        body = json.loads(excinfo.value.read().decode("utf-8"))
+        assert "read APIs disabled" in body["detail"]
 
         status, body = _post_json(
             port,
@@ -941,7 +952,7 @@ def test_render_wiki_entity_missing_slug(fake_claude: Path) -> None:
     assert "No wiki page" in out
 
 
-def test_render_graph_emits_cytoscape_mount(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_render_graph_uses_builtin_list_mount(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cm,
         "_graph_stats",
@@ -949,7 +960,8 @@ def test_render_graph_emits_cytoscape_mount(monkeypatch: pytest.MonkeyPatch) -> 
     )
     html_out = cm._render_graph("python-patterns")
     assert "id='cy'" in html_out
-    assert "cytoscape" in html_out
+    assert "https://unpkg.com" not in html_out
+    assert "Enter a slug to load graph list view" in html_out
     # Initial slug must be embedded as JSON literal so the JS picks it up.
     assert "\"python-patterns\"" in html_out
 
@@ -1281,7 +1293,7 @@ def test_render_graph_landing_hides_seeds_when_graph_absent(monkeypatch) -> None
     html_out = cm._render_graph(None)
     # No seeds section when graph isn't available.
     assert "Popular seed slugs" not in html_out
-    # But the search box and cytoscape mount still render.
+    # But the search box and graph list mount still render.
     assert "id='focus'" in html_out
     assert "id='cy'" in html_out
 
