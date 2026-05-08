@@ -55,6 +55,25 @@ def _split_values(raw: object) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
+def _split_commands(raw: object) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        values = [raw]
+    elif isinstance(raw, (list, tuple, set, frozenset)):
+        values = [str(item) for item in raw]
+    else:
+        return ()
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = value.strip()
+        if item and item not in seen:
+            cleaned.append(item)
+            seen.add(item)
+    return tuple(cleaned)
+
+
 def _normalize_tag_values(raw: object) -> tuple[str, ...]:
     tags = {
         normalize_slug(tag)
@@ -145,8 +164,8 @@ class HarnessRecord:
             model_providers=_split_values(data.get("model_providers")),
             runtimes=_split_values(data.get("runtimes")),
             capabilities=_split_values(data.get("capabilities")),
-            setup_commands=_split_values(data.get("setup_commands")),
-            verify_commands=_split_values(data.get("verify_commands")),
+            setup_commands=_split_commands(data.get("setup_commands")),
+            verify_commands=_split_commands(data.get("verify_commands")),
             sources=_split_values(data.get("sources")) or ("manual",),
             raw=dict(data),
         )
