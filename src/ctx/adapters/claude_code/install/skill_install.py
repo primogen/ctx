@@ -63,7 +63,8 @@ class InstallResult:
     """Outcome of a single install. One per slug."""
 
     slug: str
-    status: str  # "installed" | "skipped-existing" | "not-in-wiki" | "failed"
+    status: str  # "installed" | "would-install" | "skipped-existing"
+                 # | "not-in-wiki" | "failed"
     installed_path: str | None
     source_variant: str | None  # "transformed" | "original" | None
     references_copied: int
@@ -242,7 +243,7 @@ def install_skill(
         except OSError:
             pass
         return InstallResult(
-            slug=slug, status="installed", installed_path=str(dest),
+            slug=slug, status="would-install", installed_path=str(dest),
             source_variant=variant, references_copied=refs_count,
             message=message,
         )

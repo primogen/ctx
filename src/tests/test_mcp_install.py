@@ -307,7 +307,7 @@ class TestInstallMcp:
         r = mcp_install.install_mcp(
             "gh", wiki_dir=wiki_dir, command="npx -y p", dry_run=True,
         )
-        assert r.status == "aborted"
+        assert r.status == "would-install"
         assert fake_claude["calls"] == []
 
     def test_user_declines(
@@ -582,7 +582,7 @@ class TestUninstallMcp:
     ) -> None:
         _write_entity(wiki_dir, "gh", {"status": "installed"})
         r = mcp_install.uninstall_mcp("gh", wiki_dir=wiki_dir, dry_run=True)
-        assert r.status == "uninstalled"
+        assert r.status == "would-uninstall"
         assert fake_claude["calls"] == []
 
     def test_happy_path(
