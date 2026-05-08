@@ -106,6 +106,9 @@ class CtxCoreToolbox:
         self._lifecycle = RuntimeLifecycleStore(lifecycle_dir)
         self._graph: Any | None = None       # networkx.Graph
         self._pages: list[Any] | None = None  # list[SkillPage]
+        self._graph_signature: tuple[int, int] | None = None
+        self._pages_signature: tuple[int, int, int] | None = None
+        self._semantic_signature: tuple[tuple[int, int] | None, ...] | None = None
 
     # ── Public Protocol surface ─────────────────────────────────────────
 
@@ -321,6 +324,7 @@ class CtxCoreToolbox:
         # Pass the original query through so the recommender can apply
         # semantic-similarity scoring (in addition to tag/slug-token).
         # Falls through silently if the embedding cache is missing.
+        self._refresh_semantic_cache_signature()
         raw = recommend_by_tags(
             graph,
             tags,
@@ -561,24 +565,50 @@ class CtxCoreToolbox:
     # ── Lazy caches ─────────────────────────────────────────────────────
 
     def _ensure_graph(self) -> Any:
-        if self._graph is not None:
+        graph_path = self._graph_file_path()
+        signature = _file_signature(graph_path) if graph_path is not None else None
+        if self._graph is not None and signature == self._graph_signature:
             return self._graph
         from ctx.core.graph.resolve_graph import load_graph  # noqa: PLC0415
 
-        self._graph = load_graph(self._graph_path)
+        self._graph = load_graph(graph_path)
+        self._graph_signature = signature
         return self._graph
 
     def _ensure_pages(self) -> list[Any]:
-        if self._pages is not None:
-            return self._pages
         wiki = self._wiki_dir_resolved()
         if wiki is None:
             self._pages = []
+            self._pages_signature = None
+            return self._pages
+        signature = _wiki_pages_signature(wiki)
+        if self._pages is not None and signature == self._pages_signature:
             return self._pages
         from ctx.core.wiki.wiki_query import load_all_pages  # noqa: PLC0415
 
         self._pages = load_all_pages(wiki)
+        self._pages_signature = signature
         return self._pages
+
+    def _graph_file_path(self) -> Path | None:
+        if self._graph_path is not None:
+            return self._graph_path
+        wiki = self._wiki_dir_resolved()
+        if wiki is not None:
+            return wiki / "graphify-out" / "graph.json"
+        return None
+
+    def _refresh_semantic_cache_signature(self) -> None:
+        signature = _semantic_cache_signature(self._wiki_dir_resolved())
+        if signature == self._semantic_signature:
+            return
+        self._semantic_signature = signature
+        try:
+            from ctx.core.resolve import recommendations as rec  # noqa: PLC0415
+
+            rec._semantic_cache.clear()
+        except Exception:  # noqa: BLE001
+            return
 
     def _wiki_dir_resolved(self) -> Path | None:
         if self._wiki_dir is not None:
@@ -617,6 +647,53 @@ def _wiki_get_candidates(
         (typ, _wiki_entity_path(wiki, slug, typ), _wiki_entity_link(slug, typ))
         for typ in entity_types
     ]
+
+
+def _file_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _wiki_pages_signature(wiki: Path) -> tuple[int, int, int]:
+    entity_root = wiki / "entities"
+    count = 0
+    newest = 0
+    total_size = 0
+    if not entity_root.is_dir():
+        return count, newest, total_size
+    for path in entity_root.rglob("*.md"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        count += 1
+        newest = max(newest, stat.st_mtime_ns)
+        total_size += stat.st_size
+    return count, newest, total_size
+
+
+def _semantic_cache_signature(
+    wiki: Path | None,
+) -> tuple[tuple[int, int] | None, ...] | None:
+    try:
+        from ctx_config import cfg  # noqa: PLC0415
+
+        cache_dir = Path(cfg.graph_semantic_cache_dir).expanduser()
+    except Exception:  # noqa: BLE001
+        if wiki is None:
+            return None
+        cache_dir = wiki / ".embedding-cache" / "graph"
+    else:
+        default_cache = Path("~/.claude/skill-wiki/.embedding-cache/graph").expanduser()
+        if wiki is not None and cache_dir == default_cache:
+            cache_dir = wiki / ".embedding-cache" / "graph"
+    return (
+        _file_signature(cache_dir / "embeddings.npz"),
+        _file_signature(cache_dir / "topk-state.json"),
+    )
 
 
 def _query_to_tags(query: str) -> list[str]:

@@ -144,6 +144,83 @@ def toolbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CtxCoreToolbox:
     )
 
 
+def test_graph_cache_reloads_when_graph_json_changes(tmp_path: Path) -> None:
+    graph_path = tmp_path / "graph.json"
+
+    def write_graph(target: str) -> None:
+        graph = nx.Graph()
+        graph.add_node("skill:seed", label="seed", type="skill", tags=[])
+        graph.add_node(f"skill:{target}", label=target, type="skill", tags=[])
+        graph.add_edge("skill:seed", f"skill:{target}", weight=1.0)
+        graph_path.write_text(
+            json.dumps(nx.node_link_data(graph, edges="edges")),
+            encoding="utf-8",
+        )
+
+    write_graph("old-target")
+    toolbox = CtxCoreToolbox(wiki_dir=tmp_path / "wiki", graph_path=graph_path)
+    first = json.loads(toolbox.dispatch(ToolCall(
+        id="c1",
+        name="ctx__graph_query",
+        arguments={"seeds": ["seed"], "max_hops": 1},
+    )))
+
+    write_graph("new-target")
+    second = json.loads(toolbox.dispatch(ToolCall(
+        id="c2",
+        name="ctx__graph_query",
+        arguments={"seeds": ["seed"], "max_hops": 1},
+    )))
+
+    assert first["results"][0]["name"] == "old-target"
+    assert second["results"][0]["name"] == "new-target"
+
+
+def test_wiki_page_cache_reloads_when_entity_page_changes(tmp_path: Path) -> None:
+    wiki = _build_synthetic_wiki(tmp_path)
+    toolbox = CtxCoreToolbox(wiki_dir=wiki, graph_path=tmp_path / "missing.json")
+    first = json.loads(toolbox.dispatch(ToolCall(
+        id="c1",
+        name="ctx__wiki_search",
+        arguments={"query": "newunique"},
+    )))
+
+    (wiki / "entities" / "skills" / "new-skill.md").write_text(
+        "---\nname: new-skill\ntags: [newunique]\n---\n# New Skill\n",
+        encoding="utf-8",
+    )
+    second = json.loads(toolbox.dispatch(ToolCall(
+        id="c2",
+        name="ctx__wiki_search",
+        arguments={"query": "newunique"},
+    )))
+
+    assert first["results"] == []
+    assert second["results"][0]["slug"] == "new-skill"
+
+
+def test_semantic_miss_cache_clears_when_embedding_artifacts_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ctx_config
+    from ctx.core.resolve import recommendations as rec
+
+    wiki = tmp_path / "wiki"
+    cache_dir = wiki / ".embedding-cache" / "graph"
+    cache_dir.mkdir(parents=True)
+    monkeypatch.setattr(ctx_config.cfg, "graph_semantic_cache_dir", cache_dir)
+    toolbox = CtxCoreToolbox(wiki_dir=wiki, graph_path=tmp_path / "missing.json")
+    graph = nx.Graph()
+
+    toolbox._refresh_semantic_cache_signature()
+    rec._semantic_cache[graph] = None
+    (cache_dir / "topk-state.json").write_text("{}", encoding="utf-8")
+    toolbox._refresh_semantic_cache_signature()
+
+    assert len(rec._semantic_cache) == 0
+
+
 # ── Tool definitions ────────────────────────────────────────────────────
 
 
