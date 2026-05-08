@@ -35,7 +35,10 @@ def is_contract_file(path: str) -> bool:
         or path.startswith("scripts/ci_")
         or path == "scripts/clean_host_contract.py"
         or path == "pyproject.toml"
-        or path == ".github/workflows/test.yml"
+        or (
+            path.startswith(".github/workflows/")
+            and path.endswith((".yml", ".yaml"))
+        )
     ) and not path.startswith("src/tests/")
 
 

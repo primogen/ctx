@@ -115,6 +115,19 @@ def test_no_test_policy_covers_ci_package_contract_files() -> None:
     assert "scripts/ci_no_test_policy.py" in workflow
 
 
+def test_no_test_policy_treats_all_workflows_as_contract_files() -> None:
+    for workflow in (
+        ".github/workflows/test.yml",
+        ".github/workflows/publish.yml",
+        ".github/workflows/docs.yml",
+        ".github/workflows/clean-host-contract.yml",
+    ):
+        result = evaluate_policy([workflow], (), {workflow: "+name: changed\n"})
+
+        assert result.passed is False
+        assert result.contract_files == (workflow,)
+
+
 def test_ci_workflows_default_to_read_only_token_permissions() -> None:
     for workflow_path in (
         Path(".github/workflows/test.yml"),
@@ -207,6 +220,13 @@ def test_browser_security_paths_are_classified() -> None:
 
 def test_similarity_paths_are_classified() -> None:
     flags = classify_paths(["src/ctx/core/graph/semantic_edges.py"])
+
+    assert flags["similarity_changed"] is True
+    assert flags["source_changed"] is True
+
+
+def test_embedding_backend_change_runs_similarity_gate() -> None:
+    flags = classify_paths(["src/embedding_backend.py"])
 
     assert flags["similarity_changed"] is True
     assert flags["source_changed"] is True

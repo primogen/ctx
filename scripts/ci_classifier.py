@@ -65,7 +65,7 @@ SIMILARITY_PATTERNS = (
     "src/ctx/core/graph/**",
     "src/ctx/core/resolve/**",
     "src/ctx/core/wiki/wiki_graphify.py",
-    "src/ctx/embedding_backend.py",
+    "src/embedding_backend.py",
     "src/tests/test_similarity_precision_recall.py",
 )
 
