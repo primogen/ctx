@@ -7,6 +7,31 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [0.7.9] - 2026-05-09
+
+### Changed
+
+- Added runtime lifecycle visibility in the monitor so active skills,
+  agents, MCP servers, and harnesses can be inspected from the local
+  dashboard.
+- Added a harness reliability rubric and validation escalation ledger
+  so non-Claude-Code harness recommendations are scored against context,
+  constraint, convergence, observability, rollback, and governance signals.
+- Added a configurable graph edge score floor and rebuilt the shipped
+  graph/wiki snapshot with a calibrated semantic floor.
+
+### Fixed
+
+- Hardened wiki maintenance queues and graph release artifact promotion
+  with crash-safe validation and last-good recovery metadata.
+- Made docs and graph CI gates run for mixed PRs, not just docs-only or
+  graph-only PRs.
+- Kept the graph artifact CI check useful when GitHub LFS budget is
+  exhausted by validating the committed LFS pointer and running full deep
+  artifact validation locally before release.
+- Refreshed README and docs collected-test counts after the CI classifier
+  regression tests were added.
+
 ## [0.7.7] - 2026-05-05
 
 ### Fixed
