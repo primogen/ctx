@@ -46,7 +46,11 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, TextIO
 
-from ctx.core.wiki.artifact_promotion import promote_staged_artifact
+from ctx.core.wiki.artifact_promotion import (
+    promote_staged_artifact,
+    validate_gzip_json_artifact,
+)
+from ctx.utils._fs_utils import atomic_write_bytes, reject_symlink_path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CATALOG_OUT = REPO_ROOT / "graph" / "skills-sh-catalog.json.gz"
@@ -890,9 +894,23 @@ def normalize_catalog(raw: dict[str, Any], existing: ExistingWikiIndex) -> dict[
 def write_gzip_json(path: Path, data: dict[str, Any]) -> None:
     data = _catalog_for_storage(data)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, "wt", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-        f.write("\n")
+    payload = (json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
+        "utf-8",
+    )
+    buffer = BytesIO()
+    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as f:
+        f.write(payload)
+    staged = path.with_name(f"{path.name}.staged")
+    reject_symlink_path(staged)
+    atomic_write_bytes(staged, buffer.getvalue())
+    promote_staged_artifact(
+        staged,
+        path,
+        validate=lambda candidate: validate_gzip_json_artifact(
+            candidate,
+            required_keys=("skills",),
+        ),
+    )
 
 
 def read_gzip_json(path: Path) -> dict[str, Any]:
@@ -1523,175 +1541,172 @@ def _stage_inline_skill_bodies_for_packaging(
 
 
 def update_wiki_tarball(tarball: Path, catalog: dict[str, Any]) -> None:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tmp_file:
-        tmp_path = Path(tmp_file.name)
-    try:
-        with tarfile.open(tarball, "r:gz") as src, tarfile.open(tmp_path, "w:gz") as dst:
-            members = src.getmembers()
-            valid_skills_sh_ids = _skills_sh_node_ids(catalog)
-            existing_converted_paths = {
-                safe_name
-                for member in members
-                if (safe_name := _safe_tar_name(member.name)) is not None
-                and member.isfile()
-                and safe_name.startswith(f"{CONVERTED_SKILL_ROOT}/skills-sh-")
-                and safe_name.endswith("/SKILL.md")
-            }
-            _reconcile_body_availability_with_tar(catalog, existing_converted_paths)
-            staged_converted_files = _stage_inline_skill_bodies_for_packaging(catalog)
-            replacement_slugs = set(staged_converted_files)
-            graph_for_report: dict[str, Any] | None = None
-            communities_for_report: dict[str, Any] | None = None
+    tarball.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = tarball.with_name(f"{tarball.name}.staged")
+    reject_symlink_path(tmp_path)
+    with tarfile.open(tarball, "r:gz") as src, tarfile.open(tmp_path, "w:gz") as dst:
+        members = src.getmembers()
+        valid_skills_sh_ids = _skills_sh_node_ids(catalog)
+        existing_converted_paths = {
+            safe_name
+            for member in members
+            if (safe_name := _safe_tar_name(member.name)) is not None
+            and member.isfile()
+            and safe_name.startswith(f"{CONVERTED_SKILL_ROOT}/skills-sh-")
+            and safe_name.endswith("/SKILL.md")
+        }
+        _reconcile_body_availability_with_tar(catalog, existing_converted_paths)
+        staged_converted_files = _stage_inline_skill_bodies_for_packaging(catalog)
+        replacement_slugs = set(staged_converted_files)
+        graph_for_report: dict[str, Any] | None = None
+        communities_for_report: dict[str, Any] | None = None
 
-            for member in members:
-                safe_name = _safe_tar_name(member.name)
-                if safe_name is None:
-                    continue
-                parts = safe_name.split("/", 2)
-                is_skills_sh_converted = (
-                    len(parts) >= 2
-                    and parts[0] == CONVERTED_SKILL_ROOT
-                    and parts[1].startswith("skills-sh-")
+        for member in members:
+            safe_name = _safe_tar_name(member.name)
+            if safe_name is None:
+                continue
+            parts = safe_name.split("/", 2)
+            is_skills_sh_converted = (
+                len(parts) >= 2
+                and parts[0] == CONVERTED_SKILL_ROOT
+                and parts[1].startswith("skills-sh-")
+            )
+            if (
+                safe_name.startswith("external-catalogs/skills-sh/")
+                or safe_name.startswith(f"{EXTERNAL_ENTITY_ROOT}/")
+                or (
+                    safe_name.startswith(f"{SKILLS_SH_ENTITY_ROOT}/skills-sh-")
+                    and safe_name.endswith(".md")
                 )
-                if (
-                    safe_name.startswith("external-catalogs/skills-sh/")
-                    or safe_name.startswith(f"{EXTERNAL_ENTITY_ROOT}/")
-                    or (
-                        safe_name.startswith(f"{SKILLS_SH_ENTITY_ROOT}/skills-sh-")
-                        and safe_name.endswith(".md")
-                    )
-                    or (
-                        is_skills_sh_converted
-                        and len(parts) >= 2
-                        and parts[1] in replacement_slugs
-                    )
-                    or safe_name.endswith(".original")
-                    or safe_name.endswith(".lock")
-                ):
-                    continue
-                if safe_name == "graphify-out/graph-report.md":
-                    continue
-                if member.isfile():
-                    f = src.extractfile(member)
-                    if f is None:
-                        continue
-                    if safe_name == "graphify-out/graph.json":
-                        graph = json.loads(f.read().decode("utf-8"))
-                        graph = _augment_graph_with_external_nodes(graph, catalog)
-                        graph_for_report = graph
-                        payload = json.dumps(
-                            graph,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                        _add_bytes(
-                            dst,
-                            name=member.name,
-                            payload=payload,
-                            mode=member.mode,
-                            mtime=int(member.mtime),
-                        )
-                        continue
-                    if safe_name == "graphify-out/communities.json":
-                        communities = json.loads(f.read().decode("utf-8"))
-                        if isinstance(communities, dict):
-                            communities = _filter_skills_sh_communities(
-                                communities,
-                                valid_skills_sh_ids,
-                            )
-                            communities_for_report = communities
-                        payload = json.dumps(
-                            communities,
-                            ensure_ascii=False,
-                            indent=2,
-                        ).encode("utf-8")
-                        _add_bytes(
-                            dst,
-                            name=member.name,
-                            payload=payload,
-                            mode=member.mode,
-                            mtime=int(member.mtime),
-                        )
-                        continue
-                    dst.addfile(member, f)
-                elif member.isdir():
-                    dst.addfile(member)
-
-            stored_catalog = _catalog_for_storage(catalog)
-            catalog_bytes = json.dumps(
-                stored_catalog,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            readme_bytes = render_external_readme(stored_catalog).encode("utf-8")
-            summary = {
-                k: catalog.get(k)
-                for k in (
-                    "schema_version", "source", "api", "fetched_at", "site_reported_total",
-                    "observed_unique_skills", "coverage_vs_site_reported_total",
-                    "query_count", "query_error_count", "ctx_slug_collisions_resolved", "overlap",
-                    "graph_skill_nodes", "graph_skill_edges", "body_available_count",
-                    "body_hydration_attempted_count", "body_hydrated_count",
-                    "body_hydration_error_count",
+                or (
+                    is_skills_sh_converted
+                    and len(parts) >= 2
+                    and parts[1] in replacement_slugs
                 )
-            }
-            summary_bytes = json.dumps(summary, ensure_ascii=False, indent=2).encode("utf-8")
-            raw_skills = catalog.get("skills")
-            skills = raw_skills if isinstance(raw_skills, list) else []
-            for item in skills:
-                if not isinstance(item, dict):
-                    continue
-                external_id = str(item.get("graph_node_id") or "")
-                entity_path = str(item.get("entity_path") or "")
-                quality = item.get("quality_signals")
-                if not external_id or not entity_path or not isinstance(quality, dict):
-                    continue
-                duplicate_raw = item.get("duplicate_targets")
-                duplicate_targets = [
-                    str(target) for target in duplicate_raw
-                    if target
-                ] if isinstance(duplicate_raw, list) else []
-                page = _render_external_entity_page(
-                    item,
-                    external_id=external_id,
-                    duplicate_targets=duplicate_targets,
-                    quality=quality,
-                )
-                _add_bytes(
-                    dst,
-                    name=f"./{entity_path}",
-                    payload=page.encode("utf-8"),
-                )
-                skill_body = str(item.get("skill_body") or "").strip()
-                converted_path = str(item.get("converted_path") or "")
-                if skill_body and converted_path:
-                    ctx_slug = str(item.get("ctx_slug") or "")
-                    converted_files = staged_converted_files.get(ctx_slug, {})
-                    for path, payload in converted_files.items():
-                        _add_bytes(dst, name=f"./{path}", payload=payload)
-            for name, payload in (
-                ("external-catalogs/skills-sh/catalog.json", catalog_bytes),
-                ("external-catalogs/skills-sh/summary.json", summary_bytes),
-                ("external-catalogs/skills-sh/README.md", readme_bytes),
+                or safe_name.endswith(".original")
+                or safe_name.endswith(".lock")
             ):
-                _add_bytes(dst, name=f"./{name}", payload=payload)
-            if graph_for_report is not None:
-                _add_bytes(
-                    dst,
-                    name="./graphify-out/graph-report.md",
-                    payload=_render_graph_report(
-                        graph_for_report,
-                        communities_for_report,
-                    ).encode("utf-8"),
-                )
-        promote_staged_artifact(
-            tmp_path,
-            tarball,
-            validate=_validate_wiki_tarball_candidate,
-        )
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
+                continue
+            if safe_name == "graphify-out/graph-report.md":
+                continue
+            if member.isfile():
+                f = src.extractfile(member)
+                if f is None:
+                    continue
+                if safe_name == "graphify-out/graph.json":
+                    graph = json.loads(f.read().decode("utf-8"))
+                    graph = _augment_graph_with_external_nodes(graph, catalog)
+                    graph_for_report = graph
+                    payload = json.dumps(
+                        graph,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    _add_bytes(
+                        dst,
+                        name=member.name,
+                        payload=payload,
+                        mode=member.mode,
+                        mtime=int(member.mtime),
+                    )
+                    continue
+                if safe_name == "graphify-out/communities.json":
+                    communities = json.loads(f.read().decode("utf-8"))
+                    if isinstance(communities, dict):
+                        communities = _filter_skills_sh_communities(
+                            communities,
+                            valid_skills_sh_ids,
+                        )
+                        communities_for_report = communities
+                    payload = json.dumps(
+                        communities,
+                        ensure_ascii=False,
+                        indent=2,
+                    ).encode("utf-8")
+                    _add_bytes(
+                        dst,
+                        name=member.name,
+                        payload=payload,
+                        mode=member.mode,
+                        mtime=int(member.mtime),
+                    )
+                    continue
+                dst.addfile(member, f)
+            elif member.isdir():
+                dst.addfile(member)
+
+        stored_catalog = _catalog_for_storage(catalog)
+        catalog_bytes = json.dumps(
+            stored_catalog,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        readme_bytes = render_external_readme(stored_catalog).encode("utf-8")
+        summary = {
+            k: catalog.get(k)
+            for k in (
+                "schema_version", "source", "api", "fetched_at", "site_reported_total",
+                "observed_unique_skills", "coverage_vs_site_reported_total",
+                "query_count", "query_error_count", "ctx_slug_collisions_resolved", "overlap",
+                "graph_skill_nodes", "graph_skill_edges", "body_available_count",
+                "body_hydration_attempted_count", "body_hydrated_count",
+                "body_hydration_error_count",
+            )
+        }
+        summary_bytes = json.dumps(summary, ensure_ascii=False, indent=2).encode("utf-8")
+        raw_skills = catalog.get("skills")
+        skills = raw_skills if isinstance(raw_skills, list) else []
+        for item in skills:
+            if not isinstance(item, dict):
+                continue
+            external_id = str(item.get("graph_node_id") or "")
+            entity_path = str(item.get("entity_path") or "")
+            quality = item.get("quality_signals")
+            if not external_id or not entity_path or not isinstance(quality, dict):
+                continue
+            duplicate_raw = item.get("duplicate_targets")
+            duplicate_targets = [
+                str(target) for target in duplicate_raw
+                if target
+            ] if isinstance(duplicate_raw, list) else []
+            page = _render_external_entity_page(
+                item,
+                external_id=external_id,
+                duplicate_targets=duplicate_targets,
+                quality=quality,
+            )
+            _add_bytes(
+                dst,
+                name=f"./{entity_path}",
+                payload=page.encode("utf-8"),
+            )
+            skill_body = str(item.get("skill_body") or "").strip()
+            converted_path = str(item.get("converted_path") or "")
+            if skill_body and converted_path:
+                ctx_slug = str(item.get("ctx_slug") or "")
+                converted_files = staged_converted_files.get(ctx_slug, {})
+                for path, payload in converted_files.items():
+                    _add_bytes(dst, name=f"./{path}", payload=payload)
+        for name, payload in (
+            ("external-catalogs/skills-sh/catalog.json", catalog_bytes),
+            ("external-catalogs/skills-sh/summary.json", summary_bytes),
+            ("external-catalogs/skills-sh/README.md", readme_bytes),
+        ):
+            _add_bytes(dst, name=f"./{name}", payload=payload)
+        if graph_for_report is not None:
+            _add_bytes(
+                dst,
+                name="./graphify-out/graph-report.md",
+                payload=_render_graph_report(
+                    graph_for_report,
+                    communities_for_report,
+                ).encode("utf-8"),
+            )
+    promote_staged_artifact(
+        tmp_path,
+        tarball,
+        validate=_validate_wiki_tarball_candidate,
+    )
 
 
 def _validate_wiki_tarball_candidate(candidate: Path) -> None:
