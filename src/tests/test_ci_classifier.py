@@ -125,6 +125,14 @@ def test_ci_workflows_default_to_read_only_token_permissions() -> None:
         assert "\npermissions:\n  contents: read\n" in workflow
 
 
+def test_graph_artifact_job_has_lfs_budget_fallback() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+
+    assert "Resolve graph LFS artifacts" in workflow
+    assert "Git LFS artifact download failed; validating pointer metadata only." in workflow
+    assert "Validate graph artifact pointer when LFS unavailable" in workflow
+
+
 def test_publish_oidc_permission_is_limited_to_publish_job() -> None:
     workflow = Path(".github/workflows/publish.yml").read_text(encoding="utf-8")
     header = workflow.split("\njobs:\n", maxsplit=1)[0]
