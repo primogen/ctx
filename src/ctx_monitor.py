@@ -19,11 +19,13 @@ Routes:
     /graph?slug=<slug>&type=... Focus cytoscape on a specific entity
     /status                     Durable queue + graph/wiki artifact state
     /kpi                        Grade / lifecycle / category KPIs
+    /runtime                    Generic harness validation/escalation ledger
     /logs                       Filterable tail of ctx-audit.jsonl
     /events                     Live SSE stream of new audit-log lines
     /api/sessions.json          JSON index for scripting
     /api/manifest.json          Raw ~/.claude/skill-manifest.json
     /api/status.json            Queue counts + artifact promotion metadata
+    /api/runtime.json           Generic harness validation/escalation summary
     /api/skill/<slug>.json      Sidecar passthrough
     /api/graph/<slug>.json      Cytoscape-shaped neighborhood; accepts type
     /api/kpi.json               DashboardSummary passthrough
@@ -103,6 +105,12 @@ def _audit_log_path() -> Path:
 
 def _events_jsonl_path() -> Path:
     return _claude_dir() / "skill-events.jsonl"
+
+
+def _runtime_lifecycle_path() -> Path:
+    from ctx.adapters.generic.runtime_lifecycle import RuntimeLifecycleStore
+
+    return RuntimeLifecycleStore().events_path
 
 
 def _manifest_path() -> Path:
@@ -574,6 +582,49 @@ def _read_jsonl(path: Path, limit: int | None = None) -> list[dict]:
     return list(out)
 
 
+def _runtime_lifecycle_events(limit: int = 200) -> list[dict[str, Any]]:
+    events = _read_jsonl(_runtime_lifecycle_path(), limit=limit)
+    return [
+        event for event in events
+        if event.get("action") in {"validation", "escalation"}
+    ]
+
+
+def _runtime_lifecycle_summary(limit: int = 200) -> dict[str, Any]:
+    events = _runtime_lifecycle_events(limit=limit)
+    validations = [
+        event for event in events if event.get("action") == "validation"
+    ]
+    escalations = [
+        event for event in events if event.get("action") == "escalation"
+    ]
+    open_escalations = [
+        event for event in escalations
+        if str(event.get("status") or "open").lower() == "open"
+    ]
+    validation_failures = [
+        event for event in validations
+        if str(event.get("status") or "").lower() in {"failed", "error"}
+    ]
+    sessions = sorted({
+        str(event.get("session_id") or "")
+        for event in events
+        if event.get("session_id")
+    })
+    return {
+        "path": str(_runtime_lifecycle_path()),
+        "events_total": len(events),
+        "validations_total": len(validations),
+        "validation_failures": len(validation_failures),
+        "escalations_total": len(escalations),
+        "open_escalations_total": len(open_escalations),
+        "latest_validation": validations[-1] if validations else None,
+        "recent_validations": validations[-20:],
+        "open_escalations": open_escalations[-20:],
+        "sessions": sessions,
+    }
+
+
 def _sidecar_entity_type(sidecar: dict, fallback: str = "skill") -> str:
     raw = str(
         sidecar.get("entity_type")
@@ -828,6 +879,7 @@ def _layout(title: str, body: str) -> str:
         "<a href='/graph'>Graph</a>"
         "<a href='/status'>Status</a>"
         "<a href='/kpi'>KPIs</a>"
+        "<a href='/runtime'>Runtime</a>"
         "<a href='/sessions'>Sessions</a>"
         "<a href='/logs'>Logs</a>"
         "<a href='/events'>Live</a>"
@@ -1010,6 +1062,7 @@ def _render_home() -> str:
     recent = sessions[:10]
     gstats = _graph_stats()
     wstats = _wiki_stats()
+    runtime = _runtime_lifecycle_summary()
     audit_lines = sum(1 for _ in _audit_log_path().open(encoding="utf-8")) \
         if _audit_log_path().exists() else 0
     manifest = _read_manifest()
@@ -1057,6 +1110,12 @@ def _render_home() -> str:
         f"<div style='font-size:1.6rem; font-weight:600;'>{gstats['nodes']}</div>"
         f"<span class='muted' style='font-size:0.75rem;'>{gstats['edges']:,} edges</span>"
         f" · <a href='/graph'>explore →</a></div>"
+        + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Runtime checks</div>"
+        f"<div style='font-size:1.6rem; font-weight:600;'>{runtime['validations_total']}</div>"
+        f"<span class='muted' style='font-size:0.75rem;'>"
+        f"{runtime['validation_failures']} failed / "
+        f"{runtime['open_escalations_total']} open escalations</span>"
+        f" / <a href='/runtime'>view -></a></div>"
         + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Audit events</div>"
         f"<div style='font-size:1.6rem; font-weight:600;'>{audit_lines}</div>"
         f"<a href='/logs'>view →</a> · <a href='/events'>live →</a></div>"
@@ -2285,6 +2344,66 @@ def _render_loaded(mutations_enabled: bool | None = None) -> str:
     return _layout("Loaded", body)
 
 
+def _render_runtime_lifecycle() -> str:
+    summary = _runtime_lifecycle_summary()
+
+    def _event_cell(event: dict[str, Any], key: str, limit: int = 120) -> str:
+        return html.escape(str(event.get(key) or ""))[:limit]
+
+    validation_rows = "".join(
+        "<tr>"
+        f"<td class='muted'>{_event_cell(event, 'created_at')}</td>"
+        f"<td><code>{_event_cell(event, 'check_name')}</code></td>"
+        f"<td><span class='pill'>{_event_cell(event, 'status')}</span></td>"
+        f"<td class='muted'>{_event_cell(event, 'session_id')}</td>"
+        f"<td class='muted'>{_event_cell(event, 'summary')}</td>"
+        "</tr>"
+        for event in reversed(summary["recent_validations"])
+    )
+    escalation_rows = "".join(
+        "<tr>"
+        f"<td class='muted'>{_event_cell(event, 'created_at')}</td>"
+        f"<td><code>{_event_cell(event, 'trigger')}</code></td>"
+        f"<td><span class='pill'>{_event_cell(event, 'severity')}</span></td>"
+        f"<td class='muted'>{_event_cell(event, 'session_id')}</td>"
+        f"<td class='muted'>{_event_cell(event, 'reason')}</td>"
+        "</tr>"
+        for event in reversed(summary["open_escalations"])
+    )
+
+    body = (
+        "<h1>Runtime lifecycle</h1>"
+        "<div class='card'>"
+        f"<strong>{summary['validations_total']}</strong> validations / "
+        f"<strong>{summary['validation_failures']}</strong> failed / "
+        f"<strong>{summary['open_escalations_total']}</strong> open escalations"
+        f"<br><span class='muted'>source: <code>{html.escape(summary['path'])}</code></span>"
+        " / <a href='/api/runtime.json'>JSON</a>"
+        "</div>"
+        "<div class='card'><strong>Recent validations</strong>"
+        + (
+            "<table><tr><th>Created</th><th>Check</th><th>Status</th>"
+            "<th>Session</th><th>Summary</th></tr>"
+            + validation_rows
+            + "</table>"
+            if validation_rows else
+            "<p class='muted'>No validation checks recorded yet.</p>"
+        )
+        + "</div>"
+        "<div class='card'><strong>Open escalations</strong>"
+        + (
+            "<table><tr><th>Created</th><th>Trigger</th><th>Severity</th>"
+            "<th>Session</th><th>Reason</th></tr>"
+            + escalation_rows
+            + "</table>"
+            if escalation_rows else
+            "<p class='muted'>No open escalations.</p>"
+        )
+        + "</div>"
+    )
+    return _layout("Runtime lifecycle", body)
+
+
 def _render_logs() -> str:
     """Filterable audit-log viewer — reads the last 500 lines of the log."""
     entries = _read_jsonl(_audit_log_path(), limit=500)
@@ -2572,6 +2691,8 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_html(_render_wiki_entity(slug, qs.get("type")))
             elif path == "/kpi":
                 self._send_html(_render_kpi())
+            elif path == "/runtime":
+                self._send_html(_render_runtime_lifecycle())
             elif path == "/events":
                 self._send_html(_render_events())
             elif path == "/api/sessions.json":
@@ -2585,6 +2706,8 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_json(summary.to_dict() if summary is not None else {
                     "total": 0, "detail": "no sidecars yet",
                 })
+            elif path == "/api/runtime.json":
+                self._send_json(_runtime_lifecycle_summary())
             elif path.startswith("/api/skill/") and path.endswith(".json"):
                 slug = path[len("/api/skill/"): -len(".json")]
                 sidecar = _load_sidecar(slug, entity_type=qs.get("type"))
