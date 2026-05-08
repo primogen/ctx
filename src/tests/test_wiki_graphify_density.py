@@ -480,6 +480,52 @@ def test_quality_usage_and_type_affinity_do_not_create_edges_without_base_eviden
     assert not graph.has_edge("skill:alphaonly", "agent:betatwo")
 
 
+def test_patch_path_force_full_when_scoring_signature_changes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import ctx_config
+    import networkx as nx
+
+    wiki, _ = _isolate_graphify(tmp_path, monkeypatch)
+    _write_entity(wiki / "entities" / "skills" / "alphaonly.md", slug="alphaonly")
+    _write_entity(wiki / "entities" / "skills" / "betatwo.md", slug="betatwo")
+
+    prior = nx.Graph()
+    prior.graph[wg.GRAPH_SCORING_SIGNATURE_KEY] = {"version": 0}
+    prior.add_node(
+        "skill:alphaonly",
+        label="alphaonly",
+        type="skill",
+        tags=[],
+        source_keys=[],
+        direct_targets=[],
+        quality_signal=None,
+        usage_signal=None,
+        never_load=False,
+    )
+    prior.add_node(
+        "skill:betatwo",
+        label="betatwo",
+        type="skill",
+        tags=[],
+        source_keys=[],
+        direct_targets=[],
+        quality_signal=None,
+        usage_signal=None,
+        never_load=False,
+    )
+    prior.add_edge("skill:alphaonly", "skill:betatwo", weight=0.99)
+    monkeypatch.setattr(wg, "load_prior_graph", lambda: prior)
+
+    graph, _ = wg.build_graph(incremental=True)
+
+    assert not graph.has_edge("skill:alphaonly", "skill:betatwo")
+    assert graph.graph[wg.GRAPH_SCORING_SIGNATURE_KEY] == wg._graph_scoring_signature(
+        ctx_config.cfg,
+    )
+
+
 def test_patch_path_force_full_when_prior_lacks_semantic(tmp_path, monkeypatch) -> None:
     """Regression test for the patch-path bug shipped in 2026-04-27.
 
