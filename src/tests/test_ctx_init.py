@@ -399,6 +399,27 @@ repo_url: https://github.com/earthtojake/text-to-cad
     assert "openscad" in results[0]["fit_signals"]
 
 
+def test_load_recommendation_graph_uses_configured_wiki_dir(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    wiki = tmp_path / "custom-wiki"
+    out = wiki / "graphify-out"
+    out.mkdir(parents=True)
+    graph = nx.Graph()
+    graph.add_node("harness:custom", label="custom", type="harness")
+    data = nx.node_link_data(graph)
+    (out / "graph.json").write_text(json.dumps(data), encoding="utf-8")
+
+    import ctx_config
+
+    monkeypatch.setattr(ctx_config, "cfg", SimpleNamespace(wiki_dir=wiki))
+
+    loaded = ci._load_recommendation_graph()
+
+    assert "harness:custom" in loaded
+
+
 def test_recommend_harnesses_surfaces_reliability_rubric(
     tmp_path: Path,
     monkeypatch,

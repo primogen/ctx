@@ -424,14 +424,25 @@ def _record_lifecycle_safely(
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.command == "run":
-        return _cmd_run(args)
-    if args.command == "resume":
-        return _cmd_resume(args)
-    if args.command == "sessions":
-        return _cmd_sessions(args)
+    try:
+        if args.command == "run":
+            return _cmd_run(args)
+        if args.command == "resume":
+            return _cmd_resume(args)
+        if args.command == "sessions":
+            return _cmd_sessions(args)
+    except RuntimeError as exc:
+        if _is_missing_harness_extra_error(exc):
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        raise
     parser.print_help()
     return 2
+
+
+def _is_missing_harness_extra_error(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    return "litellm is required" in message or "claude-ctx[harness]" in message
 
 
 def _build_parser() -> argparse.ArgumentParser:

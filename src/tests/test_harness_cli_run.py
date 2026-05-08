@@ -509,6 +509,34 @@ class TestRunCommand:
         assert main(["run", "--task", "hi"]) == 2
         assert "--model is required" in capsys.readouterr().err
 
+    def test_missing_harness_extra_returns_friendly_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def missing_extra(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError(
+                "litellm is required for the generic harness provider. "
+                "Install with: pip install 'claude-ctx[harness]'"
+            )
+
+        monkeypatch.setattr(run_cli, "run_loop", missing_extra)
+
+        exit_code = main([
+            "run",
+            "--model", "ollama/x",
+            "--task", "hi",
+            "--sessions-dir", str(tmp_path),
+            "--no-ctx-tools",
+            "--quiet",
+        ])
+
+        captured = capsys.readouterr()
+        assert exit_code == 2
+        assert "claude-ctx[harness]" in captured.err
+        assert "Traceback" not in captured.err
+
     def test_task_required(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
