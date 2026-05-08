@@ -138,12 +138,13 @@ def test_ci_workflows_default_to_read_only_token_permissions() -> None:
         assert "\npermissions:\n  contents: read\n" in workflow
 
 
-def test_graph_artifact_job_has_lfs_budget_fallback() -> None:
+def test_graph_artifact_job_fails_closed_without_lfs_hydration() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
 
     assert "Resolve graph LFS artifacts" in workflow
-    assert "Git LFS artifact download failed; validating pointer metadata only." in workflow
-    assert "Validate graph artifact pointer when LFS unavailable" in workflow
+    assert "graph/wiki-graph.tar.gz,graph/skills-sh-catalog.json.gz" in workflow
+    assert "Validate graph artifact pointer when LFS unavailable" not in workflow
+    assert "validating pointer metadata only" not in workflow
 
 
 def test_publish_oidc_permission_is_limited_to_publish_job() -> None:
@@ -161,6 +162,26 @@ def test_publish_workflow_rejects_existing_pypi_versions() -> None:
     assert "Reject already published PyPI version" in workflow
     assert "https://pypi.org/pypi/{name}/{package_version}/json" in workflow
     assert "already exists on PyPI" in workflow
+
+
+def test_publish_workflow_validates_and_uploads_graph_assets() -> None:
+    workflow = Path(".github/workflows/publish.yml").read_text(encoding="utf-8")
+
+    assert "Resolve release graph LFS artifacts" in workflow
+    assert "Validate release graph artifacts" in workflow
+    assert "python src/validate_graph_artifacts.py" in workflow
+    assert "python src/update_repo_stats.py --check" in workflow
+    assert "graph-release-assets" in workflow
+    assert "gh release upload" in workflow
+    assert "needs.release-assets.result == 'success'" in workflow
+
+
+def test_pre_commit_refreshes_all_repo_stats_outputs() -> None:
+    hook = Path(".githooks/pre-commit").read_text(encoding="utf-8")
+
+    assert "skills-sh-catalog\\.json\\.gz" in hook
+    assert "git add README.md docs/index.md" in hook
+    assert "README.md and docs/index.md refreshed and re-staged" in hook
 
 
 def test_no_test_policy_exempts_release_metadata_only_changes() -> None:
