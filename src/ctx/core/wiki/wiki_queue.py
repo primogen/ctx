@@ -22,7 +22,8 @@ STATUS_PENDING = "pending"
 STATUS_RUNNING = "running"
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
-TERMINAL_STATUSES = (STATUS_SUCCEEDED, STATUS_FAILED)
+STATUS_CANCELLED = "cancelled"
+TERMINAL_STATUSES = (STATUS_SUCCEEDED, STATUS_FAILED, STATUS_CANCELLED)
 ACTIVE_STATUSES = (STATUS_PENDING, STATUS_RUNNING)
 
 ENTITY_UPSERT_JOB = "entity-upsert"
@@ -82,6 +83,10 @@ class QueueJob:
     last_error: str | None
     created_at: float
     updated_at: float
+
+
+class QueueStorageError(RuntimeError):
+    """Raised when the durable queue DB cannot be opened or initialized."""
 
 
 def init_queue(db_path: Path) -> None:
@@ -370,6 +375,69 @@ def mark_failed(
             raise
 
 
+def cancel_job(
+    db_path: Path,
+    job_id: int,
+    *,
+    worker_id: str | None = None,
+    reason: str | None = None,
+    now: float | None = None,
+) -> QueueJob:
+    """Cancel a pending/running job and clear any active lease.
+
+    Cancellation is idempotent for an already-cancelled job. Succeeded and
+    failed jobs remain immutable terminal records.
+    """
+    timestamp = _now(now)
+    expected_worker_id = _validate_worker_id(worker_id) if worker_id is not None else None
+    detail = reason.strip() if isinstance(reason, str) and reason.strip() else None
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = _row_to_job(_select_job(conn, job_id))
+            if current.status == STATUS_CANCELLED:
+                conn.execute("COMMIT")
+                return current
+            if current.status in (STATUS_SUCCEEDED, STATUS_FAILED):
+                raise RuntimeError(
+                    f"queue job {current.id} is already terminal: {current.status}"
+                )
+            if current.status == STATUS_RUNNING and expected_worker_id is not None:
+                _assert_job_leased_by_worker(current, expected_worker_id)
+            conn.execute(
+                """
+                UPDATE wiki_queue_jobs
+                   SET status = ?,
+                       worker_id = NULL,
+                       leased_until = NULL,
+                       last_error = ?,
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                (STATUS_CANCELLED, detail, timestamp, int(job_id)),
+            )
+            row = _select_job(conn, job_id)
+            conn.execute("COMMIT")
+            return _row_to_job(row)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def recover_expired_leases(db_path: Path, *, now: float | None = None) -> dict[str, int]:
+    """Recover expired running jobs without leasing a new job."""
+    timestamp = _now(now)
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            recovered = _recover_expired_leases(conn, timestamp)
+            conn.execute("COMMIT")
+            return recovered
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
 def get_job(db_path: Path, job_id: int) -> QueueJob:
     """Return one queue job by ID."""
     with _connect(db_path) as conn:
@@ -451,21 +519,28 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     reject_symlink_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     reject_symlink_path(path)
-    conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+    conn: sqlite3.Connection | None = None
     try:
+        conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(_SCHEMA)
+    except sqlite3.DatabaseError as exc:
+        if conn is not None:
+            conn.close()
+        raise QueueStorageError(f"queue database is not readable: {path}") from exc
+    try:
         yield conn
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
-def _recover_expired_leases(conn: sqlite3.Connection, now: float) -> None:
-    conn.execute(
+def _recover_expired_leases(conn: sqlite3.Connection, now: float) -> dict[str, int]:
+    requeued = conn.execute(
         """
         UPDATE wiki_queue_jobs
            SET status = ?,
@@ -479,20 +554,28 @@ def _recover_expired_leases(conn: sqlite3.Connection, now: float) -> None:
         """,
         (STATUS_PENDING, now, STATUS_RUNNING, now),
     )
-    conn.execute(
+    failed = conn.execute(
         """
         UPDATE wiki_queue_jobs
            SET status = ?,
                worker_id = NULL,
                leased_until = NULL,
+               last_error = ?,
                updated_at = ?
          WHERE status = ?
            AND leased_until IS NOT NULL
            AND leased_until <= ?
            AND attempts >= max_attempts
         """,
-        (STATUS_FAILED, now, STATUS_RUNNING, now),
+        (
+            STATUS_FAILED,
+            "lease expired; max attempts exhausted",
+            now,
+            STATUS_RUNNING,
+            now,
+        ),
     )
+    return {"requeued": int(requeued.rowcount or 0), "failed": int(failed.rowcount or 0)}
 
 
 def _select_next_ready(
@@ -611,9 +694,14 @@ def _validate_maintenance_kind(kind: str) -> None:
 
 
 def _assert_job_leased_by_worker(job: QueueJob, worker_id: str | None) -> None:
-    if worker_id is None:
-        return
-    if job.status != STATUS_RUNNING or job.worker_id != worker_id:
+    if job.status != STATUS_RUNNING:
+        actual = job.worker_id or "<none>"
+        target = worker_id or actual
+        raise RuntimeError(
+            f"queue job {job.id} is not leased by worker {target} "
+            f"(status={job.status}, worker_id={actual})"
+        )
+    if worker_id is not None and job.worker_id != worker_id:
         actual = job.worker_id or "<none>"
         raise RuntimeError(
             f"queue job {job.id} is not leased by worker {worker_id} "

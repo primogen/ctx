@@ -4,6 +4,7 @@ import json
 import sys
 import tarfile
 import zlib
+import gzip
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from import_skills_sh_catalog import (
     drop_body_unavailable_skills,
     normalize_catalog,
     update_wiki_tarball,
+    write_gzip_json,
 )
 
 
@@ -34,6 +36,52 @@ def _read_json(tf: tarfile.TarFile, name: str) -> dict[str, Any]:
     data = json.loads(f.read().decode("utf-8"))
     assert isinstance(data, dict)
     return data
+
+
+def _read_gzip_json(path: Path) -> dict[str, Any]:
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        data = json.load(fh)
+    assert isinstance(data, dict)
+    return data
+
+
+def test_write_gzip_json_promotes_validated_catalog_with_metadata(tmp_path: Path) -> None:
+    catalog_path = tmp_path / "skills-sh-catalog.json.gz"
+    write_gzip_json(catalog_path, {"skills": [{"ctx_slug": "old"}]})
+
+    write_gzip_json(catalog_path, {"skills": [{"ctx_slug": "new"}]})
+
+    assert _read_gzip_json(catalog_path)["skills"][0]["ctx_slug"] == "new"
+    assert not catalog_path.with_name("skills-sh-catalog.json.gz.staged").exists()
+    metadata = json.loads(
+        catalog_path.with_name("skills-sh-catalog.json.gz.promotion.json").read_text(
+            encoding="utf-8",
+        ),
+    )
+    assert metadata["status"] == "promoted"
+    assert metadata["target"].endswith("skills-sh-catalog.json.gz")
+    assert metadata["last_good"]["exists"] is True
+    assert metadata["rollback"]["available"] is True
+
+
+def test_write_gzip_json_validation_failure_preserves_previous_catalog(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    catalog_path = tmp_path / "skills-sh-catalog.json.gz"
+    write_gzip_json(catalog_path, {"skills": [{"ctx_slug": "old"}]})
+    original = catalog_path.read_bytes()
+
+    def fail_validation(_path: Path, *, required_keys: tuple[str, ...] = ()) -> None:
+        raise ValueError("catalog candidate invalid")
+
+    monkeypatch.setattr(importer, "validate_gzip_json_artifact", fail_validation)
+
+    with pytest.raises(ValueError, match="catalog candidate invalid"):
+        write_gzip_json(catalog_path, {"skills": [{"ctx_slug": "new"}]})
+
+    assert catalog_path.read_bytes() == original
+    assert _read_gzip_json(catalog_path)["skills"][0]["ctx_slug"] == "old"
 
 
 def test_normalize_catalog_resolves_truncated_ctx_slug_collisions(monkeypatch) -> None:
@@ -71,6 +119,7 @@ def test_normalize_catalog_resolves_truncated_ctx_slug_collisions(monkeypatch) -
 
 def test_update_wiki_tarball_adds_skills_sh_as_first_class_skill_nodes_and_pages(
     tmp_path: Path,
+    monkeypatch: Any,
 ) -> None:
     tarball = tmp_path / "wiki-graph.tar.gz"
     graph = {
@@ -120,6 +169,15 @@ def test_update_wiki_tarball_adds_skills_sh_as_first_class_skill_nodes_and_pages
         ],
     }
 
+    real_promote = importer.promote_staged_artifact
+    promoted_paths: list[tuple[str, str]] = []
+
+    def capture_promotion(staged_path: Path, target_path: Path, **kwargs: Any) -> Any:
+        promoted_paths.append((Path(staged_path).name, Path(target_path).name))
+        return real_promote(staged_path, target_path, **kwargs)
+
+    monkeypatch.setattr(importer, "promote_staged_artifact", capture_promotion)
+
     update_wiki_tarball(tarball, catalog)
 
     with tarfile.open(tarball, "r:gz") as tf:
@@ -148,6 +206,8 @@ def test_update_wiki_tarball_adds_skills_sh_as_first_class_skill_nodes_and_pages
     assert catalog_out["body_available_count"] == 0
     assert "body_available: false" in page
     assert "Security review: metadata-only" in page
+    assert promoted_paths == [("wiki-graph.tar.gz.staged", "wiki-graph.tar.gz")]
+    assert not tarball.with_name("wiki-graph.tar.gz.staged").exists()
 
 
 def test_update_wiki_tarball_preserves_existing_skills_sh_semantic_edges(

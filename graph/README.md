@@ -119,11 +119,23 @@ python src/validate_graph_artifacts.py --deep
 python src/update_repo_stats.py --check
 ```
 
-After a full wiki refresh, repack with the same exclusion contract:
+For a Skills.sh catalog/body refresh, update the existing shipped tarball
+through the release refresh path:
+
+```bash
+python src/import_skills_sh_catalog.py \
+  --from-catalog graph/skills-sh-catalog.json.gz \
+  --catalog-out graph/skills-sh-catalog.json.gz \
+  --wiki-tar graph/wiki-graph.tar.gz \
+  --update-wiki-tar
+```
+
+For a full local wiki repack, write the tarball to the sibling staged path,
+then promote that staged candidate after validation:
 
 ```bash
 cd ~/.claude/skill-wiki
-tar --force-local -czf /path/to/ctx/graph/wiki-graph.tar.gz \
+tar --force-local -czf /path/to/ctx/graph/wiki-graph.tar.gz.staged \
     --exclude='.trash' \
     --exclude='__pycache__' \
     --exclude='./raw' \
@@ -134,20 +146,25 @@ tar --force-local -czf /path/to/ctx/graph/wiki-graph.tar.gz \
     --exclude='*.original' \
     --exclude='*.lock' \
     .
+cd /path/to/ctx
+python -c "from pathlib import Path; from ctx.core.wiki.artifact_promotion import promote_staged_artifact; from import_skills_sh_catalog import _validate_wiki_tarball_candidate; promote_staged_artifact(Path('graph/wiki-graph.tar.gz.staged'), Path('graph/wiki-graph.tar.gz'), validate=_validate_wiki_tarball_candidate)"
 ```
 
-The graph, delta, communities, report, and export manifest are shipped together.
-They carry the same export ID so validation can reject mixed or partially
-refreshed graph generations. The excluded paths are regenerable local caches or
-trace files. They are omitted to keep the release artifact small and to prevent
-raw long skill bodies from being loaded by users.
+Both flows validate candidates before atomic promotion. Each promoted artifact
+gets a sibling `*.promotion.json` file with current, candidate, and `last_good`
+hashes for review or rollback. The graph, delta, communities, report, and
+export manifest are shipped together and carry the same export ID so validation
+can reject mixed or partially refreshed graph generations. Raw `.original`
+backups and transient `.lock` files must not appear in the shipped tarball.
 
 ## Implementation Notes
 
 The graph is built by `ctx.core.wiki.wiki_graphify` and the `ctx-wiki-graphify`
 console script. Edges blend semantic similarity, explicit tag overlap,
 slug-token overlap, source overlap, direct links, quality, usage, type affinity,
-and graph-structure signals where available.
+and graph-structure signals where available. The shipped default
+`graph.min_edge_weight` is `0.03`, chosen from artifact calibration because it
+keeps the current topology intact while recording the real shipped floor.
 
 `nashsu/llm_wiki` was reviewed for design ideas around persistent wiki
 contracts, queues, retrieval, and graph maintenance. ctx does not vendor that

@@ -40,6 +40,14 @@ def _write_events(claude: Path, records: list[dict]) -> None:
     )
 
 
+def _write_runtime_events(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _write_sidecar(claude: Path, slug: str, body: dict) -> None:
     (claude / "skill-quality" / f"{slug}.json").write_text(
         json.dumps(body), encoding="utf-8",
@@ -311,11 +319,20 @@ def test_queue_status_summarizes_worker_jobs(fake_claude: Path) -> None:
         source="test",
         now=11.0,
     )
+    third = wiki_queue.enqueue_maintenance_job(
+        wiki,
+        kind=wiki_queue.CATALOG_REFRESH_JOB,
+        payload={"catalog": "graph/skills-sh-catalog.json.gz"},
+        source="test",
+        now=12.0,
+    )
     leased = wiki_queue.lease_next(db_path, worker_id="worker-a", now=12.0)
     assert leased is not None
     wiki_queue.mark_failed(db_path, leased.id, error="boom", retry=False, now=13.0)
+    wiki_queue.cancel_job(db_path, third.id, reason="operator skipped", now=14.0)
 
     status = cm._queue_status()
+    html_out = cm._render_status()
 
     assert status["available"] is True
     assert status["counts"] == {
@@ -323,10 +340,12 @@ def test_queue_status_summarizes_worker_jobs(fake_claude: Path) -> None:
         wiki_queue.STATUS_RUNNING: 0,
         wiki_queue.STATUS_SUCCEEDED: 0,
         wiki_queue.STATUS_FAILED: 1,
+        wiki_queue.STATUS_CANCELLED: 1,
     }
-    assert status["total"] == 2
-    assert [job["id"] for job in status["recent_jobs"]] == [second.id, first.id]
-    assert status["recent_jobs"][0]["kind"] == wiki_queue.TAR_REFRESH_JOB
+    assert status["total"] == 3
+    assert [job["id"] for job in status["recent_jobs"]] == [third.id, second.id, first.id]
+    assert status["recent_jobs"][0]["status"] == wiki_queue.STATUS_CANCELLED
+    assert "cancelled: 1" in html_out
 
 
 def test_artifact_status_reads_promotion_metadata(
@@ -459,6 +478,92 @@ def test_render_loaded_shows_harness_install_without_unload_button(fake_claude: 
     assert "langgraph" in html
     assert "ctx-harness-install langgraph --uninstall --dry-run" in html
     assert "data-slug='langgraph'" not in html
+
+
+def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = tmp_path / "runtime" / "events.jsonl"
+    monkeypatch.setattr(cm, "_runtime_lifecycle_path", lambda: events)
+    _write_runtime_events(events, [
+        {
+            "action": "validation",
+            "session_id": "s-1",
+            "check_name": "pytest",
+            "status": "passed",
+            "created_at": "2026-05-08T01:00:00Z",
+        },
+        {
+            "action": "validation",
+            "session_id": "s-1",
+            "check_name": "mypy",
+            "status": "failed",
+            "summary": "type gate failed",
+            "created_at": "2026-05-08T01:05:00Z",
+        },
+        {
+            "action": "escalation",
+            "session_id": "s-1",
+            "trigger": "validation-failed",
+            "reason": "mypy failed after retry",
+            "status": "open",
+            "severity": "blocking",
+            "created_at": "2026-05-08T01:06:00Z",
+        },
+        {
+            "action": "escalation",
+            "session_id": "s-2",
+            "trigger": "user-review",
+            "reason": "review completed",
+            "status": "resolved",
+            "severity": "info",
+            "created_at": "2026-05-08T01:07:00Z",
+        },
+    ])
+
+    summary = cm._runtime_lifecycle_summary()
+
+    assert summary["validations_total"] == 2
+    assert summary["validation_failures"] == 1
+    assert summary["open_escalations_total"] == 1
+    assert summary["latest_validation"]["check_name"] == "mypy"
+    assert summary["open_escalations"][0]["trigger"] == "validation-failed"
+
+
+def test_render_runtime_lifecycle_surfaces_checks_and_open_escalations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = tmp_path / "runtime" / "events.jsonl"
+    monkeypatch.setattr(cm, "_runtime_lifecycle_path", lambda: events)
+    _write_runtime_events(events, [
+        {
+            "action": "validation",
+            "session_id": "s-1",
+            "check_name": "mypy",
+            "status": "failed",
+            "summary": "<type gate failed>",
+            "created_at": "2026-05-08T01:05:00Z",
+        },
+        {
+            "action": "escalation",
+            "session_id": "s-1",
+            "trigger": "validation-failed",
+            "reason": "<mypy failed>",
+            "status": "open",
+            "severity": "blocking",
+            "created_at": "2026-05-08T01:06:00Z",
+        },
+    ])
+
+    html = cm._render_runtime_lifecycle()
+
+    assert "Runtime lifecycle" in html
+    assert "mypy" in html
+    assert "validation-failed" in html
+    assert "&lt;type gate failed&gt;" in html
+    assert "&lt;mypy failed&gt;" in html
 
 
 def test_render_logs_filters_and_renders(fake_claude: Path) -> None:

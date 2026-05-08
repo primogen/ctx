@@ -17,6 +17,8 @@ from ctx.utils._fs_utils import reject_symlink_path
 
 _SESSION_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _ENTITY_TYPES = set(RECOMMENDABLE_ENTITY_TYPES)
+_VALIDATION_STATUSES = {"passed", "failed", "skipped", "error"}
+_ESCALATION_STATUSES = {"open", "resolved", "ignored"}
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,54 @@ class RuntimeLifecycleStore:
             reason=reason,
         )
 
+    def record_validation(
+        self,
+        *,
+        session_id: str,
+        check_name: str,
+        status: str,
+        command: str | None = None,
+        summary: str | None = None,
+        entity_type: str | None = None,
+        slug: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._record(
+            action="validation",
+            session_id=session_id,
+            check_name=_validate_nonempty(check_name, "check_name"),
+            status=_validate_choice(status, _VALIDATION_STATUSES, "status"),
+            command=command,
+            summary=summary,
+            entity_type=entity_type,
+            slug=slug,
+            payload=payload or {},
+        )
+
+    def record_escalation(
+        self,
+        *,
+        session_id: str,
+        trigger: str,
+        reason: str,
+        severity: str | None = None,
+        status: str | None = None,
+        entity_type: str | None = None,
+        slug: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._record(
+            action="escalation",
+            session_id=session_id,
+            trigger=_validate_nonempty(trigger, "trigger"),
+            reason=_validate_nonempty(reason, "reason"),
+            severity=severity or "blocking",
+            status=_validate_choice(status or "open", _ESCALATION_STATUSES, "status"),
+            entity_type=entity_type,
+            slug=slug,
+            payload=payload or {},
+        )
+
     def end_session(
         self,
         *,
@@ -114,18 +164,27 @@ class RuntimeLifecycleStore:
         session_id = _validate_session_id(session_id)
         loaded: dict[tuple[str, str], dict[str, Any]] = {}
         unloaded: list[dict[str, Any]] = []
+        validations: list[dict[str, Any]] = []
+        escalations: list[dict[str, Any]] = []
         min_age = max(0.0, float(min_unused_seconds))
         now = time.time()
         latest_dev_event_epoch: float | None = None
 
         for event in self._events_for_session(session_id):
-            if event.get("action") == "dev_event":
+            action = event.get("action")
+            if action == "dev_event":
                 latest_dev_event_epoch = float(event.get("created_at_epoch") or 0)
+                continue
+            if action == "validation":
+                validations.append(_validation_state(event))
+                continue
+            if action == "escalation":
+                escalations.append(_escalation_state(event))
                 continue
             key = (str(event.get("entity_type") or ""), str(event.get("slug") or ""))
             if not key[0] or not key[1]:
                 continue
-            if event.get("action") == "load_requested":
+            if action == "load_requested":
                 loaded[key] = {
                     "entity_type": key[0],
                     "slug": key[1],
@@ -138,13 +197,13 @@ class RuntimeLifecycleStore:
                     "evidence": [],
                     "dev_event_epoch": latest_dev_event_epoch,
                 }
-            elif event.get("action") == "used" and key in loaded:
+            elif action == "used" and key in loaded:
                 loaded[key]["used"] = True
                 loaded[key]["use_count"] = int(loaded[key]["use_count"]) + 1
                 loaded[key]["last_used_at"] = event.get("created_at")
                 if event.get("evidence"):
                     loaded[key]["evidence"].append(event["evidence"])
-            elif event.get("action") == "unload_requested":
+            elif action == "unload_requested":
                 current = loaded.pop(key, None)
                 unloaded.append({
                     "entity_type": key[0],
@@ -169,6 +228,14 @@ class RuntimeLifecycleStore:
             "used": [entry for entry in loaded_entries if entry["used"]],
             "unload_candidates": unload_candidates,
             "unloaded": unloaded,
+            "validations": validations,
+            "escalations": escalations,
+            "latest_validation_status": (
+                str(validations[-1]["status"]) if validations else None
+            ),
+            "open_escalations": [
+                event for event in escalations if event["status"] == "open"
+            ],
         }
 
     def _record(self, **event: Any) -> dict[str, Any]:
@@ -234,6 +301,44 @@ def _validate_slug(raw: str) -> str:
     value = raw.strip()
     validate_skill_name(value)
     return value
+
+
+def _validate_nonempty(raw: str, field: str) -> str:
+    value = raw.strip()
+    if not value:
+        raise ValueError(f"{field} must be non-empty")
+    return value
+
+
+def _validate_choice(raw: str, allowed: set[str], field: str) -> str:
+    value = raw.strip().lower()
+    if value not in allowed:
+        raise ValueError(f"{field} must be one of {', '.join(sorted(allowed))}")
+    return value
+
+
+def _validation_state(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "check_name": event.get("check_name"),
+        "status": event.get("status"),
+        "command": event.get("command"),
+        "summary": event.get("summary"),
+        "entity_type": event.get("entity_type"),
+        "slug": event.get("slug"),
+        "payload": event.get("payload") or {},
+    }
+
+
+def _escalation_state(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "trigger": event.get("trigger"),
+        "reason": event.get("reason"),
+        "severity": event.get("severity"),
+        "status": event.get("status"),
+        "entity_type": event.get("entity_type"),
+        "slug": event.get("slug"),
+        "payload": event.get("payload") or {},
+    }
 
 
 def _loaded_before_latest_dev_event(

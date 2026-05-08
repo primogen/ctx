@@ -138,6 +138,30 @@ class Config:
                 self.harness_recommendation_min_normalized_score,
             )
         )
+        raw_reliability_weights = harness.get("reliability_weights", {})
+        if not isinstance(raw_reliability_weights, dict):
+            raw_reliability_weights = {}
+        default_reliability_weights = {
+            "context": 0.34,
+            "constraints": 0.33,
+            "convergence": 0.33,
+        }
+        self.harness_reliability_weights: dict[str, float] = {}
+        for dimension, default in default_reliability_weights.items():
+            value = float(raw_reliability_weights.get(dimension, default))
+            if value < 0:
+                raise ValueError(
+                    f"harness.reliability_weights.{dimension} must be >= 0 "
+                    f"(got {value})"
+                )
+            self.harness_reliability_weights[dimension] = value
+        reliability_weight_total = sum(self.harness_reliability_weights.values())
+        if reliability_weight_total <= 0:
+            raise ValueError("harness.reliability_weights must sum to > 0")
+        self.harness_reliability_weights = {
+            dimension: value / reliability_weight_total
+            for dimension, value in self.harness_reliability_weights.items()
+        }
         if not (0.0 <= self.harness_recommendation_min_normalized_score <= 1.0):
             raise ValueError(
                 "harness.recommendation_min_normalized_score must be in [0, 1] "
@@ -244,6 +268,7 @@ class Config:
         self.graph_edge_weight_semantic: float = float(ew.get("semantic", 0.70))
         self.graph_edge_weight_tags: float = float(ew.get("tags", 0.15))
         self.graph_edge_weight_tokens: float = float(ew.get("slug_tokens", 0.15))
+        self.graph_edge_min_weight: float = float(graph.get("min_edge_weight", 0.0))
 
         sem = graph.get("semantic", {}) if isinstance(graph.get("semantic"), dict) else {}
         self.graph_semantic_top_k: int = int(sem.get("top_k", 20))
@@ -320,6 +345,11 @@ class Config:
                 raise ValueError(
                     f"graph.edge_weights.{name} must be >= 0 (got {val})"
                 )
+        if not (0.0 <= self.graph_edge_min_weight <= 1.0):
+            raise ValueError(
+                "graph.min_edge_weight must be in [0, 1] "
+                f"(got {self.graph_edge_min_weight})"
+            )
         if self.graph_dense_source_threshold < 1:
             raise ValueError(
                 "graph.source_edges.dense_source_threshold must be >= 1 "

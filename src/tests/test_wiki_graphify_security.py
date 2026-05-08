@@ -273,7 +273,7 @@ def test_export_graph_uses_atomic_writer_for_artifacts(
     graphify_out: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Graphify artifacts are large enough that direct writes can truncate state."""
+    """Graphify artifacts are staged, validated, promoted, and metadata-backed."""
     from ctx.core.wiki import wiki_graphify
 
     calls: list[str] = []
@@ -291,14 +291,27 @@ def test_export_graph_uses_atomic_writer_for_artifacts(
 
     wiki_graphify.export_graph(_make_sample_graph(), communities={})
 
-    assert set(calls) == {
+    assert {name for name in calls if name.endswith(".staged")} == {
+        "graph.json.staged",
+        "graph-delta.json.staged",
+        "communities.json.staged",
+        "graph-report.md.staged",
+        "graph-export-manifest.json.staged",
+    }
+    assert calls[-1] == "graph-export-manifest.json.staged"
+    for name in (
         "graph.json",
         "graph-delta.json",
         "communities.json",
         "graph-report.md",
         "graph-export-manifest.json",
-    }
-    assert calls[-1] == "graph-export-manifest.json"
+    ):
+        metadata = json.loads(
+            (graphify_out / f"{name}.promotion.json").read_text(encoding="utf-8")
+        )
+        assert metadata["status"] == "promoted"
+        assert metadata["target"].endswith(name)
+        assert "last_good" in metadata
 
 
 def test_load_prior_graph_rejects_post_graph_replace_crash(
@@ -317,17 +330,18 @@ def test_load_prior_graph_rejects_post_graph_replace_crash(
     new_graph = _make_sample_graph()
     new_graph.add_node("skill:new", label="new", type="skill", tags=["python"])
 
-    real_atomic = wiki_graphify.safe_atomic_write_text
+    real_promote = wiki_graphify.promote_staged_artifact
 
-    def crash_after_graph(path: Path, text: str, encoding: str = "utf-8") -> None:
-        real_atomic(path, text, encoding=encoding)
-        if path.name == "graph.json":
+    def crash_after_graph_promotion(*args, **kwargs):
+        result = real_promote(*args, **kwargs)
+        if Path(args[1]).name == "graph.json":
             raise RuntimeError("simulated crash after graph replacement")
+        return result
 
     monkeypatch.setattr(
         wiki_graphify,
-        "safe_atomic_write_text",
-        crash_after_graph,
+        "promote_staged_artifact",
+        crash_after_graph_promotion,
         raising=False,
     )
 

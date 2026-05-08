@@ -89,7 +89,9 @@ weights form the base blend from `config.json`; source overlap and direct
 links add configured boosts. Existing edges can also receive explainable
 ranking boosts from Adamic-Adar shared-neighbor structure, type affinity,
 usage telemetry, and quality scores. Those boost-only signals do not create
-edges by themselves.
+edges by themselves. The shipped default `graph.min_edge_weight` is `0.03`;
+calibration against the 2026-05 shipped graph showed this is the highest
+floor with zero edge loss, while `0.05` would remove roughly 29.7% of edges.
 
 Edge metadata keeps the ingredients explainable: `semantic_sim`,
 `shared_tags`, `shared_tokens`, `shared_sources`, `direct_link`,
@@ -217,6 +219,14 @@ contain private entities. It refreshes cheap README stats when relevant
 checked-in files are staged and warns when entity sources changed. Run
 `ctx-wiki-graphify`, validate, repack, and stage the artifacts explicitly
 for skill, agent, MCP server, or harness catalog releases.
+
+Graphify exports stage and validate each generated artifact before atomic
+promotion. `graph.json`, `graph-delta.json`, `communities.json`,
+`graph-report.md`, and `graph-export-manifest.json` each get a sibling
+`*.promotion.json` file with candidate, current, and `last_good` hashes plus
+rollback metadata. The manifest is promoted last, so a crash between artifact
+promotion and manifest promotion is detected as an incomplete export and the
+next run rebuilds instead of trusting mixed graph files.
 
 ## Edge-count history
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -71,6 +72,7 @@ def promote_staged_artifact(
     started_at = _timestamp(now)
     previous = _snapshot(target)
     candidate = _snapshot(staged)
+    rollback = _rollback_record(target, previous)
     pending_record = {
         "schema_version": 1,
         "status": "staged",
@@ -78,6 +80,8 @@ def promote_staged_artifact(
         "started_at": started_at,
         "previous": previous,
         "candidate": candidate,
+        "last_good": previous,
+        "rollback": rollback,
     }
     atomic_write_json(metadata, pending_record, indent=2)
 
@@ -102,6 +106,37 @@ def promote_staged_artifact(
 
 def _default_metadata_path(target: Path) -> Path:
     return target.with_name(f"{target.name}.promotion.json")
+
+
+def validate_json_artifact(path: Path, *, required_keys: tuple[str, ...] = ()) -> None:
+    """Raise if *path* is not a readable JSON object artifact."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid JSON artifact: {path}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"invalid JSON artifact: {path} must contain an object")
+    missing = [key for key in required_keys if key not in data]
+    if missing:
+        raise ValueError(f"invalid JSON artifact: {path} missing keys {missing}")
+
+
+def validate_gzip_json_artifact(
+    path: Path,
+    *,
+    required_keys: tuple[str, ...] = (),
+) -> None:
+    """Raise if *path* is not a readable gzip-compressed JSON object artifact."""
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, EOFError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid gzip JSON artifact: {path}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"invalid gzip JSON artifact: {path} must contain an object")
+    missing = [key for key in required_keys if key not in data]
+    if missing:
+        raise ValueError(f"invalid gzip JSON artifact: {path} missing keys {missing}")
 
 
 def _recover_completed_promotion(
@@ -139,6 +174,8 @@ def _recover_completed_promotion(
         "status": "promoted",
         "promoted_at": _timestamp(),
         "current": current,
+        "last_good": record.get("last_good", previous),
+        "rollback": record.get("rollback", _rollback_record(target, previous)),
     }
     atomic_write_json(metadata, promoted_record, indent=2)
     return ArtifactPromotionResult(
@@ -168,6 +205,16 @@ def _snapshot(path: Path) -> dict[str, Any]:
         "size": stat.st_size,
         "sha256": _sha256_file(path),
         "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _rollback_record(target: Path, previous: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "available": bool(previous.get("exists")),
+        "target": str(target),
+        "sha256": previous.get("sha256"),
+        "size": previous.get("size"),
+        "mtime_ns": previous.get("mtime_ns"),
     }
 
 

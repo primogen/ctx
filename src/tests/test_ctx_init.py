@@ -399,6 +399,167 @@ repo_url: https://github.com/earthtojake/text-to-cad
     assert "openscad" in results[0]["fit_signals"]
 
 
+def test_recommend_harnesses_surfaces_reliability_rubric(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    wiki = tmp_path / "wiki"
+    harness_dir = wiki / "entities" / "harnesses"
+    harness_dir.mkdir(parents=True)
+    (harness_dir / "reliable-agent.md").write_text(
+        """---
+title: Reliable Agent
+type: harness
+tags:
+  - agents
+model_providers:
+  - openai
+capabilities:
+  - Persistent project context and task state
+  - Permission limits, sandbox rules, and policy checks
+  - Automated tests, evals, retry loops, and validation gates
+verify_commands:
+  - pytest
+repo_url: https://example.test/reliable-agent
+---
+# Reliable Agent
+""",
+        encoding="utf-8",
+    )
+    graph = nx.Graph()
+    graph.add_node(
+        "harness:reliable-agent",
+        label="reliable-agent",
+        type="harness",
+        tags=["agents"],
+    )
+    monkeypatch.setattr(ci, "_load_recommendation_graph", lambda: graph)
+    import ctx_config
+
+    monkeypatch.setattr(
+        ctx_config,
+        "cfg",
+        SimpleNamespace(
+            wiki_dir=wiki,
+            claude_dir=tmp_path / ".claude",
+            recommendation_top_k=5,
+            harness_recommendation_min_fit_score=0.20,
+            harness_reliability_weights={
+                "context": 0.34,
+                "constraints": 0.33,
+                "convergence": 0.33,
+            },
+        ),
+    )
+
+    results = ci.recommend_harnesses(
+        "openai agent workflow with tests and sandbox",
+        model_provider="openai",
+        model="openai/gpt-5.5",
+    )
+
+    assert results
+    recommendation = results[0]
+    assert recommendation["name"] == "reliable-agent"
+    assert recommendation["reliability_score"] >= 0.90
+    assert set(recommendation["reliability_dimensions"]) == {
+        "context",
+        "constraints",
+        "convergence",
+    }
+    assert recommendation["reliability_dimensions"]["context"]["matched_terms"]
+    assert recommendation["reliability_dimensions"]["constraints"]["matched_terms"]
+    assert recommendation["reliability_dimensions"]["convergence"]["matched_terms"]
+    assert "context" in recommendation["reliability_reason"]
+    assert "constraints" in recommendation["reliability_reason"]
+    assert "convergence" in recommendation["reliability_reason"]
+
+
+def test_recommend_harnesses_prefers_reliable_harness_when_fit_ties(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    wiki = tmp_path / "wiki"
+    harness_dir = wiki / "entities" / "harnesses"
+    harness_dir.mkdir(parents=True)
+    (harness_dir / "thin-agent.md").write_text(
+        """---
+title: Thin Agent
+type: harness
+tags:
+  - agents
+model_providers:
+  - openai
+capabilities:
+  - Agent workflow orchestration
+repo_url: https://example.test/thin-agent
+---
+# Thin Agent
+""",
+        encoding="utf-8",
+    )
+    (harness_dir / "reliable-agent.md").write_text(
+        """---
+title: Reliable Agent
+type: harness
+tags:
+  - agents
+model_providers:
+  - openai
+capabilities:
+  - Agent workflow orchestration
+  - Persistent context state and durable task documents
+  - Permission limits, sandbox boundaries, and approval policies
+  - Automated tests, evals, validation gates, and retry loops
+verify_commands:
+  - pytest
+repo_url: https://example.test/reliable-agent
+---
+# Reliable Agent
+""",
+        encoding="utf-8",
+    )
+    graph = nx.Graph()
+    for slug in ("thin-agent", "reliable-agent"):
+        graph.add_node(
+            f"harness:{slug}",
+            label=slug,
+            type="harness",
+            tags=["agents"],
+        )
+    monkeypatch.setattr(ci, "_load_recommendation_graph", lambda: graph)
+    import ctx_config
+
+    monkeypatch.setattr(
+        ctx_config,
+        "cfg",
+        SimpleNamespace(
+            wiki_dir=wiki,
+            claude_dir=tmp_path / ".claude",
+            recommendation_top_k=5,
+            harness_recommendation_min_fit_score=0.20,
+            harness_reliability_weights={
+                "context": 0.34,
+                "constraints": 0.33,
+                "convergence": 0.33,
+            },
+        ),
+    )
+
+    results = ci.recommend_harnesses(
+        "openai agent workflow",
+        model_provider="openai",
+        model="openai/gpt-5.5",
+    )
+
+    assert [row["name"] for row in results[:2]] == [
+        "reliable-agent",
+        "thin-agent",
+    ]
+    assert results[0]["fit_score"] == results[1]["fit_score"]
+    assert results[0]["reliability_score"] > results[1]["reliability_score"]
+
+
 def test_recommend_harnesses_avoids_semantic_model_load_by_default(
     tmp_path: Path,
     monkeypatch,
