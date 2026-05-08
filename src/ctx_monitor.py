@@ -425,6 +425,7 @@ def _queue_status() -> dict[str, Any]:
         wiki_queue.STATUS_RUNNING: 0,
         wiki_queue.STATUS_SUCCEEDED: 0,
         wiki_queue.STATUS_FAILED: 0,
+        wiki_queue.STATUS_CANCELLED: 0,
     }
     if not db_path.exists():
         return {
@@ -2069,6 +2070,7 @@ def _render_status() -> str:
             wiki_queue.STATUS_RUNNING,
             wiki_queue.STATUS_SUCCEEDED,
             wiki_queue.STATUS_FAILED,
+            wiki_queue.STATUS_CANCELLED,
         )
     )
 

@@ -278,6 +278,46 @@ def test_expired_running_job_is_recovered_for_retry(tmp_path: Path) -> None:
     assert current.worker_id == "worker-b"
     assert current.last_error is None
 
+    recovery_db = tmp_path / "wiki-queue-recovery.sqlite3"
+    retryable = wiki_queue.enqueue(
+        recovery_db,
+        kind="graph-export",
+        payload={"n": 1},
+        max_attempts=2,
+        now=30.0,
+    )
+    exhausted = wiki_queue.enqueue(
+        recovery_db,
+        kind="tar-refresh",
+        payload={"n": 2},
+        max_attempts=1,
+        now=31.0,
+    )
+    first_lease = wiki_queue.lease_next(
+        recovery_db,
+        worker_id="worker-a",
+        lease_seconds=5.0,
+        now=40.0,
+    )
+    assert first_lease is not None
+    assert first_lease.id == retryable.id
+    second_lease = wiki_queue.lease_next(
+        recovery_db,
+        worker_id="worker-b",
+        lease_seconds=5.0,
+        now=41.0,
+    )
+    assert second_lease is not None
+    assert second_lease.id == exhausted.id
+
+    recovered_counts = wiki_queue.recover_expired_leases(recovery_db, now=47.0)
+
+    assert recovered_counts == {"requeued": 1, "failed": 1}
+    assert wiki_queue.get_job(recovery_db, retryable.id).status == wiki_queue.STATUS_PENDING
+    terminal = wiki_queue.get_job(recovery_db, exhausted.id)
+    assert terminal.status == wiki_queue.STATUS_FAILED
+    assert terminal.last_error == "lease expired; max attempts exhausted"
+
 
 def test_mark_succeeded_makes_job_unavailable(tmp_path: Path) -> None:
     db_path = tmp_path / "wiki-queue.sqlite3"
@@ -292,8 +332,54 @@ def test_mark_succeeded_makes_job_unavailable(tmp_path: Path) -> None:
     assert done.worker_id is None
     assert wiki_queue.lease_next(db_path, worker_id="worker-a", now=22.0) is None
 
+    first = wiki_queue.enqueue(db_path, kind="graph-export", payload={"n": 1}, now=30.0)
+    second = wiki_queue.enqueue(db_path, kind="tar-refresh", payload={"n": 2}, now=31.0)
+
+    cancelled = wiki_queue.cancel_job(
+        db_path,
+        first.id,
+        reason="superseded by newer artifact refresh",
+        now=32.0,
+    )
+
+    assert cancelled.status == wiki_queue.STATUS_CANCELLED
+    assert cancelled.last_error == "superseded by newer artifact refresh"
+    assert cancelled.worker_id is None
+    assert cancelled.leased_until is None
+    assert wiki_queue.cancel_job(db_path, first.id, now=33.0).id == first.id
+    leased_second = wiki_queue.lease_next(db_path, worker_id="worker-a", now=40.0)
+    assert leased_second is not None
+    assert leased_second.id == second.id
+    assert wiki_queue.count_jobs_by_status(db_path) == {
+        wiki_queue.STATUS_SUCCEEDED: 1,
+        wiki_queue.STATUS_CANCELLED: 1,
+        wiki_queue.STATUS_RUNNING: 1,
+    }
+
+    running_job = wiki_queue.enqueue(db_path, kind="graph-export", payload={}, now=50.0)
+    running_lease = wiki_queue.lease_next(db_path, worker_id="worker-b", now=60.0)
+    assert running_lease is not None
+    assert running_lease.id == running_job.id
+
+    cancelled_running = wiki_queue.cancel_job(
+        db_path,
+        running_job.id,
+        worker_id="worker-b",
+        reason="operator cancelled hung graph export",
+        now=61.0,
+    )
+
+    assert cancelled_running.status == wiki_queue.STATUS_CANCELLED
+    with pytest.raises(RuntimeError, match="not leased by worker worker-b"):
+        wiki_queue.mark_succeeded(db_path, running_job.id, worker_id="worker-b", now=62.0)
+
 
 def test_queue_rejects_symlinked_database_path(tmp_path: Path) -> None:
+    corrupt = tmp_path / "corrupt.sqlite3"
+    corrupt.write_bytes(b"not a sqlite database")
+    with pytest.raises(wiki_queue.QueueStorageError, match="queue database is not readable"):
+        wiki_queue.count_jobs_by_status(corrupt)
+
     real = tmp_path / "real.sqlite3"
     link = tmp_path / "queue.sqlite3"
     real.write_text("", encoding="utf-8")

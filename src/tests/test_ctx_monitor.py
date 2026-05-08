@@ -319,11 +319,20 @@ def test_queue_status_summarizes_worker_jobs(fake_claude: Path) -> None:
         source="test",
         now=11.0,
     )
+    third = wiki_queue.enqueue_maintenance_job(
+        wiki,
+        kind=wiki_queue.CATALOG_REFRESH_JOB,
+        payload={"catalog": "graph/skills-sh-catalog.json.gz"},
+        source="test",
+        now=12.0,
+    )
     leased = wiki_queue.lease_next(db_path, worker_id="worker-a", now=12.0)
     assert leased is not None
     wiki_queue.mark_failed(db_path, leased.id, error="boom", retry=False, now=13.0)
+    wiki_queue.cancel_job(db_path, third.id, reason="operator skipped", now=14.0)
 
     status = cm._queue_status()
+    html_out = cm._render_status()
 
     assert status["available"] is True
     assert status["counts"] == {
@@ -331,10 +340,12 @@ def test_queue_status_summarizes_worker_jobs(fake_claude: Path) -> None:
         wiki_queue.STATUS_RUNNING: 0,
         wiki_queue.STATUS_SUCCEEDED: 0,
         wiki_queue.STATUS_FAILED: 1,
+        wiki_queue.STATUS_CANCELLED: 1,
     }
-    assert status["total"] == 2
-    assert [job["id"] for job in status["recent_jobs"]] == [second.id, first.id]
-    assert status["recent_jobs"][0]["kind"] == wiki_queue.TAR_REFRESH_JOB
+    assert status["total"] == 3
+    assert [job["id"] for job in status["recent_jobs"]] == [third.id, second.id, first.id]
+    assert status["recent_jobs"][0]["status"] == wiki_queue.STATUS_CANCELLED
+    assert "cancelled: 1" in html_out
 
 
 def test_artifact_status_reads_promotion_metadata(

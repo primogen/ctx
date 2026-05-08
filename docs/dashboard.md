@@ -36,10 +36,13 @@ The status tab shows the durable wiki/graph maintenance queue and the
 generated graph/wiki artifacts that ctx can ship or consume. It reports:
 
 - queue DB availability and job counts by state (`pending`, `running`,
-  `succeeded`, `failed`)
+  `succeeded`, `failed`, `cancelled`)
 - the 20 most recent queue jobs with kind, attempts, source, worker, and
   last error; counts and the recent-job window are bounded in the queue DB,
   not by loading the whole queue into dashboard memory
+- explicit crash recovery state: expired leases are requeued until their
+  retry budget is exhausted; exhausted leases become `failed`; operator
+  cancellations become terminal `cancelled` jobs
 - a visible queue DB error callout when the queue file exists but cannot be
   opened or queried
 - artifact presence and byte size for generated
