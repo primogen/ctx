@@ -268,6 +268,7 @@ class Config:
         self.graph_edge_weight_semantic: float = float(ew.get("semantic", 0.70))
         self.graph_edge_weight_tags: float = float(ew.get("tags", 0.15))
         self.graph_edge_weight_tokens: float = float(ew.get("slug_tokens", 0.15))
+        self.graph_edge_min_weight: float = float(graph.get("min_edge_weight", 0.0))
 
         sem = graph.get("semantic", {}) if isinstance(graph.get("semantic"), dict) else {}
         self.graph_semantic_top_k: int = int(sem.get("top_k", 20))
@@ -344,6 +345,11 @@ class Config:
                 raise ValueError(
                     f"graph.edge_weights.{name} must be >= 0 (got {val})"
                 )
+        if not (0.0 <= self.graph_edge_min_weight <= 1.0):
+            raise ValueError(
+                "graph.min_edge_weight must be in [0, 1] "
+                f"(got {self.graph_edge_min_weight})"
+            )
         if self.graph_dense_source_threshold < 1:
             raise ValueError(
                 "graph.source_edges.dense_source_threshold must be >= 1 "

@@ -363,6 +363,8 @@ def test_source_overlap_creates_explainable_edge_without_tags(
     tmp_path,
     monkeypatch,
 ) -> None:
+    import ctx_config
+
     wiki, _ = _isolate_graphify(tmp_path, monkeypatch)
     shared_source = "https://github.com/acme/toolkit"
     _write_entity(
@@ -386,6 +388,18 @@ def test_source_overlap_creates_explainable_edge_without_tags(
     assert edge["source_overlap"] == 1.0
     assert "source-overlap" in edge["edge_reasons"]
     assert edge["score_components"]["source_overlap"] > 0
+
+    custom_config = ctx_config.Config({"graph": {"min_edge_weight": 0.09}})
+    assert custom_config.graph_edge_min_weight == 0.09
+    try:
+        ctx_config.Config({"graph": {"min_edge_weight": 1.01}})
+    except ValueError as exc:
+        assert "min_edge_weight" in str(exc)
+    else:  # pragma: no cover - the assertion above is the behavior under test
+        raise AssertionError("graph.min_edge_weight above 1.0 must be rejected")
+    monkeypatch.setattr(ctx_config.cfg, "graph_edge_min_weight", 0.09)
+    filtered, _ = wg.build_graph(incremental=False)
+    assert not filtered.has_edge("skill:alpha-source", "agent:beta-target")
 
 
 def test_direct_links_quality_usage_type_and_adamic_are_explainable(

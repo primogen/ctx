@@ -637,7 +637,7 @@ def build_graph(
             "quality": w_quality * quality,
         }
         final = min(sum(components.values()), 1.0)
-        if final <= 0.0:
+        if final <= 0.0 or final < _cfg.graph_edge_min_weight:
             # Useless edge — only happens when every signal dropped to
             # zero or landed below its floor. Skip materialisation.
             continue
@@ -762,6 +762,7 @@ def build_graph(
     # edges were never materialised).
     G.graph["semantic_build_floor"] = round(_cfg.graph_semantic_build_floor, 4)
     G.graph["semantic_min_cosine_default"] = round(_cfg.graph_semantic_min_cosine, 4)
+    G.graph["min_edge_weight"] = round(_cfg.graph_edge_min_weight, 4)
 
     print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     print(
