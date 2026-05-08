@@ -90,7 +90,11 @@ class TopKState:
 
     ``nodes`` maps node_id to:
       - content_hash: SHA-256 of the text we embedded
-      - top_k: [[neighbor_id, cosine], ...] — descending by cosine
+      - top_k: [[neighbor_id, cosine], ...] — descending by cosine.
+        The field name is historical: it stores every incident pair
+        that survived the graph's top-K build, not a second per-node
+        truncation. Re-truncating here can erase asymmetric stable
+        pairs from both endpoint records.
     """
 
     version: int
@@ -163,6 +167,20 @@ def _save_topk_state(cache_dir: Path, state: TopKState) -> None:
     }
     cache_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_text(_topk_state_path(cache_dir), json.dumps(payload))
+
+
+def _state_topk_from_pairs(
+    node_ids: list[str],
+    pairs: dict[tuple[str, str], float],
+) -> dict[str, list[list]]:
+    """Materialise state entries without dropping asymmetric incident pairs."""
+    per_node_topk: dict[str, list[list]] = {nid: [] for nid in node_ids}
+    for (a, b), score in pairs.items():
+        per_node_topk[a].append([b, score])
+        per_node_topk[b].append([a, score])
+    for entries in per_node_topk.values():
+        entries.sort(key=lambda e: -e[1])
+    return per_node_topk
 
 
 def _partition_for_incremental(
@@ -757,16 +775,12 @@ def compute_semantic_edges(
         )
 
     # ── Persist the fresh state for the next run's incremental pass ───
-    # Materialise per-node top-K from the pair dict. The state stores
-    # it per source node (not canonicalised pairs) so next run can
-    # check each node's neighbors independently.
-    per_node_topk: dict[str, list[list]] = {nid: [] for nid in node_ids}
-    for (a, b), score in pairs.items():
-        per_node_topk[a].append([b, score])
-        per_node_topk[b].append([a, score])
-    for nid, entries in per_node_topk.items():
-        entries.sort(key=lambda e: -e[1])
-        del entries[top_k:]
+    # Materialise per-node incident pairs so next run can check each
+    # node's neighbors independently. Do not apply a second per-node
+    # top_k truncation here: ``pairs`` is already bounded by the build
+    # pass, and asymmetric incoming pairs must remain visible to the
+    # incremental reuse/contamination logic.
+    per_node_topk = _state_topk_from_pairs(node_ids, pairs)
 
     new_state = TopKState(
         version=_TOPK_STATE_VERSION,
