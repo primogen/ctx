@@ -289,6 +289,28 @@ def test_semantic_boost_changes_top_result(monkeypatch) -> None:
     )
 
 
+def test_semantic_query_can_rank_without_tag_signals(monkeypatch) -> None:
+    G = _build_graph([
+        ("go-helper", []),
+        ("rust-helper", []),
+    ])
+    _patch_semantic(monkeypatch, sims={
+        "skill:go-helper": 0.90,
+        "skill:rust-helper": 0.10,
+    })
+
+    out = recommend_by_tags(
+        G,
+        [],
+        top_n=2,
+        query="go",
+        semantic_weight=100.0,
+        use_semantic_query=True,
+    )
+
+    assert [row["name"] for row in out] == ["go-helper", "rust-helper"]
+
+
 def test_semantic_off_by_default_even_with_query(monkeypatch) -> None:
     """The semantic path must not fire unless explicitly requested."""
     from ctx.core.resolve import recommendations as rec

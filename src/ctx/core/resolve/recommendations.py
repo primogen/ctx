@@ -266,7 +266,8 @@ def recommend_by_tags(
     like ``automation``.
     """
     signals = _normalise_signals(tags)
-    if not signals or top_n < 1:
+    has_semantic_query = bool(query and query.strip() and use_semantic_query)
+    if top_n < 1 or (not signals and not has_semantic_query):
         return []
     entity_type_filter = {str(t) for t in entity_types} if entity_types else None
     min_score = max(0.0, min(1.0, float(min_normalized_score)))

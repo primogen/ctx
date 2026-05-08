@@ -393,6 +393,24 @@ class TestResolveBySeeds:
         results = resolve_graph.resolve_by_seeds(G, ["seed"], top_n=5)
         assert len(results) <= 5
 
+    def test_never_load_neighbor_is_not_recommended(self) -> None:
+        G = nx.Graph()
+        G.add_node("skill:seed", type="skill", label="seed", tags=[])
+        G.add_node("skill:active", type="skill", label="active", tags=[])
+        G.add_node(
+            "skill:blocked",
+            type="skill",
+            label="blocked",
+            tags=[],
+            never_load=True,
+        )
+        G.add_edge("skill:seed", "skill:active", weight=1.0, shared_tags=[])
+        G.add_edge("skill:seed", "skill:blocked", weight=2.0, shared_tags=[])
+
+        results = resolve_graph.resolve_by_seeds(G, ["seed"], max_hops=1)
+
+        assert [row["name"] for row in results] == ["active"]
+
     def test_label_fallback_to_nid_suffix(self) -> None:
         """Nodes without 'label' attr fall back to nid.split(':')[-1]."""
         G = nx.Graph()
@@ -505,6 +523,21 @@ class TestResolveByTags:
         for r in results:
             for tag in r["matching_tags"]:
                 assert tag in {"python", "docker"}
+
+    def test_never_load_tag_match_is_not_recommended(self) -> None:
+        G = nx.Graph()
+        G.add_node("skill:active", type="skill", label="active", tags=["python"])
+        G.add_node(
+            "skill:blocked",
+            type="skill",
+            label="blocked",
+            tags=["python"],
+            never_load="true",
+        )
+
+        results = resolve_graph.resolve_by_tags(G, ["python"])
+
+        assert [row["name"] for row in results] == ["active"]
 
     def test_type_preserved_in_result(self) -> None:
         G = nx.Graph()
