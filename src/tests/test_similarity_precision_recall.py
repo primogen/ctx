@@ -114,7 +114,7 @@ def _compose_md(entry: dict) -> str:
 def _load_pairs(filename: str) -> list[_Pair]:
     path = FIXTURE_DIR / filename
     if not path.exists():
-        pytest.skip(f"fixture file missing: {path}")
+        pytest.fail(f"tracked fixture file missing: {path}")
     pairs: list[_Pair] = []
     for line_num, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         raw = raw.strip()
