@@ -365,7 +365,7 @@ def install_mcp(
     else:
         assert effective_cmd is not None  # narrowed by dry_run branch above
         try:
-            tokens = shlex.split(effective_cmd)
+            tokens = _split_install_command(effective_cmd)
         except ValueError as exc:
             return InstallResult(
                 slug=slug, status="invalid-cmd", command=effective_cmd,
@@ -428,6 +428,19 @@ def install_mcp(
         slug=slug, status="installed", command=effective_cmd,
         message=stdout.strip() or "registered",
     )
+
+
+def _split_install_command(command: str) -> list[str]:
+    tokens = shlex.split(command, posix=os.name != "nt")
+    if os.name == "nt":
+        tokens = [_strip_surrounding_quotes(token) for token in tokens]
+    return tokens
+
+
+def _strip_surrounding_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def uninstall_mcp(

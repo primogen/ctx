@@ -379,6 +379,36 @@ class TestInstallMcp:
         )
         assert r.status == "invalid-cmd"
 
+    def test_windows_command_split_preserves_drive_path_backslashes(
+        self,
+        wiki_dir: Path,
+        fake_claude: dict[str, Any],
+        isolated_manifest: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _write_entity(wiki_dir, "srv-win", {"status": "cataloged"})
+        monkeypatch.setattr(mcp_install.os, "name", "nt")
+
+        r = mcp_install.install_mcp(
+            "srv-win",
+            wiki_dir=wiki_dir,
+            command=r'python C:\Users\me\server.py --flag "two words"',
+            auto=True,
+        )
+
+        assert r.status == "installed"
+        assert fake_claude["calls"][0] == [
+            "claude",
+            "mcp",
+            "add",
+            "srv-win",
+            "--",
+            "python",
+            r"C:\Users\me\server.py",
+            "--flag",
+            "two words",
+        ]
+
     # Strix vuln-0002 regression: even when the first token is allowlisted,
     # code-execution argument forms must be rejected. A tampered frontmatter
     # install_cmd could otherwise invoke arbitrary interpreter-controlled

@@ -188,7 +188,12 @@ def _resolve_target(
     target: Path | None,
 ) -> Path:
     root = installs_root.expanduser().resolve()
-    chosen = (target.expanduser() if target is not None else root / slug).resolve()
+    if target is None:
+        candidate = root / slug
+    else:
+        expanded = target.expanduser()
+        candidate = expanded if expanded.is_absolute() else root / expanded
+    chosen = candidate.resolve()
     if not _is_strictly_within(chosen, root):
         raise ValueError(f"target must stay under installs root {root}")
     return chosen
