@@ -218,6 +218,14 @@ checked-in files are staged and warns when entity sources changed. Run
 `ctx-wiki-graphify`, validate, repack, and stage the artifacts explicitly
 for skill, agent, MCP server, or harness catalog releases.
 
+Graphify exports stage and validate each generated artifact before atomic
+promotion. `graph.json`, `graph-delta.json`, `communities.json`,
+`graph-report.md`, and `graph-export-manifest.json` each get a sibling
+`*.promotion.json` file with candidate, current, and `last_good` hashes plus
+rollback metadata. The manifest is promoted last, so a crash between artifact
+promotion and manifest promotion is detected as an incomplete export and the
+next run rebuilds instead of trusting mixed graph files.
+
 ## Edge-count history
 
 | Version | Edges | Note |

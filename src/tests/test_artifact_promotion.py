@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,9 @@ def test_promote_staged_artifact_validates_replaces_and_records_metadata(
     assert metadata["previous"]["size"] == 4
     assert metadata["candidate"]["size"] == 4
     assert metadata["current"]["sha256"] == metadata["candidate"]["sha256"]
+    assert metadata["last_good"] == metadata["previous"]
+    assert metadata["rollback"]["available"] is True
+    assert metadata["rollback"]["sha256"] == metadata["previous"]["sha256"]
 
 
 def test_promote_staged_artifact_validation_failure_preserves_target(
@@ -57,6 +61,21 @@ def test_promote_staged_artifact_validation_failure_preserves_target(
     assert target.read_bytes() == b"old\n"
     assert staged.exists()
     assert not target.with_name("artifact.txt.promotion.json").exists()
+
+    malformed_json = tmp_path / "broken.json"
+    malformed_json.write_text("{", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid JSON artifact"):
+        artifact_promotion.validate_json_artifact(malformed_json)
+
+    truncated_gzip = tmp_path / "broken.json.gz"
+    truncated_gzip.write_bytes(b"\x1f\x8b")
+    with pytest.raises(ValueError, match="invalid gzip JSON artifact"):
+        artifact_promotion.validate_gzip_json_artifact(truncated_gzip)
+
+    valid_gzip = tmp_path / "catalog.json.gz"
+    with gzip.open(valid_gzip, "wt", encoding="utf-8") as fh:
+        json.dump({"skills": []}, fh)
+    artifact_promotion.validate_gzip_json_artifact(valid_gzip, required_keys=("skills",))
 
 
 def test_promote_staged_artifact_replace_failure_preserves_target_and_last_good(
@@ -83,6 +102,8 @@ def test_promote_staged_artifact_replace_failure_preserves_target_and_last_good(
     assert staged.exists()
     assert metadata["status"] == "staged"
     assert metadata["previous"]["sha256"] != metadata["candidate"]["sha256"]
+    assert metadata["last_good"] == metadata["previous"]
+    assert metadata["rollback"]["available"] is True
 
 
 def test_promote_staged_artifact_recovers_after_post_replace_crash(

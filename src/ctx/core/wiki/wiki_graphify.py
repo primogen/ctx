@@ -33,6 +33,11 @@ from ctx.core.entity_types import (
     entity_wikilink,
     mcp_shard,
 )
+from ctx.core.wiki.artifact_promotion import (
+    ArtifactValidator,
+    promote_staged_artifact,
+    validate_json_artifact,
+)
 from ctx.core.wiki.wiki_utils import parse_frontmatter as _parse_fm
 from ctx.utils._fs_utils import safe_atomic_write_text
 
@@ -1505,10 +1510,13 @@ def export_graph(
         graph_meta["export_id"] = export_id
     else:
         graph_data["graph"] = {"export_id": export_id}
-    safe_atomic_write_text(
-        GRAPH_OUT / "graph.json",
+    _stage_and_promote_graph_artifact(
+        "graph.json",
         json.dumps(graph_data, indent=2, default=str),
-        encoding="utf-8",
+        validate=lambda path: validate_json_artifact(
+            path,
+            required_keys=("nodes", "edges", "graph"),
+        ),
     )
 
     # No binary sidecar. An earlier revision wrote ``graph.pickle`` next
@@ -1524,10 +1532,13 @@ def export_graph(
     # stat a single file to detect changes.
     delta = _build_delta(G, delta_nodes or set())
     delta["export_id"] = export_id
-    safe_atomic_write_text(
-        GRAPH_OUT / "graph-delta.json",
+    _stage_and_promote_graph_artifact(
+        "graph-delta.json",
         json.dumps(delta, indent=2, default=str),
-        encoding="utf-8",
+        validate=lambda path: validate_json_artifact(
+            path,
+            required_keys=("version", "full_rebuild", "export_id"),
+        ),
     )
 
     # Community labels
@@ -1535,8 +1546,8 @@ def export_graph(
     for cid, members in communities.items():
         labels[cid] = label_community(G, members)
 
-    safe_atomic_write_text(
-        GRAPH_OUT / "communities.json",
+    _stage_and_promote_graph_artifact(
+        "communities.json",
         json.dumps({
             "export_id": export_id,
             "communities": {str(cid): {"label": labels[cid], "members": members}
@@ -1544,7 +1555,10 @@ def export_graph(
             "total_communities": len(communities),
             "generated": TODAY,
         }, indent=2),
-        encoding="utf-8",
+        validate=lambda path: validate_json_artifact(
+            path,
+            required_keys=("export_id", "communities", "total_communities"),
+        ),
     )
 
     # God nodes (highest degree)
@@ -1567,13 +1581,12 @@ def export_graph(
     for cid, members in sorted(communities.items(), key=lambda x: -len(x[1])):
         report_lines.append(f"- **{labels[cid]}** — {len(members)} members")
 
-    safe_atomic_write_text(
-        GRAPH_OUT / "graph-report.md",
+    _stage_and_promote_graph_artifact(
+        "graph-report.md",
         "\n".join(report_lines),
-        encoding="utf-8",
     )
-    safe_atomic_write_text(
-        GRAPH_OUT / GRAPH_EXPORT_MANIFEST,
+    _stage_and_promote_graph_artifact(
+        GRAPH_EXPORT_MANIFEST,
         json.dumps({
             "version": 1,
             "export_id": export_id,
@@ -1590,9 +1603,24 @@ def export_graph(
                 "communities": len(communities),
             },
         }, indent=2),
-        encoding="utf-8",
+        validate=lambda path: validate_json_artifact(
+            path,
+            required_keys=("version", "export_id", "artifacts", "counts"),
+        ),
     )
     print(f"Graph exported to {GRAPH_OUT}/")
+
+
+def _stage_and_promote_graph_artifact(
+    name: str,
+    text: str,
+    *,
+    validate: ArtifactValidator | None = None,
+) -> None:
+    target = GRAPH_OUT / name
+    staged = target.with_name(f"{target.name}.staged")
+    safe_atomic_write_text(staged, text, encoding="utf-8")
+    promote_staged_artifact(staged, target, validate=validate)
 
 
 def main() -> None:
