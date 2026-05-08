@@ -72,13 +72,13 @@
   },
 
   "graph": {
-    "_comment": "Knowledge-graph edge weighting for wiki_graphify. Base edges between entity pages (skill ↔ agent ↔ mcp-server ↔ harness, any combination) come from semantic similarity, explicit tags, slug tokens, source overlap, or direct wikilinks. Semantic/tag/token weights must sum to 1.0. min_edge_weight drops weak final blended edges after scoring; default 0 preserves the shipped graph. Edge boosts then add explainable rank signals (direct links, source overlap, Adamic-Adar, type affinity, usage, quality) without creating edges by themselves. Override any key in your user config (~/.claude/skill-system-config.json).",
+    "_comment": "Knowledge-graph edge weighting for wiki_graphify. Base edges between entity pages (skill ↔ agent ↔ mcp-server ↔ harness, any combination) come from semantic similarity, explicit tags, slug tokens, source overlap, or direct wikilinks. Semantic/tag/token weights must sum to 1.0. min_edge_weight drops weak final blended edges after scoring; default 0.03 is the calibrated shipped graph floor. Edge boosts then add explainable rank signals (direct links, source overlap, Adamic-Adar, type affinity, usage, quality) without creating edges by themselves. Override any key in your user config (~/.claude/skill-system-config.json).",
     "edge_weights": {
       "semantic":    0.70,
       "tags":        0.15,
       "slug_tokens": 0.15
     },
-    "min_edge_weight": 0.0,
+    "min_edge_weight": 0.03,
     "semantic": {
       "_comment": "Semantic edge construction uses two thresholds so you can tune display strictness WITHOUT paying to rebuild the graph. build_floor is the low bar for inclusion (all pairs at or above this survive to graph.json); min_cosine is the query/display filter that consumers (resolve, visualize, recommend) apply at read time. build_floor must be <= min_cosine. Rebuilding is only required when you change top_k, build_floor, or the entity body text that drives the cached embeddings — min_cosine alone is rebuild-free.",
       "top_k": 20,

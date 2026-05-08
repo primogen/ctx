@@ -89,7 +89,9 @@ weights form the base blend from `config.json`; source overlap and direct
 links add configured boosts. Existing edges can also receive explainable
 ranking boosts from Adamic-Adar shared-neighbor structure, type affinity,
 usage telemetry, and quality scores. Those boost-only signals do not create
-edges by themselves.
+edges by themselves. The shipped default `graph.min_edge_weight` is `0.03`;
+calibration against the 2026-05 shipped graph showed this is the highest
+floor with zero edge loss, while `0.05` would remove roughly 29.7% of edges.
 
 Edge metadata keeps the ingredients explainable: `semantic_sim`,
 `shared_tags`, `shared_tokens`, `shared_sources`, `direct_link`,

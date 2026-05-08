@@ -162,7 +162,9 @@ backups and transient `.lock` files must not appear in the shipped tarball.
 The graph is built by `ctx.core.wiki.wiki_graphify` and the `ctx-wiki-graphify`
 console script. Edges blend semantic similarity, explicit tag overlap,
 slug-token overlap, source overlap, direct links, quality, usage, type affinity,
-and graph-structure signals where available.
+and graph-structure signals where available. The shipped default
+`graph.min_edge_weight` is `0.03`, chosen from artifact calibration because it
+keeps the current topology intact while recording the real shipped floor.
 
 `nashsu/llm_wiki` was reviewed for design ideas around persistent wiki
 contracts, queues, retrieval, and graph maintenance. ctx does not vendor that
