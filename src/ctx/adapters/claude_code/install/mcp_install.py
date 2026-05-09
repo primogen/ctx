@@ -431,9 +431,10 @@ def install_mcp(
     )
 
 
-def _split_install_command(command: str) -> list[str]:
-    tokens = shlex.split(command, posix=os.name != "nt")
-    if os.name == "nt":
+def _split_install_command(command: str, *, windows: bool | None = None) -> list[str]:
+    use_windows_rules = os.name == "nt" if windows is None else windows
+    tokens = shlex.split(command, posix=not use_windows_rules)
+    if use_windows_rules:
         tokens = [_strip_surrounding_quotes(token) for token in tokens]
     return tokens
 

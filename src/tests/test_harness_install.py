@@ -668,10 +668,11 @@ def test_run_command_resolves_bare_executable(
     assert captured_cmd[0] == resolved
 
 
-def test_split_command_preserves_windows_backslashes(monkeypatch: Any) -> None:
-    monkeypatch.setattr(harness_install.os, "name", "nt")
-
-    parts = harness_install._split_command(r'python "C:\Users\me\script.py"')
+def test_split_command_preserves_windows_backslashes() -> None:
+    parts = harness_install._split_command(
+        r'python "C:\Users\me\script.py"',
+        windows=True,
+    )
 
     assert parts == ["python", r"C:\Users\me\script.py"]
 

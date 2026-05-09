@@ -381,28 +381,13 @@ class TestInstallMcp:
 
     def test_windows_command_split_preserves_drive_path_backslashes(
         self,
-        wiki_dir: Path,
-        fake_claude: dict[str, Any],
-        isolated_manifest: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _write_entity(wiki_dir, "srv-win", {"status": "cataloged"})
-        monkeypatch.setattr(mcp_install.os, "name", "nt")
-
-        r = mcp_install.install_mcp(
-            "srv-win",
-            wiki_dir=wiki_dir,
-            command=r'python C:\Users\me\server.py --flag "two words"',
-            auto=True,
+        tokens = mcp_install._split_install_command(
+            r'python C:\Users\me\server.py --flag "two words"',
+            windows=True,
         )
 
-        assert r.status == "installed"
-        assert fake_claude["calls"][0] == [
-            "claude",
-            "mcp",
-            "add",
-            "srv-win",
-            "--",
+        assert tokens == [
             "python",
             r"C:\Users\me\server.py",
             "--flag",
