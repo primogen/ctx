@@ -7,6 +7,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [0.7.16] - 2026-05-09
+
+### Fixed
+
+- Passed explicit repository context to release-asset upload commands so
+  publish jobs can create and update GitHub releases without a checkout.
+
 ## [0.7.15] - 2026-05-09
 
 ### Fixed

@@ -175,6 +175,7 @@ def test_publish_workflow_validates_and_uploads_graph_assets() -> None:
     assert "python src/update_repo_stats.py --check" in workflow
     assert "graph-release-assets" in workflow
     assert "gh release upload" in workflow
+    assert '--repo "$GITHUB_REPOSITORY"' in workflow
     assert "needs.release-assets.result == 'success'" in workflow
     assert "continue-on-error: true" not in workflow
     assert "needs.release-assets.result == 'skipped'" not in workflow
