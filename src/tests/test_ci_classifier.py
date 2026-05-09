@@ -207,6 +207,47 @@ def test_no_test_policy_exempts_release_metadata_only_changes() -> None:
     assert result.message == "Policy exempted for release metadata-only changes."
 
 
+def test_no_test_policy_exempts_release_metadata_with_generated_stats() -> None:
+    files = [
+        "CHANGELOG.md",
+        "README.md",
+        "docs/index.md",
+        "pyproject.toml",
+        "src/ctx/__init__.py",
+    ]
+    diffs = {
+        "CHANGELOG.md": "+## [0.7.17] - 2026-05-09\n",
+        "README.md": (
+            "-[![Tests](https://img.shields.io/badge/Tests-3693_collected-brightgreen.svg)](#)\n"
+            "+[![Tests](https://img.shields.io/badge/Tests-3696_collected-brightgreen.svg)](#)\n"
+        ),
+        "docs/index.md": (
+            "-    3,693 tests collected. Ships console scripts.\n"
+            "+    3,696 tests collected. Ships console scripts.\n"
+        ),
+        "pyproject.toml": '-version = "0.7.16"\n+version = "0.7.17"\n',
+        "src/ctx/__init__.py": '-__version__ = "0.7.16"\n+__version__ = "0.7.17"\n',
+    }
+
+    assert is_release_metadata_only(files, diffs)
+    result = evaluate_policy(files, (), diffs)
+    assert result.passed is True
+
+
+def test_no_test_policy_rejects_release_metadata_with_arbitrary_readme_change() -> None:
+    files = ["CHANGELOG.md", "README.md", "pyproject.toml", "src/ctx/__init__.py"]
+    diffs = {
+        "CHANGELOG.md": "+## [0.7.17] - 2026-05-09\n",
+        "README.md": "+New feature prose.\n",
+        "pyproject.toml": '-version = "0.7.16"\n+version = "0.7.17"\n',
+        "src/ctx/__init__.py": '-__version__ = "0.7.16"\n+__version__ = "0.7.17"\n',
+    }
+
+    assert not is_release_metadata_only(files, diffs)
+    result = evaluate_policy(files, (), diffs)
+    assert result.passed is False
+
+
 def test_no_test_policy_rejects_pyproject_dependency_change_without_tests() -> None:
     files = ["pyproject.toml"]
     diffs = {"pyproject.toml": '+    "new-dependency>=1",\n'}

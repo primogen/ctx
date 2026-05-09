@@ -15,9 +15,16 @@ RELEASE_METADATA_FILES = {
     "src/__init__.py",
     "src/ctx/__init__.py",
 }
+RELEASE_GENERATED_STATS_FILES = {
+    "README.md",
+    "docs/index.md",
+}
 VERSION_LINE_RE = re.compile(r'version = "\d+\.\d+\.\d+(?:[-+._a-zA-Z0-9]*)?"')
 INIT_VERSION_LINE_RE = re.compile(
     r'__version__ = "\d+\.\d+\.\d+(?:[-+._a-zA-Z0-9]*)?"'
+)
+TEST_COUNT_STATS_RE = re.compile(
+    r".*(Tests-\d+_collected|[\d,]+ tests collected).*"
 )
 
 
@@ -51,11 +58,21 @@ def is_release_metadata_only(
     diffs_by_file: dict[str, str],
 ) -> bool:
     files = tuple(path.strip().replace("\\", "/") for path in changed_files if path)
-    if not files or any(path not in RELEASE_METADATA_FILES for path in files):
+    allowed_files = RELEASE_METADATA_FILES | RELEASE_GENERATED_STATS_FILES
+    if not files or any(path not in allowed_files for path in files):
+        return False
+    if not any(path in RELEASE_METADATA_FILES for path in files):
         return False
 
     for path in files:
         if path == "CHANGELOG.md":
+            continue
+        if path in RELEASE_GENERATED_STATS_FILES:
+            for line in diffs_by_file.get(path, "").splitlines():
+                if not line.startswith(("+", "-")) or line.startswith(("+++", "---")):
+                    continue
+                if not TEST_COUNT_STATS_RE.fullmatch(line[1:].strip()):
+                    return False
             continue
         expected = VERSION_LINE_RE if path == "pyproject.toml" else INIT_VERSION_LINE_RE
         for line in diffs_by_file.get(path, "").splitlines():
