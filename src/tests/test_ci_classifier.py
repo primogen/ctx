@@ -168,6 +168,8 @@ def test_publish_workflow_validates_and_uploads_graph_assets() -> None:
     workflow = Path(".github/workflows/publish.yml").read_text(encoding="utf-8")
 
     assert "Resolve release graph LFS artifacts" in workflow
+    assert "trying matching prior release asset" in workflow
+    assert "sha256:{expected_oid} size:{expected_size}" in workflow
     assert "Validate release graph artifacts" in workflow
     assert "python src/validate_graph_artifacts.py" in workflow
     assert "python src/update_repo_stats.py --check" in workflow

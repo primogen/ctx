@@ -7,6 +7,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [0.7.15] - 2026-05-09
+
+### Fixed
+
+- Recovered release publishing when GitHub LFS budget is exhausted by hydrating
+  `wiki-graph.tar.gz` from a previous release asset only when its SHA-256 and
+  byte size match the checked-in LFS pointer.
+
 ## [0.7.14] - 2026-05-09
 
 ### Fixed
