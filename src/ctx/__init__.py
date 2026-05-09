@@ -30,7 +30,7 @@ Package layout:
     ctx.utils      - low-level primitives (safe names, atomic IO)
 """
 
-__version__ = "0.7.16"
+__version__ = "0.7.17"
 
 
 # Public library surface — anything listed here is safe for third-
