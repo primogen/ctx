@@ -16,7 +16,7 @@ What it does:
      is missing (otherwise leaves the user's config alone).
   3. Seeds the starter toolboxes via ``ctx-toolbox init`` if the
      global toolboxes file is empty.
-  4. In a terminal, guides first-time users through hooks, graph build,
+  4. In a terminal, guides first-time users through hooks, graph install,
      model profile, and harness recommendation setup. Automation can
      keep the non-interactive path by passing explicit flags such as
      ``--model-mode skip``; ``--wizard`` forces the prompts.
@@ -24,10 +24,10 @@ What it does:
      ``ctx-install-hooks``. Skipped unless the wizard or ``--hooks`` asks
      for it, so the user has to opt in to modifying
      ``~/.claude/settings.json``.
-  6. Optionally: runs the initial graph/wiki build if missing.
-     Skipped unless the wizard or ``--graph`` asks for it — building
-     graph from 2k+ skills is a multi-minute operation and not everyone
-     wants it.
+  6. Optionally: installs the initial graph/wiki archive if missing.
+     Skipped unless the wizard or ``--graph`` asks for it. Source
+     checkouts use ``graph/wiki-graph.tar.gz``; pip installs download
+     the matching release asset.
 
 Idempotent: re-running only writes what's missing. Never overwrites
 a user's config or hook settings without an explicit ``--force`` flag.
@@ -39,10 +39,16 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
+import urllib.request
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 
@@ -173,20 +179,142 @@ def _resolve_ctx_src_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-# ─── Graph build (opt-in, slow) ─────────────────────────────────────────────
+# ─── Graph install (opt-in) ────────────────────────────────────────────────
 
 
-def build_graph() -> int:
-    """Run ``wiki_graphify`` to rebuild the knowledge graph."""
-    result = subprocess.run(
-        [sys.executable, "-m", "ctx.core.wiki.wiki_graphify"],
-        capture_output=True, text=True, check=False,
+_GRAPH_ARCHIVE_NAME = "wiki-graph.tar.gz"
+_GRAPH_RELEASE_URL = (
+    "https://github.com/stevesolun/ctx/releases/download/"
+    "v{version}/wiki-graph.tar.gz"
+)
+
+
+def build_graph(
+    claude: Path | None = None,
+    *,
+    force: bool = False,
+    graph_url: str | None = None,
+) -> int:
+    """Install the pre-built knowledge graph into ``~/.claude/skill-wiki``."""
+    claude_dir = claude or _claude_dir()
+    wiki_dir = claude_dir / "skill-wiki"
+    graph_json = wiki_dir / "graphify-out" / "graph.json"
+    if graph_json.exists() and not force:
+        print(f"Graph already installed at {graph_json}; use --force to refresh.")
+        return 0
+
+    temp_dir: tempfile.TemporaryDirectory[str] | None = None
+    archive = _find_local_graph_archive()
+    try:
+        if archive is None:
+            temp_dir = tempfile.TemporaryDirectory(prefix="ctx-graph-download-")
+            archive = Path(temp_dir.name) / _GRAPH_ARCHIVE_NAME
+            url = graph_url or _release_graph_url()
+            print(f"Downloading pre-built graph from {url}")
+            _download_graph_archive(archive, url=url)
+        else:
+            print(f"Installing pre-built graph from {archive}")
+        _extract_graph_archive(archive, wiki_dir)
+    except Exception as exc:
+        print(
+            f"  [error] graph install failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
+
+    if not graph_json.exists():
+        print(f"  [error] graph archive did not contain {graph_json}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _find_local_graph_archive() -> Path | None:
+    module_path = Path(__file__).resolve()
+    candidates = (
+        module_path.parent.parent / "graph" / _GRAPH_ARCHIVE_NAME,
+        Path.cwd() / "graph" / _GRAPH_ARCHIVE_NAME,
     )
-    if result.stdout.strip():
-        print(result.stdout.rstrip())
-    if result.stderr.strip():
-        print(result.stderr.rstrip(), file=sys.stderr)
-    return result.returncode
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _release_graph_url() -> str:
+    return _GRAPH_RELEASE_URL.format(version=_package_version())
+
+
+def _package_version() -> str:
+    try:
+        return package_version("claude-ctx")
+    except PackageNotFoundError:
+        try:
+            from ctx import __version__
+        except Exception:
+            return "0.7.13"
+        return str(__version__)
+
+
+def _download_graph_archive(destination: Path, *, url: str) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310
+        with destination.open("wb") as fh:
+            shutil.copyfileobj(response, fh)
+
+
+def _extract_graph_archive(archive: Path, target_dir: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_root = target_dir.resolve()
+    with tarfile.open(archive, "r:gz") as tf:
+        members = tf.getmembers()
+        for member in members:
+            _validate_graph_tar_member(member)
+            destination = _graph_member_destination(target_dir, target_root, member)
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            source = tf.extractfile(member)
+            if source is None:
+                raise ValueError(f"graph archive file is unreadable: {member.name}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _ensure_path_under_root(destination.parent, target_root)
+            with source, destination.open("wb") as fh:
+                shutil.copyfileobj(source, fh)
+
+
+def _graph_member_destination(
+    target_dir: Path,
+    target_root: Path,
+    member: tarfile.TarInfo,
+) -> Path:
+    destination = target_dir.joinpath(*PurePosixPath(member.name.replace("\\", "/")).parts)
+    _ensure_path_under_root(destination, target_root)
+    return destination
+
+
+def _ensure_path_under_root(path: Path, root: Path) -> None:
+    resolved = path.resolve(strict=False)
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(f"graph archive path escapes target: {path}")
+
+
+def _validate_graph_tar_member(member: tarfile.TarInfo) -> None:
+    name = member.name.replace("\\", "/")
+    path = PurePosixPath(name)
+    if (
+        not name
+        or name.startswith("/")
+        or re.match(r"^[A-Za-z]:", name)
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError(f"unsafe graph archive path: {member.name}")
+    if member.issym() or member.islnk():
+        raise ValueError(f"graph archive links are not allowed: {member.name}")
+    if not (member.isdir() or member.isfile()):
+        raise ValueError(f"unsupported graph archive member: {member.name}")
 
 
 # ─── Model onboarding ───────────────────────────────────────────────────────
@@ -1039,7 +1167,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--graph", action="store_true",
-        help="Rebuild the knowledge graph after setup (slow: >1 minute)",
+        help=(
+            "Install the pre-built knowledge graph after setup. Uses local "
+            "graph/wiki-graph.tar.gz when present; otherwise downloads the "
+            "matching release asset."
+        ),
+    )
+    parser.add_argument(
+        "--graph-url",
+        help="Override the pre-built wiki-graph.tar.gz download URL",
     )
     parser.add_argument(
         "--force", action="store_true",
@@ -1049,7 +1185,7 @@ def main(argv: list[str] | None = None) -> int:
         "--wizard",
         action="store_true",
         help=(
-            "Prompt for hooks, graph build, model profile, and harness "
+            "Prompt for hooks, graph install, model profile, and harness "
             "recommendation setup. Plain ctx-init does this automatically "
             "when run in an interactive terminal."
         ),
@@ -1121,15 +1257,15 @@ def main(argv: list[str] | None = None) -> int:
         print("  [skip] hook injection (pass --hooks to enable)")
 
     if args.graph:
-        rc = build_graph()
+        rc = build_graph(claude, force=args.force, graph_url=args.graph_url)
         if rc == 0:
-            print("  [ok] knowledge graph rebuilt")
+            print("  [ok] knowledge graph installed")
         else:
-            print(f"  [warn] graph build returned {rc}", file=sys.stderr)
+            print(f"  [warn] graph install returned {rc}", file=sys.stderr)
             if final_rc == 0:
                 final_rc = rc
     else:
-        print("  [skip] graph build (pass --graph to rebuild)")
+        print("  [skip] graph install (pass --graph to install)")
 
     rc = run_model_onboarding(args, claude)
     if rc != 0 and final_rc == 0:
@@ -1142,7 +1278,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.hooks:
         print("  - ctx-init --hooks                 # wire live observation")
     if not args.graph:
-        print("  - ctx-init --graph                 # build knowledge graph")
+        print("  - ctx-init --graph                 # install knowledge graph")
     return final_rc
 
 

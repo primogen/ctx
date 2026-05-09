@@ -43,12 +43,20 @@ shipped tarball.
 
 ## Install
 
-Extract the tarball into your `~/.claude/skill-wiki/` to get a
-ready-to-query graph plus every shipped skill/agent/MCP entity page,
-cataloged harness pages when present, remote-cataloged Skills.sh skill
-pages, concept pages, and converted micro-skill pipelines. The extracted
-tree also includes the Skills.sh catalog JSON used by the shared
-recommender:
+Use `ctx-init --graph` to install the graph. Source checkouts use
+`graph/wiki-graph.tar.gz`; pip installs download the matching GitHub
+release asset for the installed package version:
+
+```bash
+ctx-init --graph
+```
+
+Manual extraction is still supported for offline/source installs. Extract
+the tarball into your `~/.claude/skill-wiki/` to get a ready-to-query graph
+plus every shipped skill/agent/MCP entity page, cataloged harness pages when
+present, remote-cataloged Skills.sh skill pages, concept pages, and converted
+micro-skill pipelines. The extracted tree also includes the Skills.sh catalog
+JSON used by the shared recommender:
 
 ```bash
 mkdir -p ~/.claude/skill-wiki

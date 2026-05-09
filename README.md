@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![PyPI](https://img.shields.io/pypi/v/claude-ctx.svg)](https://pypi.org/project/claude-ctx/)
-[![Tests](https://img.shields.io/badge/Tests-3683_collected-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/Tests-3684_collected-brightgreen.svg)](#)
 [![Graph](https://img.shields.io/badge/Graph-102%2C696_nodes_/_2.9M_edges-red.svg)](graph/)
 [![Docs](https://img.shields.io/badge/docs-MkDocs_Material-blue.svg)](https://stevesolun.github.io/ctx/)
 
@@ -32,22 +32,29 @@ Current shipped snapshot:
 ```bash
 pip install claude-ctx
 ctx-init                    # terminal wizard: hooks, graph, model, harness goal
+ctx-init --graph --model-mode skip  # non-interactive setup with recommendations
 ctx-init --wizard           # force the same wizard from scripts/tests
-ctx-init --model-mode skip  # non-interactive setup for automation
 ctx-init --model-mode custom --model openai/gpt-5.5 --goal "build a CAD agent"
 ```
 
 Optional extras: `pip install "claude-ctx[embeddings]"` for the semantic backend, `pip install "claude-ctx[harness]"` for local/API model harness runs, `pip install "claude-ctx[dev]"` for the test toolchain.
 
-### Pre-built knowledge graph (optional)
+### Pre-built knowledge graph
 
-A pre-built knowledge graph of 102,696 nodes and 2.9M edges ships as a tarball. The same tarball includes `external-catalogs/skills-sh/catalog.json`, 89,463 body-backed Skills.sh skill pages under `entities/skills/skills-sh-*.md`, 89,463 hydrated installable Skills.sh `SKILL.md` files under `converted/skills-sh-*/`, and 13 cataloged harness pages under `entities/harnesses/`. Extract to get a ready-to-use `~/.claude/skill-wiki/`:
+Graph-backed recommendations need the pre-built wiki graph. Source checkouts
+use `graph/wiki-graph.tar.gz`; pip installs download the matching GitHub
+release asset:
 
 ```bash
-# after `git clone` — or download graph/wiki-graph.tar.gz from the GitHub release
-mkdir -p ~/.claude/skill-wiki
-tar xzf graph/wiki-graph.tar.gz -C ~/.claude/skill-wiki/
+ctx-init --graph
 ```
+
+A pre-built knowledge graph of 102,696 nodes and 2.9M edges ships as a
+tarball. The same tarball includes `external-catalogs/skills-sh/catalog.json`,
+89,463 body-backed Skills.sh skill pages under `entities/skills/skills-sh-*.md`,
+89,463 hydrated installable Skills.sh `SKILL.md` files under
+`converted/skills-sh-*/`, and 13 cataloged harness pages under
+`entities/harnesses/`.
 
 > **Windows:** PowerShell's built-in `tar.exe` does not support
 > `--force-local`; use `tar -xzf graph\wiki-graph.tar.gz -C "$env:USERPROFILE\.claude\skill-wiki"`.

@@ -17,6 +17,7 @@ memory that gets smarter every session.
 
     ```bash
     pip install claude-ctx
+    ctx-init --graph --model-mode skip
     ```
 
     Optional extras: `pip install "claude-ctx[embeddings]"` for the
@@ -24,7 +25,10 @@ memory that gets smarter every session.
     model harness runs, `pip install "claude-ctx[dev]"` for the
     pytest/mypy/ruff toolchain. After install the `ctx-scan-repo`,
     `ctx-skill-quality`, `ctx-skill-health`, and `ctx-toolbox` console
-    scripts are on PATH.
+    scripts are on PATH. `ctx-init --graph` installs the pre-built wiki
+    graph that powers recommendations; source checkouts use
+    `graph/wiki-graph.tar.gz`, while pip installs download the matching
+    GitHub release asset.
 
     Custom-model users can run
     `ctx-init --model-mode custom --model <provider/model> --goal "<task>"`
@@ -182,7 +186,7 @@ ones are flagged. New ones self-ingest.
     ---
 
     **v0.7.x** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
-    3,683 tests collected. Ships console scripts including `ctx-init`,
+    3,684 tests collected. Ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
     skills, agents, and MCP servers, plus harness wiki/graph browsing),
     `ctx-dedup-check` (pre-ship near-duplicate gate), and
