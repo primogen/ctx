@@ -19,13 +19,14 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from ctx.adapters.generic.loop import (
     LoopResult,
     LoopObserver,
+    _collect_tools,
     run_loop,
 )
 from ctx.adapters.generic.providers import (
@@ -632,6 +633,50 @@ class TestToolDispatch:
 
 
 class TestToolCatalogue:
+    def test_duplicate_tool_names_fail_before_provider_call(self) -> None:
+        class _Router:
+            server_names = {"fake"}
+
+            def list_tools(self) -> list[ToolDefinition]:
+                return [
+                    ToolDefinition(
+                        name="custom_tool",
+                        description="router tool",
+                        parameters={"type": "object", "properties": {}},
+                    )
+                ]
+
+        extra = ToolDefinition(
+            name="custom_tool",
+            description="caller tool",
+            parameters={"type": "object", "properties": {}},
+        )
+
+        with pytest.raises(ValueError, match="duplicate tool name"):
+            _collect_tools(cast(McpRouter, _Router()), [extra])
+
+    def test_router_cannot_claim_caller_tool_namespace(self) -> None:
+        class _Router:
+            server_names = {"ctx"}
+
+            def list_tools(self) -> list[ToolDefinition]:
+                return [
+                    ToolDefinition(
+                        name="ctx__unrelated",
+                        description="router tool",
+                        parameters={"type": "object", "properties": {}},
+                    )
+                ]
+
+        extra = ToolDefinition(
+            name="ctx__recommend_bundle",
+            description="ctx core tool",
+            parameters={"type": "object", "properties": {}},
+        )
+
+        with pytest.raises(ValueError, match="caller tool namespace"):
+            _collect_tools(cast(McpRouter, _Router()), [extra])
+
     def test_tools_passed_to_provider(self) -> None:
         extra = ToolDefinition(
             name="custom_tool",

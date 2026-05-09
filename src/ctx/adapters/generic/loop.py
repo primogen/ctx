@@ -49,7 +49,7 @@ from ctx.adapters.generic.providers import (
     ToolDefinition,
     Usage,
 )
-from ctx.adapters.generic.tools import McpRouter, McpServerError
+from ctx.adapters.generic.tools import McpRouter, McpServerError, TOOL_SEPARATOR
 
 
 _logger = logging.getLogger(__name__)
@@ -563,11 +563,28 @@ def _collect_tools(
     extra_tools: list[ToolDefinition] | None,
 ) -> list[ToolDefinition]:
     """Merge router-provided + caller-provided tools into one flat list."""
+    router_tools = list(router.list_tools()) if router is not None else []
+    caller_tools = list(extra_tools or [])
+    if router is not None and caller_tools:
+        reserved_prefixes = {
+            tool.name.split(TOOL_SEPARATOR, 1)[0]
+            for tool in caller_tools
+            if TOOL_SEPARATOR in tool.name
+        }
+        conflicts = sorted(reserved_prefixes & set(router.server_names))
+        if conflicts:
+            raise ValueError(
+                "MCP server name conflicts with caller tool namespace: "
+                + ", ".join(conflicts)
+            )
+
     merged: list[ToolDefinition] = []
-    if router is not None:
-        merged.extend(router.list_tools())
-    if extra_tools:
-        merged.extend(extra_tools)
+    seen: set[str] = set()
+    for tool in [*router_tools, *caller_tools]:
+        if tool.name in seen:
+            raise ValueError(f"duplicate tool name exposed to provider: {tool.name}")
+        seen.add(tool.name)
+        merged.append(tool)
     return merged
 
 
@@ -590,8 +607,6 @@ def _execute_tool(
     model still sees a turn on the conversation; the loop decides
     whether the error ends the run.
     """
-    from ctx.adapters.generic.tools import TOOL_SEPARATOR  # noqa: PLC0415
-
     # Router path
     if router is not None and TOOL_SEPARATOR in call.name:
         server_name = call.name.split(TOOL_SEPARATOR, 1)[0]
