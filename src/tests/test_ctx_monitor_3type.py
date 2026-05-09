@@ -806,7 +806,7 @@ class TestRenderGraphSidebar:
     def test_sidebar_type_checkboxes_include_mcp_server(self, monkeypatch):
         monkeypatch.setattr(_cm, "_graph_stats",
                             lambda: {"nodes": 10, "edges": 20, "available": True})
-        monkeypatch.setattr(_cm, "_top_degree_seeds", lambda: [])
+        monkeypatch.setattr(_cm, "_top_degree_seeds", lambda **_: [])
         html = _cm._render_graph()
         # Four type checkboxes: skill, agent, mcp-server, harness.
         assert "class='graph-type-filter' value='skill'" in html
@@ -817,7 +817,7 @@ class TestRenderGraphSidebar:
     def test_sidebar_has_tag_filter(self, monkeypatch):
         monkeypatch.setattr(_cm, "_graph_stats",
                             lambda: {"nodes": 0, "edges": 0, "available": False})
-        monkeypatch.setattr(_cm, "_top_degree_seeds", lambda: [])
+        monkeypatch.setattr(_cm, "_top_degree_seeds", lambda **_: [])
         html = _cm._render_graph()
         assert "id='tag-filter'" in html
         assert "filter_tokens" in html
@@ -827,7 +827,7 @@ class TestRenderGraphSidebar:
         """The graph list view shows four types; each must be visually distinct."""
         monkeypatch.setattr(_cm, "_graph_stats",
                             lambda: {"nodes": 0, "edges": 0, "available": False})
-        monkeypatch.setattr(_cm, "_top_degree_seeds", lambda: [])
+        monkeypatch.setattr(_cm, "_top_degree_seeds", lambda **_: [])
         html = _cm._render_graph()
         assert ".entity-type-skill" in html
         assert ".entity-type-agent" in html
@@ -841,7 +841,7 @@ class TestRenderGraphSidebar:
     def test_graph_filters_fallback_rows_and_connected_edges(self, monkeypatch):
         monkeypatch.setattr(_cm, "_graph_stats",
                             lambda: {"nodes": 0, "edges": 0, "available": False})
-        monkeypatch.setattr(_cm, "_top_degree_seeds", lambda: [])
+        monkeypatch.setattr(_cm, "_top_degree_seeds", lambda **_: [])
         html = _cm._render_graph()
 
         assert "document.querySelectorAll('[data-testid=\"graph-fallback-node\"]')" in html
@@ -853,7 +853,7 @@ class TestRenderGraphSidebar:
         prefix-stripping regex has to know all four types."""
         monkeypatch.setattr(_cm, "_graph_stats",
                             lambda: {"nodes": 0, "edges": 0, "available": False})
-        monkeypatch.setattr(_cm, "_top_degree_seeds", lambda: [])
+        monkeypatch.setattr(_cm, "_top_degree_seeds", lambda **_: [])
         html = _cm._render_graph()
         # Regex should include mcp-server and harness in the prefix alternation.
         assert "(skill|agent|mcp-server|harness)" in html

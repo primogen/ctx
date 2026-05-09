@@ -100,6 +100,7 @@ class TestDefaults:
 
         assert packaged_default == source_default
         assert packaged_default["paths"]["stack_profile_tmp"].startswith("~")
+        assert packaged_default["knowledge"]["mode"] == "shipped"
         assert "recommendation_min_fit_score" in packaged_default["harness"]
 
         runtime_default = json.loads(

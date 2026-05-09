@@ -29,6 +29,7 @@ import pytest
 
 import ctx.cli.run as run_cli
 from ctx.cli.run import (
+    _apply_mcp_env_overlays,
     _compile_tool_policy,
     _model_provider_prefix,
     _parse_mcp_spec,
@@ -146,12 +147,15 @@ class TestParseMcpSpec:
     def test_preset_github(self) -> None:
         cfg = _parse_mcp_spec("github")
         assert cfg.name == "github"
+        assert "GITHUB_TOKEN" in cfg.credential_env
 
     def test_explicit_form(self) -> None:
         cfg = _parse_mcp_spec("fs:npx -y pkg /tmp")
         assert cfg.name == "fs"
         assert cfg.command == "npx"
         assert cfg.args == ("-y", "pkg", "/tmp")
+        with_env = _apply_mcp_env_overlays([cfg], ["fs:MY_MCP_TOKEN"])[0]
+        assert with_env.credential_env == ("MY_MCP_TOKEN",)
 
     def test_explicit_form_preserves_quoted_args(self) -> None:
         cfg = _parse_mcp_spec(r'fs:npx -y pkg "C:\My Project"')
@@ -810,6 +814,7 @@ class TestResumeCommand:
                         "name": "danger",
                         "command": "definitely-not-a-real-mcp-command",
                         "args": ["--from-session"],
+                        "credential_env": ["DANGER_TOKEN"],
                     }
                 ],
             })
@@ -937,6 +942,58 @@ class TestResumeCommand:
         assert resume_call["api_base"] == "http://127.0.0.1:8000/v1"
         assert resume_call["api_key"] == "secret-value"
 
+    def test_resume_preserves_empty_recorded_system_prompt(
+        self,
+        fake_litellm: Any,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        main(
+            [
+                "run",
+                "--model", "ollama/x",
+                "--task", "first",
+                "--system-prompt", "",
+                "--sessions-dir", str(tmp_path),
+                "--session-id", "empty-system",
+                "--no-ctx-tools",
+                "--quiet",
+            ]
+        )
+        capsys.readouterr()
+        fake_litellm._calls.clear()
+
+        exit_code = main(
+            [
+                "resume",
+                "empty-system",
+                "--task", "follow-up",
+                "--sessions-dir", str(tmp_path),
+                "--quiet",
+            ]
+        )
+
+        assert exit_code == 0
+        resume_messages = fake_litellm._calls[-1]["messages"]
+        assert [message["role"] for message in resume_messages] == [
+            "user",
+            "assistant",
+            "user",
+        ]
+        message_events = [
+            json.loads(line)
+            for line in (tmp_path / "empty-system.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if json.loads(line)["type"] == "message"
+        ]
+        assert [event["content"] for event in message_events].count(
+            "final answer"
+        ) == 2
+        assert [event["content"] for event in message_events].count(
+            "follow-up"
+        ) == 1
+
     def test_resume_inherits_recorded_tool_policy(
         self, fake_litellm: Any, tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
@@ -971,6 +1028,55 @@ class TestResumeCommand:
         payload = json.loads(capsys.readouterr().out)
         assert exit_code == 2
         assert payload["stop_reason"] == "tool_denied"
+
+    def test_resume_counts_prior_usage_against_budget(
+        self,
+        fake_litellm: Any,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        (tmp_path / "budget-resume.jsonl").write_text(
+            json.dumps({
+                "type": "session_start",
+                "ts": "t",
+                "session_id": "budget-resume",
+                "task": "old",
+                "model": "ollama/x",
+                "ctx_tools_enabled": False,
+                "budget_tokens": 10,
+            })
+            + "\n"
+            + json.dumps({
+                "type": "stop",
+                "ts": "t",
+                "session_id": "budget-resume",
+                "stop_reason": "completed",
+                "usage": {
+                    "input_tokens": 6,
+                    "output_tokens": 3,
+                    "cost_usd": None,
+                },
+            })
+            + "\n",
+            encoding="utf-8",
+        )
+
+        exit_code = main(
+            [
+                "resume",
+                "budget-resume",
+                "--task", "follow-up",
+                "--sessions-dir", str(tmp_path),
+                "--json",
+                "--quiet",
+            ]
+        )
+
+        payload = json.loads(capsys.readouterr().out)
+        assert exit_code == 0
+        assert payload["stop_reason"] == "token_budget"
+        assert payload["usage"]["input_tokens"] == 11
+        assert payload["usage"]["output_tokens"] == 6
 
     def test_resume_skips_recorded_mcp_by_default(
         self, fake_litellm: Any, tmp_path: Path,
@@ -1025,6 +1131,7 @@ class TestResumeCommand:
         assert exit_code == 0
         assert len(restored) == 1
         assert restored[0].command == "definitely-not-a-real-mcp-command"
+        assert restored[0].credential_env == ("DANGER_TOKEN",)
         assert "restoring MCP server danger" in captured.err
 
     def test_resume_without_model_in_session_requires_flag(

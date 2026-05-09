@@ -431,7 +431,7 @@ class TestRoundTripWithH2Client:
         wiki = self._build_synthetic_wiki(tmp_path)
         graph_path = self._build_synthetic_graph(tmp_path)
         cfg = McpServerConfig(
-            name="ctx",
+            name="ctx_mcp",
             command=sys.executable,
             args=(
                 "-m", "ctx.mcp_server.server",
@@ -449,7 +449,7 @@ class TestRoundTripWithH2Client:
         wiki = self._build_synthetic_wiki(tmp_path)
         graph_path = self._build_synthetic_graph(tmp_path)
         cfg = McpServerConfig(
-            name="ctx",
+            name="ctx_mcp",
             command=sys.executable,
             args=("-m", "ctx.mcp_server.server"),
             env=_mcp_subprocess_env(wiki, graph_path),

@@ -11,6 +11,7 @@ Env vars (all optional):
   FAKE_MCP_TOOL_ERROR=1         - return isError=True on any tools/call
   FAKE_MCP_IGNORE_TOOL=1        - accept tools/call but never answer
   FAKE_MCP_NOISY_STDERR=1       - write a warning line to stderr on startup
+  FAKE_MCP_STDERR_LINE=<text>   - write this exact line to stderr on startup
   FAKE_MCP_EMIT_NOTIFICATION=1  - emit a progress notification before each
                                   tools/call response
   FAKE_MCP_EXTRA_TOOL=<name>    - add a second tool with this name (for
@@ -114,6 +115,10 @@ def _emit(frame: dict) -> None:
 def main() -> None:
     if os.environ.get("FAKE_MCP_NOISY_STDERR") == "1":
         sys.stderr.write("fake-mcp-server: starting up\n")
+        sys.stderr.flush()
+    stderr_line = os.environ.get("FAKE_MCP_STDERR_LINE")
+    if stderr_line:
+        sys.stderr.write(stderr_line + "\n")
         sys.stderr.flush()
 
     while True:

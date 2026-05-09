@@ -46,7 +46,7 @@ python src/update_repo_stats.py --check  # exit 1 if stale (for CI)
 
 ## Known gaps (intentionally out of scope)
 
-- **Does not rebuild the graph or wiki.** Rebuilding `graph/wiki-graph.tar.gz` takes minutes and churns a 159 MB tree — too heavy for per-commit. Run `python src/wiki_graphify.py` and repack the tarball manually when the skill catalog changes materially.
+- **Does not rebuild the graph or wiki.** Rebuilding `graph/wiki-graph.tar.gz` takes minutes and churns a large artifact — too heavy for per-commit. Run `ctx-wiki-graphify`, then `python src/validate_graph_artifacts.py --deep`, and repack the tarball manually when the skill catalog changes materially.
 - **Does not verify graph integrity.** If `graphify-out/graph.json` is corrupt, you'll get junk numbers. Run the wiki health check (`python src/wiki_orchestrator.py --check`) separately.
 
 ## Related files

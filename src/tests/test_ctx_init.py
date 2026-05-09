@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import builtins
+import io
 import json
 import sys
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -87,7 +89,7 @@ def test_main_creates_everything_in_dry_mode(tmp_path: Path, monkeypatch,
     out = capsys.readouterr().out
     assert "[ok]" in out
     assert "[skip] hook injection" in out
-    assert "[skip] graph build" in out
+    assert "[skip] graph install" in out
 
 
 def test_main_treats_existing_toolboxes_as_idempotent_skip(
@@ -130,6 +132,7 @@ def test_main_auto_wizard_in_terminal_configures_custom_model(
 
     answers = iter([
         "y",                  # hooks
+        "enriched",           # knowledge mode
         "n",                  # graph
         "custom",             # model mode
         "openai/gpt-5.5",     # model
@@ -164,6 +167,9 @@ def test_main_auto_wizard_in_terminal_configures_custom_model(
     assert profile["model"] == "openai/gpt-5.5"
     assert profile["api_key_env"] == "OPENAI_API_KEY"
     assert profile["goal"] == "build CAD artifacts"
+    assert profile["knowledge_mode"] == "enriched"
+    user_config = json.loads((tmp_path / "skill-system-config.json").read_text())
+    assert user_config["knowledge"]["mode"] == "enriched"
 
 
 def test_wizard_flag_prompts_without_tty(tmp_path: Path, monkeypatch) -> None:
@@ -178,7 +184,7 @@ def test_wizard_flag_prompts_without_tty(tmp_path: Path, monkeypatch) -> None:
 
     answers = iter([
         "n",                  # hooks
-        "n",                  # graph
+        "local",              # knowledge mode
         "claude-code",        # model mode
         "maintain FastAPI services",
     ])
@@ -190,6 +196,9 @@ def test_wizard_flag_prompts_without_tty(tmp_path: Path, monkeypatch) -> None:
     profile = json.loads((tmp_path / "ctx-model-profile.json").read_text())
     assert profile["mode"] == "claude-code"
     assert profile["goal"] == "maintain FastAPI services"
+    assert profile["knowledge_mode"] == "local"
+    user_config = json.loads((tmp_path / "skill-system-config.json").read_text())
+    assert user_config["knowledge"]["mode"] == "local"
 
 
 def test_explicit_args_do_not_auto_wizard_in_terminal(
@@ -205,7 +214,9 @@ def test_explicit_args_do_not_auto_wizard_in_terminal(
         lambda _prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")),
     )
 
-    assert ci.main(["--model-mode", "skip"]) == 0
+    assert ci.main(["--model-mode", "skip", "--knowledge-mode", "local"]) == 0
+    user_config = json.loads((tmp_path / "skill-system-config.json").read_text())
+    assert user_config["knowledge"]["mode"] == "local"
 
 
 def test_main_with_hooks_flag_invokes_inject(tmp_path: Path, monkeypatch) -> None:
@@ -228,8 +239,71 @@ def test_main_with_hooks_flag_invokes_inject(tmp_path: Path, monkeypatch) -> Non
     assert not any(c == "inject_hooks" for call in calls for c in call)
 
 
-def test_main_with_graph_flag_invokes_graphify(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(ci, "_claude_dir", lambda: tmp_path)
+def _write_graph_archive(tmp_path: Path) -> Path:
+    source = tmp_path / "archive-source"
+    graph_out = source / "graphify-out"
+    graph_out.mkdir(parents=True)
+    (graph_out / "graph.json").write_text(
+        json.dumps({"graph": {"export_id": "test-export"}, "nodes": [], "links": []}),
+        encoding="utf-8",
+    )
+    (graph_out / "graph-delta.json").write_text(
+        json.dumps({"export_id": "test-export", "nodes": [], "edges": []}),
+        encoding="utf-8",
+    )
+    (graph_out / "communities.json").write_text(
+        json.dumps({"export_id": "test-export", "total_communities": 0}),
+        encoding="utf-8",
+    )
+    (graph_out / "graph-report.md").write_text(
+        "# Graph Report\n\n> Export ID: test-export\n",
+        encoding="utf-8",
+    )
+    (graph_out / "graph-export-manifest.json").write_text(
+        json.dumps({
+            "version": 1,
+            "export_id": "test-export",
+            "artifacts": {
+                "graph": "graph.json",
+                "delta": "graph-delta.json",
+                "communities": "communities.json",
+                "report": "graph-report.md",
+            },
+        }),
+        encoding="utf-8",
+    )
+    external = source / "external-catalogs" / "skills-sh"
+    external.mkdir(parents=True)
+    (external / "catalog.json").write_text("{}", encoding="utf-8")
+    entities = source / "entities" / "skills"
+    entities.mkdir(parents=True)
+    (entities / "current.md").write_text("# Current\n", encoding="utf-8")
+    (source / "index.md").write_text("# Wiki\n", encoding="utf-8")
+    archive = tmp_path / "wiki-graph.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        for path in sorted(source.rglob("*")):
+            if path.is_file():
+                tf.add(path, arcname=path.relative_to(source).as_posix())
+    return archive
+
+
+def test_main_with_graph_flag_installs_prebuilt_graph(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    claude = tmp_path / "home"
+    archive = _write_graph_archive(tmp_path)
+    monkeypatch.setattr(ci, "_claude_dir", lambda: claude)
+    monkeypatch.setattr(ci, "seed_toolboxes", lambda force=False: 0)
+    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda: archive, raising=False)
+    monkeypatch.setattr(
+        ci,
+        "_download_graph_archive",
+        lambda _dest, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected release download")
+        ),
+        raising=False,
+    )
     calls: list[list[str]] = []
 
     class _FakeResult:
@@ -242,10 +316,70 @@ def test_main_with_graph_flag_invokes_graphify(tmp_path: Path, monkeypatch) -> N
         return _FakeResult()
 
     monkeypatch.setattr(ci.subprocess, "run", _fake_run)
-    rc = ci.main(["--graph"])
+    rc = ci.main(["--graph", "--model-mode", "skip"])
     assert rc == 0
-    assert any("ctx.core.wiki.wiki_graphify" in c for c in calls)
+    graph_json = claude / "skill-wiki" / "graphify-out" / "graph.json"
+    graph_payload = json.loads(graph_json.read_text(encoding="utf-8"))
+    assert graph_payload["graph"]["export_id"] == "test-export"
+    assert not any("ctx.core.wiki.wiki_graphify" in c for c in calls)
     assert not any(c == "wiki_graphify" for call in calls for c in call)
+
+
+def test_graph_install_rejects_incomplete_archive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "incomplete-source"
+    graph_out = source / "graphify-out"
+    graph_out.mkdir(parents=True)
+    (graph_out / "graph.json").write_text(
+        json.dumps({"graph": {"export_id": "partial"}, "nodes": []}),
+        encoding="utf-8",
+    )
+    archive = tmp_path / "incomplete-wiki-graph.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(graph_out / "graph.json", arcname="graphify-out/graph.json")
+
+    claude = tmp_path / "home"
+    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda: archive)
+
+    assert ci.build_graph(claude) == 1
+    assert not (claude / "skill-wiki" / "graphify-out" / "graph.json").exists()
+
+
+def test_graph_install_force_prunes_stale_generated_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    archive = _write_graph_archive(tmp_path)
+    claude = tmp_path / "home"
+    stale = claude / "skill-wiki" / "entities" / "skills" / "stale.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("# Stale\n", encoding="utf-8")
+    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda: archive)
+
+    assert ci.build_graph(claude, force=True) == 0
+    assert not stale.exists()
+    assert (claude / "skill-wiki" / "entities" / "skills" / "current.md").is_file()
+
+
+def test_graph_install_rejects_path_traversal_archive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    archive = tmp_path / "malicious-wiki-graph.tar.gz"
+    payload = b"owned"
+    with tarfile.open(archive, "w:gz") as tf:
+        info = tarfile.TarInfo("../evil.txt")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+
+    claude = tmp_path / "home"
+    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda: archive)
+
+    assert ci.build_graph(claude) == 1
+    assert not (tmp_path / "evil.txt").exists()
+    assert not (claude / "evil.txt").exists()
 
 
 def test_main_with_requested_hook_failure_exits_nonzero(

@@ -16,7 +16,7 @@ What it does:
      is missing (otherwise leaves the user's config alone).
   3. Seeds the starter toolboxes via ``ctx-toolbox init`` if the
      global toolboxes file is empty.
-  4. In a terminal, guides first-time users through hooks, graph build,
+  4. In a terminal, guides first-time users through hooks, graph install,
      model profile, and harness recommendation setup. Automation can
      keep the non-interactive path by passing explicit flags such as
      ``--model-mode skip``; ``--wizard`` forces the prompts.
@@ -24,10 +24,10 @@ What it does:
      ``ctx-install-hooks``. Skipped unless the wizard or ``--hooks`` asks
      for it, so the user has to opt in to modifying
      ``~/.claude/settings.json``.
-  6. Optionally: runs the initial graph/wiki build if missing.
-     Skipped unless the wizard or ``--graph`` asks for it — building
-     graph from 2k+ skills is a multi-minute operation and not everyone
-     wants it.
+  6. Optionally: installs the initial graph/wiki archive if missing.
+     Skipped unless the wizard or ``--graph`` asks for it. Source
+     checkouts use ``graph/wiki-graph.tar.gz``; pip installs download
+     the matching release asset.
 
 Idempotent: re-running only writes what's missing. Never overwrites
 a user's config or hook settings without an explicit ``--force`` flag.
@@ -39,10 +39,16 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
+import urllib.request
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 
@@ -91,6 +97,8 @@ _STARTER_USER_CONFIG = """{
   "_config_path": "~/.claude/skill-system-config.json"
 }
 """
+_KNOWLEDGE_MODES = frozenset({"shipped", "local", "enriched", "skip"})
+_ACTIVE_KNOWLEDGE_MODES = frozenset({"shipped", "local", "enriched"})
 
 
 def seed_user_config(claude: Path, *, force: bool = False) -> Path | None:
@@ -99,6 +107,33 @@ def seed_user_config(claude: Path, *, force: bool = False) -> Path | None:
     if target.exists() and not force:
         return None
     target.write_text(_STARTER_USER_CONFIG, encoding="utf-8")
+    return target
+
+
+def write_knowledge_config(claude: Path, mode: str) -> Path | None:
+    """Persist the user's knowledge-source choice in skill-system-config.json."""
+    if mode == "skip":
+        return None
+    if mode not in _ACTIVE_KNOWLEDGE_MODES:
+        raise ValueError(f"unknown knowledge mode: {mode}")
+    target = claude / "skill-system-config.json"
+    try:
+        data = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{target} is not valid JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{target} must contain a JSON object")
+    data.setdefault(
+        "_comment",
+        "User-level overrides for ctx (claude-ctx) defaults. Edit me.",
+    )
+    data.setdefault("_config_path", "~/.claude/skill-system-config.json")
+    data["knowledge"] = {
+        "mode": mode,
+        "use_shipped_graph": mode in {"shipped", "enriched"},
+        "allow_user_enrichment": mode in {"local", "enriched"},
+    }
+    target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return target
 
 
@@ -173,20 +208,245 @@ def _resolve_ctx_src_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-# ─── Graph build (opt-in, slow) ─────────────────────────────────────────────
+# ─── Graph install (opt-in) ────────────────────────────────────────────────
 
 
-def build_graph() -> int:
-    """Run ``wiki_graphify`` to rebuild the knowledge graph."""
-    result = subprocess.run(
-        [sys.executable, "-m", "ctx.core.wiki.wiki_graphify"],
-        capture_output=True, text=True, check=False,
+_GRAPH_ARCHIVE_NAME = "wiki-graph.tar.gz"
+_GRAPH_RELEASE_URL = (
+    "https://github.com/stevesolun/ctx/releases/download/"
+    "v{version}/wiki-graph.tar.gz"
+)
+_GRAPH_REQUIRED_FILES = frozenset({
+    "index.md",
+    "graphify-out/graph.json",
+    "graphify-out/graph-delta.json",
+    "graphify-out/communities.json",
+    "graphify-out/graph-report.md",
+    "graphify-out/graph-export-manifest.json",
+    "external-catalogs/skills-sh/catalog.json",
+})
+_GRAPH_MANAGED_PATHS = (
+    "graphify-out",
+    "entities",
+    "converted",
+    "concepts",
+    "external-catalogs",
+    "index.md",
+)
+
+
+def build_graph(
+    claude: Path | None = None,
+    *,
+    force: bool = False,
+    graph_url: str | None = None,
+) -> int:
+    """Install the pre-built knowledge graph into ``~/.claude/skill-wiki``."""
+    claude_dir = claude or _claude_dir()
+    wiki_dir = claude_dir / "skill-wiki"
+    graph_json = wiki_dir / "graphify-out" / "graph.json"
+    if not force and _graph_install_complete(wiki_dir):
+        print(f"Graph already installed at {graph_json}; use --force to refresh.")
+        return 0
+
+    temp_dir: tempfile.TemporaryDirectory[str] | None = None
+    archive = _find_local_graph_archive()
+    try:
+        if archive is None:
+            temp_dir = tempfile.TemporaryDirectory(prefix="ctx-graph-download-")
+            archive = Path(temp_dir.name) / _GRAPH_ARCHIVE_NAME
+            url = graph_url or _release_graph_url()
+            print(f"Downloading pre-built graph from {url}")
+            _download_graph_archive(archive, url=url)
+        else:
+            print(f"Installing pre-built graph from {archive}")
+        _extract_graph_archive(archive, wiki_dir)
+    except Exception as exc:
+        print(
+            f"  [error] graph install failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
+
+    try:
+        _validate_graph_install_tree(wiki_dir)
+    except ValueError as exc:
+        print(f"  [error] graph install validation failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _find_local_graph_archive() -> Path | None:
+    module_path = Path(__file__).resolve()
+    candidates = (
+        module_path.parent.parent / "graph" / _GRAPH_ARCHIVE_NAME,
+        Path.cwd() / "graph" / _GRAPH_ARCHIVE_NAME,
     )
-    if result.stdout.strip():
-        print(result.stdout.rstrip())
-    if result.stderr.strip():
-        print(result.stderr.rstrip(), file=sys.stderr)
-    return result.returncode
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _release_graph_url() -> str:
+    return _GRAPH_RELEASE_URL.format(version=_package_version())
+
+
+def _package_version() -> str:
+    try:
+        return package_version("claude-ctx")
+    except PackageNotFoundError:
+        try:
+            from ctx import __version__
+        except Exception:
+            return "0.7.13"
+        return str(__version__)
+
+
+def _download_graph_archive(destination: Path, *, url: str) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310
+        with destination.open("wb") as fh:
+            shutil.copyfileobj(response, fh)
+
+
+def _extract_graph_archive(archive: Path, target_dir: Path) -> None:
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{target_dir.name}-stage-",
+        dir=target_dir.parent,
+    ) as staging_name:
+        staging_dir = Path(staging_name)
+        _extract_graph_archive_to_dir(archive, staging_dir)
+        _validate_graph_install_tree(staging_dir)
+        _promote_graph_tree(staging_dir, target_dir)
+
+
+def _extract_graph_archive_to_dir(archive: Path, target_dir: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_root = target_dir.resolve()
+    with tarfile.open(archive, "r:gz") as tf:
+        members = tf.getmembers()
+        for member in members:
+            _validate_graph_tar_member(member)
+            destination = _graph_member_destination(target_dir, target_root, member)
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            source = tf.extractfile(member)
+            if source is None:
+                raise ValueError(f"graph archive file is unreadable: {member.name}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _ensure_path_under_root(destination.parent, target_root)
+            with source, destination.open("wb") as fh:
+                shutil.copyfileobj(source, fh)
+
+
+def _graph_install_complete(wiki_dir: Path) -> bool:
+    try:
+        _validate_graph_install_tree(wiki_dir)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def _validate_graph_install_tree(wiki_dir: Path) -> None:
+    missing = [
+        name
+        for name in sorted(_GRAPH_REQUIRED_FILES)
+        if not (wiki_dir / name).is_file() or (wiki_dir / name).stat().st_size == 0
+    ]
+    if missing:
+        raise ValueError(f"graph archive is missing required files: {missing}")
+
+    graph = _read_json_file(wiki_dir / "graphify-out" / "graph.json")
+    if not isinstance(graph, dict):
+        raise ValueError("graphify-out/graph.json must contain a JSON object")
+    if not isinstance(graph.get("nodes"), list):
+        raise ValueError("graphify-out/graph.json is missing a nodes list")
+    if not isinstance(graph.get("edges", graph.get("links")), list):
+        raise ValueError("graphify-out/graph.json is missing an edges/links list")
+
+    manifest = _read_json_file(wiki_dir / "graphify-out" / "graph-export-manifest.json")
+    if not isinstance(manifest, dict):
+        raise ValueError("graph-export-manifest.json must contain a JSON object")
+    if manifest.get("version") != 1:
+        raise ValueError("graph export manifest version must be 1")
+    export_id = manifest.get("export_id")
+    if not isinstance(export_id, str) or not export_id.strip():
+        raise ValueError("graph export manifest is missing export_id")
+    artifacts = manifest.get("artifacts")
+    expected_artifacts = {
+        "graph": "graph.json",
+        "delta": "graph-delta.json",
+        "communities": "communities.json",
+        "report": "graph-report.md",
+    }
+    if not isinstance(artifacts, dict) or artifacts != expected_artifacts:
+        raise ValueError("graph export manifest artifacts map is incomplete")
+
+
+def _read_json_file(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _promote_graph_tree(staging_dir: Path, target_dir: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_root = target_dir.resolve()
+    for name in _GRAPH_MANAGED_PATHS:
+        source = staging_dir / name
+        destination = target_dir / name
+        _ensure_path_under_root(destination.parent, target_root)
+        _remove_existing_graph_path(destination)
+        if source.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(destination))
+    _validate_graph_install_tree(target_dir)
+
+
+def _remove_existing_graph_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _graph_member_destination(
+    target_dir: Path,
+    target_root: Path,
+    member: tarfile.TarInfo,
+) -> Path:
+    destination = target_dir.joinpath(*PurePosixPath(member.name.replace("\\", "/")).parts)
+    _ensure_path_under_root(destination, target_root)
+    return destination
+
+
+def _ensure_path_under_root(path: Path, root: Path) -> None:
+    resolved = path.resolve(strict=False)
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(f"graph archive path escapes target: {path}")
+
+
+def _validate_graph_tar_member(member: tarfile.TarInfo) -> None:
+    name = member.name.replace("\\", "/")
+    path = PurePosixPath(name)
+    if (
+        not name
+        or name.startswith("/")
+        or re.match(r"^[A-Za-z]:", name)
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError(f"unsafe graph archive path: {member.name}")
+    if member.issym() or member.islnk():
+        raise ValueError(f"graph archive links are not allowed: {member.name}")
+    if not (member.isdir() or member.isfile()):
+        raise ValueError(f"unsupported graph archive member: {member.name}")
+    if name.endswith(".original") or name.endswith(".lock"):
+        raise ValueError(f"graph archive backup/lock members are not allowed: {member.name}")
 
 
 # ─── Model onboarding ───────────────────────────────────────────────────────
@@ -884,6 +1144,18 @@ def _prompt_model_mode(default: str = "claude-code") -> str:
         print("  Please choose claude-code, custom, or skip.")
 
 
+def _prompt_knowledge_mode(default: str = "shipped") -> str:
+    while True:
+        answer = input(
+            "Use ctx shipped knowledge, local/private knowledge, or both? "
+            f"[{default}; choices: shipped/local/enriched/skip] "
+        ).strip().lower()
+        mode = answer or default
+        if mode in _KNOWLEDGE_MODES:
+            return mode
+        print("  Please choose shipped, local, enriched, or skip.")
+
+
 def _stdio_is_interactive() -> bool:
     return bool(
         getattr(sys.stdin, "isatty", lambda: False)()
@@ -905,10 +1177,14 @@ def run_wizard(args: argparse.Namespace) -> None:
         "Install Claude Code observation hooks now?",
         default=args.hooks,
     )
-    args.graph = _prompt_yes_no(
-        "Build the knowledge graph now? This can take a while.",
-        default=args.graph,
-    )
+    args.knowledge_mode = _prompt_knowledge_mode(args.knowledge_mode or "shipped")
+    if args.knowledge_mode in {"shipped", "enriched"}:
+        args.graph = _prompt_yes_no(
+            "Install the shipped ctx graph/wiki now?",
+            default=args.graph,
+        )
+    elif args.knowledge_mode == "local":
+        args.graph = False
 
     args.model_mode = _prompt_model_mode(args.model_mode or "claude-code")
     if args.model_mode == "skip":
@@ -977,6 +1253,7 @@ def run_model_onboarding(args: argparse.Namespace, claude: Path) -> int:
         "api_key_env": api_key_env,
         "base_url": args.base_url,
         "goal": goal,
+        "knowledge_mode": getattr(args, "knowledge_mode", "shipped"),
     }
     written = write_model_profile(claude, profile, force=args.force)
     if written:
@@ -1039,7 +1316,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--graph", action="store_true",
-        help="Rebuild the knowledge graph after setup (slow: >1 minute)",
+        help=(
+            "Install the pre-built knowledge graph after setup. Uses local "
+            "graph/wiki-graph.tar.gz when present; otherwise downloads the "
+            "matching release asset."
+        ),
+    )
+    parser.add_argument(
+        "--graph-url",
+        help="Override the pre-built wiki-graph.tar.gz download URL",
+    )
+    parser.add_argument(
+        "--knowledge-mode",
+        choices=("shipped", "local", "enriched", "skip"),
+        help=(
+            "Knowledge source policy: shipped ctx graph/wiki, local/private "
+            "only, shipped plus user enrichment, or skip recording a policy."
+        ),
     )
     parser.add_argument(
         "--force", action="store_true",
@@ -1049,7 +1342,7 @@ def main(argv: list[str] | None = None) -> int:
         "--wizard",
         action="store_true",
         help=(
-            "Prompt for hooks, graph build, model profile, and harness "
+            "Prompt for hooks, graph install, model profile, and harness "
             "recommendation setup. Plain ctx-init does this automatically "
             "when run in an interactive terminal."
         ),
@@ -1079,6 +1372,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(raw_argv)
     if _should_run_wizard(args, raw_argv):
         run_wizard(args)
+    if args.knowledge_mode == "local" and args.graph:
+        print(
+            "  [warn] --knowledge-mode local cannot be combined with --graph; "
+            "use --knowledge-mode enriched to install shipped ctx knowledge "
+            "and add your own.",
+            file=sys.stderr,
+        )
+        return 1
 
     claude = _claude_dir()
     print(f"ctx-init: setting up {claude}")
@@ -1094,6 +1395,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  [ok] wrote {seeded_config.name}")
     else:
         print("  [skip] skill-system-config.json already present (use --force to overwrite)")
+
+    if args.knowledge_mode and args.knowledge_mode != "skip":
+        try:
+            written = write_knowledge_config(claude, args.knowledge_mode)
+        except ValueError as exc:
+            print(f"  [warn] {exc}", file=sys.stderr)
+            return 1
+        if written:
+            print(f"  [ok] recorded knowledge mode: {args.knowledge_mode}")
 
     toolbox_seed = seed_toolboxes(force=args.force)
     if isinstance(toolbox_seed, ToolboxSeedResult):
@@ -1121,15 +1431,15 @@ def main(argv: list[str] | None = None) -> int:
         print("  [skip] hook injection (pass --hooks to enable)")
 
     if args.graph:
-        rc = build_graph()
+        rc = build_graph(claude, force=args.force, graph_url=args.graph_url)
         if rc == 0:
-            print("  [ok] knowledge graph rebuilt")
+            print("  [ok] knowledge graph installed")
         else:
-            print(f"  [warn] graph build returned {rc}", file=sys.stderr)
+            print(f"  [warn] graph install returned {rc}", file=sys.stderr)
             if final_rc == 0:
                 final_rc = rc
     else:
-        print("  [skip] graph build (pass --graph to rebuild)")
+        print("  [skip] graph install (pass --graph to install)")
 
     rc = run_model_onboarding(args, claude)
     if rc != 0 and final_rc == 0:
@@ -1141,8 +1451,8 @@ def main(argv: list[str] | None = None) -> int:
     print("  - ctx-monitor serve                # local dashboard at :8765")
     if not args.hooks:
         print("  - ctx-init --hooks                 # wire live observation")
-    if not args.graph:
-        print("  - ctx-init --graph                 # build knowledge graph")
+    if not args.graph and args.knowledge_mode != "local":
+        print("  - ctx-init --graph                 # install knowledge graph")
     return final_rc
 
 

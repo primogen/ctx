@@ -129,15 +129,9 @@ jobs:
 
       - name: Resolve release graph LFS artifacts
         id: resolve_graph_lfs
-        continue-on-error: true
         run: |
           git lfs install --local
           git lfs pull --include="graph/wiki-graph.tar.gz,graph/skills-sh-catalog.json.gz" --exclude=""
-
-      - name: Warn when release graph LFS artifacts are unavailable
-        if: steps.resolve_graph_lfs.outcome != 'success'
-        run: |
-          echo "::warning::Graph LFS artifacts are unavailable; PyPI publish will continue without release asset upload."
 
       - name: Validate release graph artifacts
         if: steps.resolve_graph_lfs.outcome == 'success'
@@ -336,7 +330,7 @@ jobs:
     needs:
       - build
       - release-assets
-    if: ${{ always() && needs.build.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.release-assets.result == 'success' || needs.release-assets.result == 'skipped') }}
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.release-assets.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

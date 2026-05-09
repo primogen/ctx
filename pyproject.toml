@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-ctx"
-version = "0.7.13"
+version = "0.7.14"
 description = "Skill and agent recommendation system for Claude Code — knowledge graph, wiki, and intake quality gates"
 authors = [{ name = "Steve Solun" }]
 license = "MIT"
@@ -111,8 +111,8 @@ harness = [
 ]
 
 [tool.setuptools]
-# Plan 001 migration (docs/plans/001-model-agnostic-harness.md).
-# During phases R0-R6 the codebase lives in TWO shapes simultaneously:
+# Incremental package-layout migration.
+# During migration phases the codebase lives in TWO shapes simultaneously:
 #   - The legacy flat modules listed in ``py-modules`` below.
 #   - The target ``ctx`` package tree (ctx.core, ctx.adapters, ctx.cli,
 #     ctx.mcp_server, ctx.utils) declared in ``packages`` below.

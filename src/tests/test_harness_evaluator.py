@@ -372,9 +372,25 @@ class TestBuildRevisionTask:
 
 
 class TestRunWithEvaluation:
-    def test_single_round_pass(self) -> None:
-        # Generator: 1 call (stop). Evaluator: 1 call (pass).
-        provider = _Scripted([_resp("final answer"), _resp(_PASS_JSON)])
+    def test_single_round_pass(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from ctx.adapters.generic import evaluator as evaluator_module
+        from ctx.adapters.generic.loop import LoopResult
+
+        captured: dict[str, Any] = {}
+
+        def fake_run_loop(**kwargs: Any) -> LoopResult:
+            captured.update(kwargs)
+            return LoopResult(
+                stop_reason="completed",
+                final_message="final answer",
+                iterations=1,
+                usage=Usage(input_tokens=10, output_tokens=20),
+                messages=(Message(role="assistant", content="final answer"),),
+                detail="",
+            )
+
+        monkeypatch.setattr(evaluator_module, "run_loop", fake_run_loop)
+        provider = _Scripted([_resp(_PASS_JSON)])
         evaluator = Evaluator(provider)
         outcome = run_with_evaluation(
             provider=provider,
@@ -382,12 +398,14 @@ class TestRunWithEvaluation:
             task="t",
             evaluator=evaluator,
             max_rounds=2,
+            provider_timeout=3.25,
         )
         assert isinstance(outcome, EvaluationLoopResult)
         assert len(outcome.rounds) == 1
         assert outcome.rounds[0].evaluation.verdict == "pass"
         assert outcome.final.stop_reason == "completed"
         assert outcome.final.final_message == "final answer"
+        assert captured["provider_timeout"] == 3.25
 
     def test_needs_revision_triggers_second_round(self) -> None:
         # Round 1: gen -> evaluator (needs_revision). Round 2: gen -> eval (pass).

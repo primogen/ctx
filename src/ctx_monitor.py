@@ -1452,15 +1452,17 @@ def _render_skill_detail(slug: str, entity_type: str | None = None) -> str:
     return _layout(slug, body)
 
 
-def _top_degree_seeds(limit: int = 18) -> list[dict]:
+def _top_degree_seeds(limit: int = 18, *, allow_load: bool = True) -> list[dict]:
     """Pick high-degree nodes from the graph as seed suggestions.
 
     Used by ``/graph`` landing page so the first-time visitor has
     something to click. Falls back to empty on any graph-load failure.
     """
     try:
-        G = _load_dashboard_graph()
+        G = _load_dashboard_graph() if allow_load else _GRAPH_CACHE_VALUE
     except Exception:  # noqa: BLE001
+        return []
+    if G is None:
         return []
     if G.number_of_nodes() == 0:
         return []
@@ -1489,7 +1491,11 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
     focus_js = json.dumps(focus_slug)
     focus_type_js = json.dumps(focus_type or "")
     gstats = _graph_stats()
-    seeds = _top_degree_seeds() if not focus_slug and gstats.get("available") else []
+    seeds = (
+        _top_degree_seeds(allow_load=False)
+        if not focus_slug and gstats.get("available")
+        else []
+    )
     seed_html = ""
     if seeds:
         chips = "".join(
@@ -2022,9 +2028,14 @@ def _render_kpi() -> str:
         for c in summary.category_breakdown
     ) or "<tr><td colspan='8' class='muted'>No categorized entities.</td></tr>"
 
+    def detail_href(slug: str, entity_type: str) -> str:
+        normalized = _normalize_dashboard_entity_type(entity_type)
+        suffix = f"?type={html.escape(normalized)}" if normalized else ""
+        return f"/skill/{html.escape(slug)}{suffix}"
+
     demotion_rows = "".join(
         "<tr>"
-        f"<td><a href='/skill/{html.escape(c['slug'])}'><code>{html.escape(c['slug'])}</code></a></td>"
+        f"<td><a href='{detail_href(c['slug'], c['subject_type'])}'><code>{html.escape(c['slug'])}</code></a></td>"
         f"<td class='muted'>{html.escape(c['subject_type'])}</td>"
         f"<td class='muted'>{html.escape(c['category'])}</td>"
         f"<td><span class='pill grade-{html.escape(c['grade'])}'>{html.escape(c['grade'])}</span></td>"
@@ -2038,7 +2049,7 @@ def _render_kpi() -> str:
 
     archived_rows = "".join(
         "<tr>"
-        f"<td><a href='/skill/{html.escape(a['slug'])}'><code>{html.escape(a['slug'])}</code></a></td>"
+        f"<td><a href='{detail_href(a['slug'], a['subject_type'])}'><code>{html.escape(a['slug'])}</code></a></td>"
         f"<td class='muted'>{html.escape(a['subject_type'])}</td>"
         f"<td class='muted'>{html.escape(a['category'])}</td>"
         f"<td class='muted'>{html.escape(a.get('last_grade') or '—')}</td>"
@@ -2655,6 +2666,12 @@ class _MonitorHandler(BaseHTTPRequestHandler):
     def _api_reads_enabled(self) -> bool:
         return self._mutations_enabled()
 
+    def _read_authorized(self, qs: dict[str, str]) -> bool:
+        if self._mutations_enabled():
+            return True
+        token = self.headers.get("X-CTX-Monitor-Token") or qs.get("token", "")
+        return bool(_MONITOR_TOKEN) and secrets.compare_digest(token, _MONITOR_TOKEN)
+
     def _send_security_headers(self, *, html_response: bool = False) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -2723,11 +2740,19 @@ class _MonitorHandler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             qs = {k: v[0] for k, v in parse_qs(raw_query).items()}
         try:
-            if path.startswith("/api/") and not self._api_reads_enabled():
-                self._send_json_status(
-                    403,
-                    {"detail": "monitor read APIs disabled on non-loopback bind"},
-                )
+            read_authorized = getattr(self, "_read_authorized", lambda _qs: True)
+            if not read_authorized(qs):
+                if path.startswith("/api/"):
+                    self._send_json_status(
+                        403,
+                        {"detail": "monitor read token required on non-loopback bind"},
+                    )
+                else:
+                    self._send_html_status(
+                        403,
+                        "<h1>403</h1>"
+                        "<p>monitor read token required on non-loopback bind</p>",
+                    )
                 return
             if path == "/":
                 self._send_html(_render_home())
@@ -2884,6 +2909,15 @@ class _MonitorHandler(BaseHTTPRequestHandler):
     def _send_html(self, body: str) -> None:
         raw = body.encode("utf-8")
         self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self._send_security_headers(html_response=True)
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _send_html_status(self, status: int, body: str) -> None:
+        raw = body.encode("utf-8")
+        self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self._send_security_headers(html_response=True)

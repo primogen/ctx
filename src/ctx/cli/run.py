@@ -4,7 +4,7 @@ First user-facing entry to the model-agnostic harness. Ships as v1
 per Plan 001 §10 success criteria:
 
     ctx run --provider openrouter --model minimax/minimax-m1 \\
-            --mcp ctx,filesystem \\
+            --mcp filesystem \\
             --task "fix the failing tests in this repo"
 
 Three commands:
@@ -30,6 +30,7 @@ import math
 import os
 import shlex
 import sys
+from dataclasses import replace
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,11 @@ from ctx.adapters.generic.tools import McpRouter, McpServerConfig
 _logger = logging.getLogger(__name__)
 _CTX_SESSION_MARKER = "ctx runtime session id:"
 _MODEL_PROFILE_NAME = "ctx-model-profile.json"
+_GITHUB_MCP_CREDENTIAL_ENV = (
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+)
 
 
 # ── Provider key-env defaults ───────────────────────────────────────────────
@@ -286,6 +292,39 @@ def _parse_mcp_spec(spec: str) -> McpServerConfig:
     return preset
 
 
+def _apply_mcp_env_overlays(
+    configs: list[McpServerConfig],
+    specs: list[str] | tuple[str, ...],
+) -> list[McpServerConfig]:
+    """Copy named parent env vars into specific MCP children."""
+    if not specs:
+        return configs
+    by_name = {cfg.name: cfg for cfg in configs}
+    if len(by_name) != len(configs):
+        raise SystemExit("duplicate MCP server names are not allowed")
+
+    for spec in specs:
+        server, sep, env_name = spec.strip().partition(":")
+        server = server.strip()
+        env_name = env_name.strip()
+        if not sep or not server or not env_name:
+            raise SystemExit(
+                "malformed --mcp-env spec; expected SERVER:ENVVAR"
+            )
+        cfg = by_name.get(server)
+        if cfg is None:
+            raise SystemExit(
+                f"--mcp-env references unknown MCP server {server!r}"
+            )
+        credential_env = tuple(dict.fromkeys((*cfg.credential_env, env_name)))
+        try:
+            by_name[server] = replace(cfg, credential_env=credential_env)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+
+    return [by_name[cfg.name] for cfg in configs]
+
+
 def _split_mcp_invocation(invocation: str) -> list[str]:
     """Split an MCP command string without invoking a shell."""
     parts = shlex.split(invocation, posix=os.name != "nt")
@@ -310,6 +349,7 @@ _MCP_PRESETS: dict[str, McpServerConfig] = {
         name="github",
         command="npx",
         args=("-y", "@modelcontextprotocol/server-github"),
+        credential_env=_GITHUB_MCP_CREDENTIAL_ENV,
     ),
     "git": McpServerConfig(
         name="git",
@@ -328,8 +368,9 @@ def _mcp_configs_from_metadata(meta: dict) -> list[McpServerConfig]:
     Codex review fix #3: ``ctx resume`` was creating a router from
     scratch with no MCP servers, so a resumed session lost access to
     every tool the original run had. This helper reads the session's
-    recorded MCP server list (a list of ``{name, command, args[, env]}``
-    dicts written by ``cmd_run`` under either the ``mcp`` or
+    recorded MCP server list (a list of
+    ``{name, command, args[, env, credential_env]}`` dicts written by
+    ``cmd_run`` under either the ``mcp`` or
     ``mcp_servers`` key) and reconstructs the configs.
 
     Tolerates missing/malformed metadata — returns ``[]`` rather than
@@ -349,16 +390,20 @@ def _mcp_configs_from_metadata(meta: dict) -> list[McpServerConfig]:
             continue
         args = entry.get("args") or []
         env = entry.get("env") or {}
+        credential_env = entry.get("credential_env") or []
         if not isinstance(args, list):
             args = []
         if not isinstance(env, dict):
             env = {}
+        if not isinstance(credential_env, list):
+            credential_env = []
         try:
             out.append(McpServerConfig(
                 name=name,
                 command=command,
                 args=tuple(str(a) for a in args),
                 env={str(k): str(v) for k, v in env.items()} if env else {},
+                credential_env=tuple(str(v) for v in credential_env),
             ))
         except (TypeError, ValueError):
             continue
@@ -501,6 +546,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     r.add_argument(
+        "--mcp-env",
+        action="append",
+        default=[],
+        metavar="SERVER:ENVVAR",
+        help=(
+            "Pass one named parent environment variable to one MCP "
+            "server without inheriting the full process environment. "
+            "Repeatable."
+        ),
+    )
+    r.add_argument(
         "--no-ctx-tools",
         action="store_true",
         help="Do not attach the built-in ctx__* tool surface.",
@@ -528,6 +584,12 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--max-tokens", type=_positive_int, default=None,
         help="Max tokens per provider call (default: provider default).",
+    )
+    r.add_argument(
+        "--provider-timeout",
+        type=_positive_float,
+        default=120.0,
+        help="Wall-clock timeout in seconds for each provider call (default 120).",
     )
     r.add_argument(
         "--budget-usd", type=_positive_float, default=None,
@@ -664,6 +726,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override provider base URL. Default: recorded session value.",
     )
     rz.add_argument(
+        "--provider-timeout",
+        type=_positive_float,
+        default=None,
+        help="Provider-call timeout in seconds. Default: recorded value, then 120.",
+    )
+    rz.add_argument(
         "--sessions-dir", default=None,
         help="Override sessions directory.",
     )
@@ -720,6 +788,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         default_model=args.model,
         base_url=args.base_url,
         api_key_env=api_key_env,
+        timeout=args.provider_timeout,
     )
 
     session_id = args.session_id or new_session_id()
@@ -753,7 +822,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if ctx_tools_enabled:
         system_prompt = _with_ctx_session_instructions(system_prompt, session_id)
 
-    mcp_configs = [_parse_mcp_spec(spec) for spec in args.mcp]
+    mcp_configs = _apply_mcp_env_overlays(
+        [_parse_mcp_spec(spec) for spec in args.mcp],
+        args.mcp_env,
+    )
     router = McpRouter(mcp_configs) if mcp_configs else None
 
     # ctx-core tools.
@@ -796,11 +868,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "system_prompt": system_prompt,
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,
+        "provider_timeout": args.provider_timeout,
         "max_iterations": args.max_iterations,
         "budget_usd": args.budget_usd,
         "budget_tokens": args.budget_tokens,
-        "mcp": [{"name": c.name, "command": c.command, "args": list(c.args)}
-                for c in mcp_configs],
+        "mcp": [
+            {
+                "name": c.name,
+                "command": c.command,
+                "args": list(c.args),
+                "credential_env": list(c.credential_env),
+            }
+            for c in mcp_configs
+        ],
         "ctx_tools_enabled": ctx_tools_enabled,
         "tool_policy": {"allow": list(allow_tools), "deny": list(deny_tools)},
         "planner_used": plan_artifact is not None,
@@ -901,6 +981,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 model=args.model,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
+                provider_timeout=args.provider_timeout,
                 max_iterations=args.max_iterations,
                 budget_usd=args.budget_usd,
                 budget_tokens=args.budget_tokens,
@@ -951,6 +1032,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 model=args.model,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
+                provider_timeout=args.provider_timeout,
                 max_iterations=args.max_iterations,
                 budget_usd=args.budget_usd,
                 budget_tokens=args.budget_tokens,
@@ -1004,7 +1086,12 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         return 1
 
     use_ctx_tools = bool(meta.get("ctx_tools_enabled", True))
-    system_prompt = meta.get("system_prompt") or _DEFAULT_SYSTEM_PROMPT
+    recorded_system_prompt = meta.get("system_prompt")
+    system_prompt = (
+        recorded_system_prompt
+        if isinstance(recorded_system_prompt, str)
+        else _DEFAULT_SYSTEM_PROMPT
+    )
     if use_ctx_tools:
         system_prompt = _with_ctx_session_instructions(
             str(system_prompt),
@@ -1021,10 +1108,14 @@ def _cmd_resume(args: argparse.Namespace) -> int:
     base_url = args.base_url
     if base_url is None and isinstance(meta.get("base_url"), str):
         base_url = str(meta.get("base_url") or "") or None
+    provider_timeout = args.provider_timeout
+    if provider_timeout is None:
+        provider_timeout = float(meta.get("provider_timeout") or 120.0)
     provider = get_provider(
         default_model=model,
         base_url=base_url,
         api_key_env=api_key_env,
+        timeout=provider_timeout,
     )
 
     store = SessionStore.attach(args.session_id, sessions_dir=sdir)
@@ -1117,8 +1208,10 @@ def _cmd_resume(args: argparse.Namespace) -> int:
             max_iterations=int(meta.get("max_iterations") or 25),
             temperature=float(meta.get("temperature") or 0.7),
             max_tokens=meta.get("max_tokens"),
+            provider_timeout=provider_timeout,
             budget_usd=meta.get("budget_usd"),
             budget_tokens=meta.get("budget_tokens"),
+            initial_usage=state.usage,
         )
     finally:
         if use_ctx_tools:
