@@ -174,6 +174,9 @@ def test_publish_workflow_validates_and_uploads_graph_assets() -> None:
     assert "graph-release-assets" in workflow
     assert "gh release upload" in workflow
     assert "needs.release-assets.result == 'success'" in workflow
+    assert "continue-on-error: true" in workflow
+    assert "needs.release-assets.result == 'skipped'" in workflow
+    assert "graph_assets_available" in workflow
 
 
 def test_pre_commit_refreshes_all_repo_stats_outputs() -> None:
