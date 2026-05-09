@@ -116,7 +116,7 @@ jobs:
 
       - name: Run tests with coverage gate
         # Bump this number as the coverage sprint ships - never lower it.
-        run: pytest -q -m "not browser" --cov=src --cov-report=term-missing --cov-fail-under=40
+        run: pytest -q -m "not browser and not integration" --cov=src --cov-report=term-missing --cov-fail-under=40
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v7
@@ -150,6 +150,8 @@ jobs:
           python -m pip install ".[dev,embeddings]"
 
       - name: Run similarity precision/recall gate
+        env:
+          CTX_REQUIRE_SIMILARITY_EVAL: "1"
         run: pytest -q --no-cov -m integration src/tests/test_similarity_precision_recall.py
 
   test:
@@ -190,7 +192,7 @@ jobs:
           python -m pip install ".[dev]"
 
       - name: Run tests without coverage
-        run: pytest -q -m "not browser" --no-cov
+        run: pytest -q -m "not browser and not integration" --no-cov
 
   contract-compat:
     name: "Contract compatibility (${{ matrix.os }})"
@@ -254,7 +256,7 @@ jobs:
         #     coverage on install/enrich render_scalar.
         # They live in the main matrix job already, but pulling them
         # forward as a separate fail-fast canary surfaces the regression
-        # in seconds instead of waiting for the full 2500-test run.
+        # in seconds instead of waiting for the full test run.
         run: |
           pytest -q --no-cov \
             src/tests/test_alive_loop_e2e.py \
