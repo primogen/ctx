@@ -981,6 +981,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 model=args.model,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
+                provider_timeout=args.provider_timeout,
                 max_iterations=args.max_iterations,
                 budget_usd=args.budget_usd,
                 budget_tokens=args.budget_tokens,
