@@ -583,7 +583,7 @@ def _read_jsonl(path: Path, limit: int | None = None) -> list[dict]:
     return list(out)
 
 
-def _runtime_lifecycle_events(limit: int = 200) -> list[dict[str, Any]]:
+def _runtime_lifecycle_events(limit: int | None = 200) -> list[dict[str, Any]]:
     events = _read_jsonl(_runtime_lifecycle_path(), limit=limit)
     return [
         event for event in events
@@ -591,18 +591,34 @@ def _runtime_lifecycle_events(limit: int = 200) -> list[dict[str, Any]]:
     ]
 
 
+def _runtime_escalation_key(event: dict[str, Any]) -> str:
+    for field in ("escalation_id", "event_id", "id"):
+        value = event.get(field)
+        if value:
+            return str(value)
+    return "\0".join(
+        str(event.get(field) or "")
+        for field in ("session_id", "trigger", "reason", "severity")
+    )
+
+
 def _runtime_lifecycle_summary(limit: int = 200) -> dict[str, Any]:
-    events = _runtime_lifecycle_events(limit=limit)
+    events = _runtime_lifecycle_events(limit=None)
     validations = [
         event for event in events if event.get("action") == "validation"
     ]
     escalations = [
         event for event in events if event.get("action") == "escalation"
     ]
-    open_escalations = [
-        event for event in escalations
-        if str(event.get("status") or "open").lower() == "open"
-    ]
+    open_by_key: dict[str, dict[str, Any]] = {}
+    for event in escalations:
+        key = _runtime_escalation_key(event)
+        status = str(event.get("status") or "open").lower()
+        if status == "open":
+            open_by_key[key] = event
+        else:
+            open_by_key.pop(key, None)
+    open_escalations = list(open_by_key.values())
     validation_failures = [
         event for event in validations
         if str(event.get("status") or "").lower() in {"failed", "error"}

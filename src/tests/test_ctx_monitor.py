@@ -531,6 +531,52 @@ def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
     assert summary["open_escalations"][0]["trigger"] == "validation-failed"
 
 
+def test_runtime_lifecycle_summary_uses_full_history_for_open_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = tmp_path / "runtime" / "events.jsonl"
+    monkeypatch.setattr(cm, "_runtime_lifecycle_path", lambda: events)
+    records = [{
+        "action": "escalation",
+        "session_id": "s-1",
+        "trigger": "validation-failed",
+        "reason": "pytest failed",
+        "status": "open",
+        "severity": "blocking",
+        "created_at": "2026-05-08T00:00:00Z",
+    }]
+    records.extend({
+        "action": "validation",
+        "session_id": "s-1",
+        "check_name": f"check-{idx}",
+        "status": "passed",
+        "created_at": f"2026-05-08T01:{idx % 60:02d}:00Z",
+    } for idx in range(201))
+    _write_runtime_events(events, records)
+
+    summary = cm._runtime_lifecycle_summary()
+
+    assert summary["validations_total"] == 201
+    assert summary["open_escalations_total"] == 1
+    assert summary["open_escalations"][0]["trigger"] == "validation-failed"
+
+    records.append({
+        "action": "escalation",
+        "session_id": "s-1",
+        "trigger": "validation-failed",
+        "reason": "pytest failed",
+        "status": "resolved",
+        "severity": "blocking",
+        "created_at": "2026-05-08T02:00:00Z",
+    })
+    _write_runtime_events(events, records)
+
+    summary = cm._runtime_lifecycle_summary()
+    assert summary["open_escalations_total"] == 0
+    assert summary["escalations_total"] == 2
+
+
 def test_render_runtime_lifecycle_surfaces_checks_and_open_escalations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
