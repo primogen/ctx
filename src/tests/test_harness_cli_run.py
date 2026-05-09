@@ -29,6 +29,7 @@ import pytest
 
 import ctx.cli.run as run_cli
 from ctx.cli.run import (
+    _apply_mcp_env_overlays,
     _compile_tool_policy,
     _model_provider_prefix,
     _parse_mcp_spec,
@@ -146,12 +147,15 @@ class TestParseMcpSpec:
     def test_preset_github(self) -> None:
         cfg = _parse_mcp_spec("github")
         assert cfg.name == "github"
+        assert "GITHUB_TOKEN" in cfg.credential_env
 
     def test_explicit_form(self) -> None:
         cfg = _parse_mcp_spec("fs:npx -y pkg /tmp")
         assert cfg.name == "fs"
         assert cfg.command == "npx"
         assert cfg.args == ("-y", "pkg", "/tmp")
+        with_env = _apply_mcp_env_overlays([cfg], ["fs:MY_MCP_TOKEN"])[0]
+        assert with_env.credential_env == ("MY_MCP_TOKEN",)
 
     def test_explicit_form_preserves_quoted_args(self) -> None:
         cfg = _parse_mcp_spec(r'fs:npx -y pkg "C:\My Project"')
@@ -810,6 +814,7 @@ class TestResumeCommand:
                         "name": "danger",
                         "command": "definitely-not-a-real-mcp-command",
                         "args": ["--from-session"],
+                        "credential_env": ["DANGER_TOKEN"],
                     }
                 ],
             })
@@ -1126,6 +1131,7 @@ class TestResumeCommand:
         assert exit_code == 0
         assert len(restored) == 1
         assert restored[0].command == "definitely-not-a-real-mcp-command"
+        assert restored[0].credential_env == ("DANGER_TOKEN",)
         assert "restoring MCP server danger" in captured.err
 
     def test_resume_without_model_in_session_requires_flag(

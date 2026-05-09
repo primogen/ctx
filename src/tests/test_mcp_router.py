@@ -34,6 +34,7 @@ def _make_config(
     name: str = "fake",
     *,
     extra_env: dict[str, str] | None = None,
+    credential_env: tuple[str, ...] = (),
     startup_timeout: float = 5.0,
     request_timeout: float = 5.0,
     inherit_env: bool = False,
@@ -44,6 +45,7 @@ def _make_config(
         command=sys.executable,
         args=(str(_FIXTURE),),
         env=dict(extra_env or {}),
+        credential_env=credential_env,
         startup_timeout=startup_timeout,
         request_timeout=request_timeout,
         inherit_env=inherit_env,
@@ -154,9 +156,19 @@ class TestClientRobustness:
         client.stop()
 
     def test_server_crash_during_call(self) -> None:
-        with McpClient(_make_config(extra_env={"FAKE_MCP_CRASH_ON_TOOL": "1"})) as c:
-            with pytest.raises(McpServerError, match="pipe closed"):
+        secret = "GITHUB_TOKEN=ghp_supersecret123456789"
+        cfg = _make_config(
+            extra_env={
+                "FAKE_MCP_CRASH_ON_TOOL": "1",
+                "FAKE_MCP_STDERR_LINE": secret,
+            }
+        )
+        with McpClient(cfg) as c:
+            with pytest.raises(McpServerError, match="pipe closed") as excinfo:
                 c.call_tool("echo", {"text": "x"})
+        message = str(excinfo.value)
+        assert "ghp_supersecret" not in message
+        assert "[REDACTED]" in message
 
     def test_killed_child_after_tool_listing_raises_mcp_error(self) -> None:
         client = McpClient(_make_config())
@@ -212,6 +224,12 @@ class TestClientRobustness:
             assert client.call_tool(
                 "echo_env", {"name": "CTX_SECRET_SHOULD_NOT_LEAK"}
             ) == ""
+        with McpClient(
+            _make_config(credential_env=("CTX_SECRET_SHOULD_NOT_LEAK",))
+        ) as client:
+            assert client.call_tool(
+                "echo_env", {"name": "CTX_SECRET_SHOULD_NOT_LEAK"}
+            ) == "leaked"
 
     def test_explicit_env_overlay_is_passed(self) -> None:
         cfg = _make_config(extra_env={"CTX_ALLOWED_FOR_TEST": "visible"})
@@ -288,6 +306,13 @@ class TestRouter:
     def test_server_name_cannot_contain_router_separator(self) -> None:
         with pytest.raises(ValueError, match="may not contain"):
             McpServerConfig(name="foo__bar", command=sys.executable)
+        with pytest.raises(ValueError, match="reserved"):
+            McpServerConfig(name="ctx", command=sys.executable)
+        with running_router(
+            [_make_config("fake", extra_env={"FAKE_MCP_EXTRA_TOOL": "echo"})]
+        ) as router:
+            with pytest.raises(ValueError, match="duplicate MCP tool name"):
+                router.list_tools()
 
     def test_stopped_router_rejects_calls(self) -> None:
         router = McpRouter([_make_config("fake")])

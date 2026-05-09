@@ -40,6 +40,7 @@ import logging
 import os
 import queue
 import re
+import signal
 import shutil
 import subprocess
 import threading
@@ -74,6 +75,17 @@ _SAFE_PARENT_ENV_PREFIXES = ("LC_",)
 # colliding with legitimate snake_case identifiers.
 TOOL_SEPARATOR = "__"
 _SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESERVED_SERVER_NAMES = frozenset({"ctx"})
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b([A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|"
+    r"CREDENTIAL|AUTHORIZATION)[A-Z0-9_-]*)\s*([:=])\s*([^\s]+)"
+)
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
+_TOKEN_VALUE_RE = re.compile(
+    r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat|hf|sk|xox[baprs])"
+    r"[_-]?[A-Za-z0-9_./+=-]{8,}\b"
+)
 
 
 def _default_child_env() -> dict[str, str]:
@@ -94,6 +106,84 @@ def _validate_server_name(name: str) -> None:
             "MCP server names must match [A-Za-z0-9][A-Za-z0-9_-]* "
             f"and may not contain {TOOL_SEPARATOR!r}: {name!r}"
         )
+    if name.lower() in _RESERVED_SERVER_NAMES:
+        raise ValueError(
+            f"MCP server name {name!r} is reserved for built-in ctx tools"
+        )
+
+
+def _validate_env_name(name: str) -> None:
+    if _ENV_NAME_RE.fullmatch(name) is None:
+        raise ValueError(f"invalid MCP credential env var name: {name!r}")
+
+
+def _redact_sensitive_text(text: str) -> str:
+    """Remove likely credential values from diagnostics before retention."""
+    text = _SENSITIVE_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]",
+        text,
+    )
+    text = _BEARER_RE.sub("Bearer [REDACTED]", text)
+    return _TOKEN_VALUE_RE.sub("[REDACTED]", text)
+
+
+def _child_env_for_config(config: "McpServerConfig") -> dict[str, str]:
+    env = os.environ.copy() if config.inherit_env else _default_child_env()
+    for key in config.credential_env:
+        if key in os.environ:
+            env[key] = os.environ[key]
+    env.update(config.env)
+    return env
+
+
+def _popen_process_group_kwargs() -> dict[str, Any]:
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _signal_process_tree(
+    proc: subprocess.Popen[bytes],
+    *,
+    force: bool,
+) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        args = ["taskkill", "/PID", str(proc.pid), "/T"]
+        if force:
+            args.append("/F")
+        try:
+            subprocess.run(
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2.0,
+                check=False,
+            )
+        except Exception:  # noqa: BLE001
+            if force:
+                proc.kill()
+        return
+
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        if force:
+            proc.kill()
+        else:
+            proc.terminate()
+        return
+
+    sig = getattr(signal, "SIGKILL", signal.SIGTERM) if force else signal.SIGTERM
+    try:
+        killpg(proc.pid, sig)
+    except ProcessLookupError:
+        return
+    except Exception:  # noqa: BLE001
+        if force:
+            proc.kill()
+        else:
+            proc.terminate()
 
 
 def _resolve_executable(command: str, env: dict[str, str]) -> str:
@@ -125,6 +215,8 @@ class McpServerConfig:
     ``env`` is the explicit child overlay. Parent secrets are not
     inherited by default; only a small process-basics allowlist
     (PATH, temp/home, locale, Windows runtime vars) is passed through.
+    ``credential_env`` names specific parent env vars to copy into the
+    child without enabling full environment inheritance.
     Set ``inherit_env=True`` only for trusted local servers that need
     legacy full-environment inheritance.
     """
@@ -133,12 +225,17 @@ class McpServerConfig:
     command: str
     args: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
+    credential_env: tuple[str, ...] = ()
     startup_timeout: float = 10.0
     request_timeout: float = 30.0
     inherit_env: bool = False
 
     def __post_init__(self) -> None:
         _validate_server_name(self.name)
+        unique_credential_env = tuple(dict.fromkeys(self.credential_env))
+        object.__setattr__(self, "credential_env", unique_credential_env)
+        for key in unique_credential_env:
+            _validate_env_name(key)
 
 
 class McpServerError(RuntimeError):
@@ -178,8 +275,7 @@ class McpClient:
             raise RuntimeError(f"MCP client '{self._config.name}' already started")
 
         self._stdout_frames = queue.Queue()
-        env = os.environ.copy() if self._config.inherit_env else _default_child_env()
-        env.update(self._config.env)
+        env = _child_env_for_config(self._config)
 
         command = _resolve_executable(self._config.command, env)
         try:
@@ -190,6 +286,7 @@ class McpClient:
                 stderr=subprocess.PIPE,
                 env=env,
                 bufsize=0,  # unbuffered; we flush each write ourselves
+                **_popen_process_group_kwargs(),
             )
         except OSError as exc:
             raise McpServerError(
@@ -242,14 +339,18 @@ class McpClient:
         try:
             proc.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _signal_process_tree(proc, force=False)
             try:
                 proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
-                _logger.error(
-                    "MCP server '%s' did not die after kill",
-                    self._config.name,
-                )
+                _signal_process_tree(proc, force=True)
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    _logger.error(
+                        "MCP server '%s' did not die after kill",
+                        self._config.name,
+                    )
         except Exception as exc:  # noqa: BLE001
             _logger.debug(
                 "MCP server '%s' stop error: %s", self._config.name, exc
@@ -346,10 +447,9 @@ class McpClient:
             try:
                 self._write_frame(request)
             except (BrokenPipeError, OSError) as exc:
-                stderr_tail = "\n".join(self._stderr_lines[-20:])
                 raise McpServerError(
                     f"{self._config.name}.{method}: write failed; server pipe "
-                    f"closed. stderr tail:\n{stderr_tail}"
+                    f"closed. stderr tail:\n{self._stderr_tail()}"
                 ) from exc
 
             deadline = None
@@ -379,10 +479,9 @@ class McpClient:
                         f"{timeout if timeout is not None else self._config.request_timeout}s"
                     ) from exc
                 if frame is None:
-                    stderr_tail = "\n".join(self._stderr_lines[-20:])
                     raise McpServerError(
                         f"{self._config.name} pipe closed before response to "
-                        f"{method!r}. stderr tail:\n{stderr_tail}"
+                        f"{method!r}. stderr tail:\n{self._stderr_tail()}"
                     )
                 # Notifications have no ``id``; skip them for now.
                 if "id" not in frame:
@@ -462,12 +561,15 @@ class McpClient:
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 if not line:
                     continue
-                self._stderr_lines.append(line)
+                self._stderr_lines.append(_redact_sensitive_text(line))
                 # Cap memory usage on a chatty server.
                 if len(self._stderr_lines) > 200:
                     del self._stderr_lines[:-200]
         except Exception:  # noqa: BLE001
             pass
+
+    def _stderr_tail(self) -> str:
+        return "\n".join(self._stderr_lines[-20:])
 
 
 # ── Multi-server router ───────────────────────────────────────────────────
@@ -543,11 +645,18 @@ class McpRouter:
         if not self._started:
             raise RuntimeError("router not started; call start() first")
         out: list[ToolDefinition] = []
+        seen_names: set[str] = set()
         for server_name, client in self._clients.items():
             for tool in client.list_tools():
+                qualified_name = f"{server_name}{TOOL_SEPARATOR}{tool.name}"
+                if qualified_name in seen_names:
+                    raise ValueError(
+                        f"duplicate MCP tool name {qualified_name!r}"
+                    )
+                seen_names.add(qualified_name)
                 out.append(
                     ToolDefinition(
-                        name=f"{server_name}{TOOL_SEPARATOR}{tool.name}",
+                        name=qualified_name,
                         description=tool.description,
                         parameters=tool.parameters,
                     )

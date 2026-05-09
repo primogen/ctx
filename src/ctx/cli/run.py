@@ -4,7 +4,7 @@ First user-facing entry to the model-agnostic harness. Ships as v1
 per Plan 001 §10 success criteria:
 
     ctx run --provider openrouter --model minimax/minimax-m1 \\
-            --mcp ctx,filesystem \\
+            --mcp filesystem \\
             --task "fix the failing tests in this repo"
 
 Three commands:
@@ -30,6 +30,7 @@ import math
 import os
 import shlex
 import sys
+from dataclasses import replace
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,11 @@ from ctx.adapters.generic.tools import McpRouter, McpServerConfig
 _logger = logging.getLogger(__name__)
 _CTX_SESSION_MARKER = "ctx runtime session id:"
 _MODEL_PROFILE_NAME = "ctx-model-profile.json"
+_GITHUB_MCP_CREDENTIAL_ENV = (
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+)
 
 
 # ── Provider key-env defaults ───────────────────────────────────────────────
@@ -286,6 +292,39 @@ def _parse_mcp_spec(spec: str) -> McpServerConfig:
     return preset
 
 
+def _apply_mcp_env_overlays(
+    configs: list[McpServerConfig],
+    specs: list[str] | tuple[str, ...],
+) -> list[McpServerConfig]:
+    """Copy named parent env vars into specific MCP children."""
+    if not specs:
+        return configs
+    by_name = {cfg.name: cfg for cfg in configs}
+    if len(by_name) != len(configs):
+        raise SystemExit("duplicate MCP server names are not allowed")
+
+    for spec in specs:
+        server, sep, env_name = spec.strip().partition(":")
+        server = server.strip()
+        env_name = env_name.strip()
+        if not sep or not server or not env_name:
+            raise SystemExit(
+                "malformed --mcp-env spec; expected SERVER:ENVVAR"
+            )
+        cfg = by_name.get(server)
+        if cfg is None:
+            raise SystemExit(
+                f"--mcp-env references unknown MCP server {server!r}"
+            )
+        credential_env = tuple(dict.fromkeys((*cfg.credential_env, env_name)))
+        try:
+            by_name[server] = replace(cfg, credential_env=credential_env)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+
+    return [by_name[cfg.name] for cfg in configs]
+
+
 def _split_mcp_invocation(invocation: str) -> list[str]:
     """Split an MCP command string without invoking a shell."""
     parts = shlex.split(invocation, posix=os.name != "nt")
@@ -310,6 +349,7 @@ _MCP_PRESETS: dict[str, McpServerConfig] = {
         name="github",
         command="npx",
         args=("-y", "@modelcontextprotocol/server-github"),
+        credential_env=_GITHUB_MCP_CREDENTIAL_ENV,
     ),
     "git": McpServerConfig(
         name="git",
@@ -328,8 +368,9 @@ def _mcp_configs_from_metadata(meta: dict) -> list[McpServerConfig]:
     Codex review fix #3: ``ctx resume`` was creating a router from
     scratch with no MCP servers, so a resumed session lost access to
     every tool the original run had. This helper reads the session's
-    recorded MCP server list (a list of ``{name, command, args[, env]}``
-    dicts written by ``cmd_run`` under either the ``mcp`` or
+    recorded MCP server list (a list of
+    ``{name, command, args[, env, credential_env]}`` dicts written by
+    ``cmd_run`` under either the ``mcp`` or
     ``mcp_servers`` key) and reconstructs the configs.
 
     Tolerates missing/malformed metadata — returns ``[]`` rather than
@@ -349,16 +390,20 @@ def _mcp_configs_from_metadata(meta: dict) -> list[McpServerConfig]:
             continue
         args = entry.get("args") or []
         env = entry.get("env") or {}
+        credential_env = entry.get("credential_env") or []
         if not isinstance(args, list):
             args = []
         if not isinstance(env, dict):
             env = {}
+        if not isinstance(credential_env, list):
+            credential_env = []
         try:
             out.append(McpServerConfig(
                 name=name,
                 command=command,
                 args=tuple(str(a) for a in args),
                 env={str(k): str(v) for k, v in env.items()} if env else {},
+                credential_env=tuple(str(v) for v in credential_env),
             ))
         except (TypeError, ValueError):
             continue
@@ -498,6 +543,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Attach an MCP server. Repeatable. Forms: "
             "'filesystem' (preset) or 'name:npx -y ...' (explicit)."
+        ),
+    )
+    r.add_argument(
+        "--mcp-env",
+        action="append",
+        default=[],
+        metavar="SERVER:ENVVAR",
+        help=(
+            "Pass one named parent environment variable to one MCP "
+            "server without inheriting the full process environment. "
+            "Repeatable."
         ),
     )
     r.add_argument(
@@ -766,7 +822,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if ctx_tools_enabled:
         system_prompt = _with_ctx_session_instructions(system_prompt, session_id)
 
-    mcp_configs = [_parse_mcp_spec(spec) for spec in args.mcp]
+    mcp_configs = _apply_mcp_env_overlays(
+        [_parse_mcp_spec(spec) for spec in args.mcp],
+        args.mcp_env,
+    )
     router = McpRouter(mcp_configs) if mcp_configs else None
 
     # ctx-core tools.
@@ -813,8 +872,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "max_iterations": args.max_iterations,
         "budget_usd": args.budget_usd,
         "budget_tokens": args.budget_tokens,
-        "mcp": [{"name": c.name, "command": c.command, "args": list(c.args)}
-                for c in mcp_configs],
+        "mcp": [
+            {
+                "name": c.name,
+                "command": c.command,
+                "args": list(c.args),
+                "credential_env": list(c.credential_env),
+            }
+            for c in mcp_configs
+        ],
         "ctx_tools_enabled": ctx_tools_enabled,
         "tool_policy": {"allow": list(allow_tools), "deny": list(deny_tools)},
         "planner_used": plan_artifact is not None,
