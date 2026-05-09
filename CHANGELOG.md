@@ -7,6 +7,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [0.7.18] - 2026-05-09
+
+### Fixed
+
+- Published the post-0.7.16 hardening fixes with release metadata that matches
+  the CI runner's collected test count.
+
 ## [0.7.17] - 2026-05-09
 
 ### Fixed
