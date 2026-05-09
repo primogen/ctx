@@ -36,6 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      graph_assets_available: ${{ steps.resolve_graph_lfs.outcome == 'success' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -126,11 +128,19 @@ jobs:
           INPUT_REPOSITORY: ${{ github.event.inputs.repository || 'pypi' }}
 
       - name: Resolve release graph LFS artifacts
+        id: resolve_graph_lfs
+        continue-on-error: true
         run: |
           git lfs install --local
           git lfs pull --include="graph/wiki-graph.tar.gz,graph/skills-sh-catalog.json.gz" --exclude=""
 
+      - name: Warn when release graph LFS artifacts are unavailable
+        if: steps.resolve_graph_lfs.outcome != 'success'
+        run: |
+          echo "::warning::Graph LFS artifacts are unavailable; PyPI publish will continue without release asset upload."
+
       - name: Validate release graph artifacts
+        if: steps.resolve_graph_lfs.outcome == 'success'
         run: |
           python src/validate_graph_artifacts.py \
             --graph-dir graph \
@@ -154,6 +164,7 @@ jobs:
             --max-stage-lines 40
 
       - name: Validate README and docs stats
+        if: steps.resolve_graph_lfs.outcome == 'success'
         run: python src/update_repo_stats.py --check
 
       - name: Static gates
@@ -282,6 +293,7 @@ jobs:
           path: dist/
 
       - name: Upload graph artifact bundle
+        if: steps.resolve_graph_lfs.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: graph-release-assets
@@ -293,7 +305,7 @@ jobs:
   release-assets:
     name: Upload graph release assets
     needs: build
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && needs.build.outputs.graph_assets_available == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -324,7 +336,7 @@ jobs:
     needs:
       - build
       - release-assets
-    if: ${{ always() && needs.build.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.release-assets.result == 'success') }}
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.release-assets.result == 'success' || needs.release-assets.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
