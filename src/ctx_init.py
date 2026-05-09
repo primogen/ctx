@@ -1253,7 +1253,7 @@ def run_model_onboarding(args: argparse.Namespace, claude: Path) -> int:
         "api_key_env": api_key_env,
         "base_url": args.base_url,
         "goal": goal,
-        "knowledge_mode": args.knowledge_mode,
+        "knowledge_mode": getattr(args, "knowledge_mode", "shipped"),
     }
     written = write_model_profile(claude, profile, force=args.force)
     if written:
