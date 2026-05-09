@@ -253,6 +253,39 @@ def _usage_to_dict(usage: Usage) -> dict[str, Any]:
     }
 
 
+def _usage_from_dict(raw: Any) -> Usage | None:
+    if not isinstance(raw, dict):
+        return None
+    cost_raw = raw.get("cost_usd")
+    cost = float(cost_raw) if isinstance(cost_raw, int | float) else None
+    return Usage(
+        input_tokens=_usage_int(raw.get("input_tokens")),
+        output_tokens=_usage_int(raw.get("output_tokens")),
+        cost_usd=cost,
+    )
+
+
+def _usage_int(raw: Any) -> int:
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, int):
+        return max(raw, 0)
+    return 0
+
+
+def _combine_usage(left: Usage, right: Usage) -> Usage:
+    cost: float | None
+    if left.cost_usd is None and right.cost_usd is None:
+        cost = None
+    else:
+        cost = (left.cost_usd or 0.0) + (right.cost_usd or 0.0)
+    return Usage(
+        input_tokens=left.input_tokens + right.input_tokens,
+        output_tokens=left.output_tokens + right.output_tokens,
+        cost_usd=cost,
+    )
+
+
 # ── SessionStore — one file, one session ─────────────────────────────────
 
 
@@ -581,6 +614,7 @@ class ReplayState:
     stopped: bool
     stop_reason: str | None
     event_count: int
+    usage: Usage
 
 
 def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
@@ -622,6 +656,8 @@ def load_session(
     stopped = False
     stop_reason: str | None = None
     event_count = 0
+    usage_total = Usage()
+    current_run_usage = Usage()
 
     for event in _iter_events(path):
         event_count += 1
@@ -639,9 +675,21 @@ def load_session(
                     "session %s: dropping malformed message event: %s",
                     session_id, exc,
                 )
+        elif etype == "model_response":
+            usage = _usage_from_dict(event.get("usage"))
+            if usage is not None:
+                current_run_usage = _combine_usage(current_run_usage, usage)
         elif etype == "stop":
             stopped = True
             stop_reason = event.get("stop_reason")
+            usage = _usage_from_dict(event.get("usage"))
+            usage_total = _combine_usage(
+                usage_total,
+                usage if usage is not None else current_run_usage,
+            )
+            current_run_usage = Usage()
+
+    usage_total = _combine_usage(usage_total, current_run_usage)
 
     return ReplayState(
         session_id=session_id,
@@ -653,6 +701,7 @@ def load_session(
         stopped=stopped,
         stop_reason=stop_reason,
         event_count=event_count,
+        usage=usage_total,
     )
 
 

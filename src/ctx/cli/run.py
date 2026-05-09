@@ -530,6 +530,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max tokens per provider call (default: provider default).",
     )
     r.add_argument(
+        "--provider-timeout",
+        type=_positive_float,
+        default=120.0,
+        help="Wall-clock timeout in seconds for each provider call (default 120).",
+    )
+    r.add_argument(
         "--budget-usd", type=_positive_float, default=None,
         help="Stop when cumulative cost exceeds this many USD.",
     )
@@ -664,6 +670,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override provider base URL. Default: recorded session value.",
     )
     rz.add_argument(
+        "--provider-timeout",
+        type=_positive_float,
+        default=None,
+        help="Provider-call timeout in seconds. Default: recorded value, then 120.",
+    )
+    rz.add_argument(
         "--sessions-dir", default=None,
         help="Override sessions directory.",
     )
@@ -720,6 +732,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         default_model=args.model,
         base_url=args.base_url,
         api_key_env=api_key_env,
+        timeout=args.provider_timeout,
     )
 
     session_id = args.session_id or new_session_id()
@@ -796,6 +809,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "system_prompt": system_prompt,
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,
+        "provider_timeout": args.provider_timeout,
         "max_iterations": args.max_iterations,
         "budget_usd": args.budget_usd,
         "budget_tokens": args.budget_tokens,
@@ -951,6 +965,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 model=args.model,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
+                provider_timeout=args.provider_timeout,
                 max_iterations=args.max_iterations,
                 budget_usd=args.budget_usd,
                 budget_tokens=args.budget_tokens,
@@ -1004,7 +1019,12 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         return 1
 
     use_ctx_tools = bool(meta.get("ctx_tools_enabled", True))
-    system_prompt = meta.get("system_prompt") or _DEFAULT_SYSTEM_PROMPT
+    recorded_system_prompt = meta.get("system_prompt")
+    system_prompt = (
+        recorded_system_prompt
+        if isinstance(recorded_system_prompt, str)
+        else _DEFAULT_SYSTEM_PROMPT
+    )
     if use_ctx_tools:
         system_prompt = _with_ctx_session_instructions(
             str(system_prompt),
@@ -1021,10 +1041,14 @@ def _cmd_resume(args: argparse.Namespace) -> int:
     base_url = args.base_url
     if base_url is None and isinstance(meta.get("base_url"), str):
         base_url = str(meta.get("base_url") or "") or None
+    provider_timeout = args.provider_timeout
+    if provider_timeout is None:
+        provider_timeout = float(meta.get("provider_timeout") or 120.0)
     provider = get_provider(
         default_model=model,
         base_url=base_url,
         api_key_env=api_key_env,
+        timeout=provider_timeout,
     )
 
     store = SessionStore.attach(args.session_id, sessions_dir=sdir)
@@ -1117,8 +1141,10 @@ def _cmd_resume(args: argparse.Namespace) -> int:
             max_iterations=int(meta.get("max_iterations") or 25),
             temperature=float(meta.get("temperature") or 0.7),
             max_tokens=meta.get("max_tokens"),
+            provider_timeout=provider_timeout,
             budget_usd=meta.get("budget_usd"),
             budget_tokens=meta.get("budget_tokens"),
+            initial_usage=state.usage,
         )
     finally:
         if use_ctx_tools:

@@ -17,6 +17,7 @@ emits a predefined sequence of responses. No LiteLLM, no real network.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -72,6 +73,43 @@ class _Scripted(ModelProvider):
         if not self.responses:
             raise RuntimeError("scripted provider: ran out of canned responses")
         return self.responses.pop(0)
+
+
+@dataclass
+class _Hanging(ModelProvider):
+    """Provider that outlives the loop timeout."""
+
+    name: str = "hanging"
+
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None = None,
+        *,
+        model: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> CompletionResponse:
+        time.sleep(5)
+        return _stop_response("late")
+
+
+@dataclass
+class _Exploding(ModelProvider):
+    """Provider that raises during completion."""
+
+    name: str = "exploding"
+
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None = None,
+        *,
+        model: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> CompletionResponse:
+        raise RuntimeError("provider network down")
 
 
 def _stop_response(
@@ -225,6 +263,31 @@ class TestMaxIterations:
 
 
 class TestBudgets:
+    def test_budget_exceeded_response_does_not_execute_tool(self) -> None:
+        tc = ToolCall(id="c1", name="srv__delete", arguments={})
+        expensive = _tool_response(
+            tc,
+            usage=Usage(input_tokens=100, output_tokens=50, cost_usd=1.00),
+        )
+        invoked = False
+
+        def executor(_call: ToolCall) -> str:
+            nonlocal invoked
+            invoked = True
+            return "should-not-run"
+
+        result = run_loop(
+            provider=_Scripted([expensive, _stop_response("unreached")]),
+            system_prompt="",
+            task="spend then call a tool",
+            tool_executor=executor,
+            budget_usd=0.50,
+        )
+
+        assert result.stop_reason == "cost_budget"
+        assert not invoked
+        assert not [m for m in result.messages if m.role == "tool"]
+
     def test_cost_budget_trips(self) -> None:
         tc = ToolCall(id="c1", name="srv__noop", arguments={})
         # Each turn: $0.10 cost. Budget $0.25 → trips after second turn.
@@ -754,6 +817,38 @@ class TestObserver:
         assert len(obs.tool_calls) == 1
         assert obs.tool_calls[0][3] is not None  # error field set
         assert "kaboom" in obs.tool_calls[0][3]
+
+    def test_provider_exception_emits_terminal_observation(self) -> None:
+        obs = _RecordingObserver()
+
+        with pytest.raises(RuntimeError, match="provider network down"):
+            run_loop(
+                provider=_Exploding(),
+                system_prompt="",
+                task="task",
+                observer=obs,
+            )
+
+        assert len(obs.stops) == 1
+        assert obs.stops[0].stop_reason == "provider_error"
+        assert "provider network down" in obs.stops[0].detail
+
+    def test_provider_timeout_returns_terminal_observation(self) -> None:
+        obs = _RecordingObserver()
+        started = time.monotonic()
+
+        result = run_loop(
+            provider=_Hanging(),
+            system_prompt="",
+            task="task",
+            observer=obs,
+            provider_timeout=0.05,
+        )
+
+        assert time.monotonic() - started < 1.0
+        assert result.stop_reason == "provider_timeout"
+        assert len(obs.stops) == 1
+        assert obs.stops[0].stop_reason == "provider_timeout"
 
 
 # ── State seeding (resume path) ─────────────────────────────────────────────

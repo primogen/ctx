@@ -36,6 +36,7 @@ Plan 001 Phase H3.
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol
@@ -66,6 +67,8 @@ StopReason = Literal[
     "content_filter",
     "tool_denied",
     "tool_error",
+    "provider_error",
+    "provider_timeout",
 ]
 
 ToolPolicy = Callable[[ToolCall], str | None]
@@ -200,9 +203,11 @@ def run_loop(
     model: str | None = None,
     temperature: float = 0.7,
     max_tokens: int | None = None,
+    provider_timeout: float | None = None,
     max_iterations: int = 25,
     budget_usd: float | None = None,
     budget_tokens: int | None = None,
+    initial_usage: Usage | None = None,
     cancel_event: threading.Event | None = None,
     observer: LoopObserver | None = None,
     messages: list[Message] | None = None,
@@ -241,9 +246,13 @@ def run_loop(
     """
     if max_iterations <= 0:
         raise ValueError(f"max_iterations must be >= 1 (got {max_iterations})")
+    if provider_timeout is not None and provider_timeout <= 0:
+        raise ValueError("provider_timeout must be > 0 when set")
 
     obs = observer or _NullObserver()
     totals = _RunningTotals()
+    if initial_usage is not None:
+        totals.add(initial_usage)
 
     # Seed the conversation.
     # Two ordering modes:
@@ -291,13 +300,33 @@ def run_loop(
 
         obs.on_iteration_start(iteration, list(conversation))
 
-        response = provider.complete(
-            messages=list(conversation),
-            tools=tools or None,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        try:
+            response = _complete_provider(
+                provider,
+                messages=list(conversation),
+                tools=tools or None,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                provider_timeout=provider_timeout,
+            )
+        except TimeoutError as exc:
+            stop_reason = "provider_timeout"
+            stop_detail = str(exc)
+            break
+        except Exception as exc:
+            stop_reason = "provider_error"
+            stop_detail = f"provider raised {type(exc).__name__}: {exc}"
+            result = LoopResult(
+                stop_reason=stop_reason,
+                final_message=final_message,
+                iterations=iteration,
+                usage=totals.as_usage(),
+                messages=tuple(conversation),
+                detail=stop_detail,
+            )
+            obs.on_stop(result)
+            raise
         totals.add(response.usage)
         obs.on_model_response(iteration, response)
 
@@ -327,6 +356,17 @@ def run_loop(
             stop_reason = "length"
             stop_detail = "provider truncated response (finish_reason=length)"
             break
+
+        if response.tool_calls:
+            budget_stop, budget_detail = _budget_stop_reason(
+                totals,
+                budget_usd=budget_usd,
+                budget_tokens=budget_tokens,
+            )
+            if budget_stop is not None:
+                stop_reason = budget_stop
+                stop_detail = budget_detail
+                break
 
         # No tool calls → the model answered in-line. Codex review fix #5:
         # only call it ``completed`` when the answer is non-empty AND the
@@ -464,6 +504,58 @@ def run_loop(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
+
+
+def _complete_provider(
+    provider: ModelProvider,
+    *,
+    messages: list[Message],
+    tools: list[ToolDefinition] | None,
+    model: str | None,
+    temperature: float,
+    max_tokens: int | None,
+    provider_timeout: float | None,
+) -> CompletionResponse:
+    if provider_timeout is None:
+        return provider.complete(
+            messages=messages,
+            tools=tools,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    results: queue.Queue[CompletionResponse | BaseException] = queue.Queue(maxsize=1)
+
+    def _target() -> None:
+        try:
+            results.put(
+                provider.complete(
+                    messages=messages,
+                    tools=tools,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001
+            results.put(exc)
+
+    thread = threading.Thread(
+        target=_target,
+        name=f"ctx-provider-call-{getattr(provider, 'name', 'provider')}",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        outcome = results.get(timeout=provider_timeout)
+    except queue.Empty as exc:
+        raise TimeoutError(
+            f"provider call timed out after {provider_timeout:.3f}s"
+        ) from exc
+    if isinstance(outcome, BaseException):
+        raise outcome
+    return outcome
 
 
 def _collect_tools(
