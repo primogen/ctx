@@ -21,15 +21,14 @@ The chain mirrors the product-intent user journey:
        Skills / Agents / MCPs (contract pinned in test_bundle_
        orchestrator.py; here we only assert the shape is sane).
     4. User approves a skill → ctx-skill-install copies the body into
-       the live skills dir, bumps entity status to `installed`, adds
-       a manifest load entry. Mirrors the same path for an agent via
-       ctx-agent-install.
+       the live skills dir, bumps entity status to `installed`, and adds
+       a manifest load entry. The A-Z test also covers agent install and a
+       mocked ctx-mcp-install registration through the Claude MCP wrapper.
     5. The manifest reconciles install entries across entity types
        via the install_utils tuple-based dedup (pinned in P1.3
        regression suite).
     6. User decides the skill is stale → skill_unload.unload_skill
-       drops the load entry, adds unload entry. Symmetric across
-       entity types.
+       drops the load entry and adds an unload entry for the typed entity.
 
 When this test passes, the install/unload leg of the alive loop
 works against a representative corpus. When it fails, something
@@ -40,9 +39,6 @@ NOT covered here (by design):
   - The lifecycle auto-demote threshold firing (tested in
     test_ctx_lifecycle.py); would require a time-mock setup that's
     cleaner in its own test.
-  - The MCP install path (ctx-mcp-install invokes the real `claude
-    mcp add` CLI subprocess); mocked separately in test_mcp_install
-    when that module gets coverage in the P3 sprint.
   - Real sentence-transformer embeddings. We use a tiny synthetic
     graph and don't exercise the embedding cache.
 """
@@ -440,6 +436,65 @@ class TestAliveLoopE2E:
         assert ("python-patterns", "skill") in pairs
         assert ("code-reviewer", "agent") in pairs
 
+    def test_install_and_uninstall_mcp_records_manifest(
+        self, e2e_world, monkeypatch,
+    ):
+        """MCP approval and removal reconcile typed manifest entries."""
+        from ctx.adapters.claude_code.install import mcp_install
+
+        calls: list[list[str]] = []
+
+        def fake_run(args: list[str]) -> tuple[int, str, str]:
+            calls.append(args)
+            return 0, "ok", ""
+
+        monkeypatch.setattr(mcp_install, "_run_claude_mcp", fake_run)
+
+        install_result = mcp_install.install_mcp(
+            "anthropic-python-sdk",
+            wiki_dir=e2e_world["wiki"],
+            command="npx -y @anthropic-ai/sdk-mcp",
+            auto=True,
+        )
+        assert install_result.status == "installed"
+        assert calls[0] == [
+            "add",
+            "anthropic-python-sdk",
+            "--",
+            "npx",
+            "-y",
+            "@anthropic-ai/sdk-mcp",
+        ]
+
+        manifest = json.loads(e2e_world["manifest"].read_text(encoding="utf-8"))
+        loaded = {(e.get("skill"), e.get("entity_type")) for e in manifest["load"]}
+        assert ("anthropic-python-sdk", "mcp-server") in loaded
+
+        entity = (
+            e2e_world["wiki"]
+            / "entities"
+            / "mcp-servers"
+            / "a"
+            / "anthropic-python-sdk.md"
+        )
+        assert "status: installed" in entity.read_text(encoding="utf-8")
+
+        uninstall_result = mcp_install.uninstall_mcp(
+            "anthropic-python-sdk",
+            wiki_dir=e2e_world["wiki"],
+        )
+        assert uninstall_result.status == "uninstalled"
+        assert calls[-1] == ["remove", "anthropic-python-sdk"]
+
+        manifest = json.loads(e2e_world["manifest"].read_text(encoding="utf-8"))
+        loaded = {(e.get("skill"), e.get("entity_type")) for e in manifest["load"]}
+        unloaded = {
+            (e.get("skill"), e.get("entity_type")) for e in manifest["unload"]
+        }
+        assert ("anthropic-python-sdk", "mcp-server") not in loaded
+        assert ("anthropic-python-sdk", "mcp-server") in unloaded
+        assert "status: cataloged" in entity.read_text(encoding="utf-8")
+
     def test_full_user_journey_signals_to_install(
         self, e2e_world, capsys, monkeypatch,
     ):
@@ -448,14 +503,15 @@ class TestAliveLoopE2E:
         A user who:
           1. opens Python files (three signals)
           2. sees the categorised bundle surfaced via the hook
-          3. approves a skill + an agent from the bundle
+          3. approves a skill + an agent + an MCP from the bundle
 
         must end the journey with:
           - pending-skills.json written with a cross-type bundle
           - skill installed at ~/.claude/skills/<slug>/
           - agent installed at ~/.claude/agents/<slug>.md
-          - manifest carrying BOTH entries keyed on (slug, type)
-          - entity status fields flipped to `installed` on both cards
+          - MCP registered through the Claude MCP wrapper
+          - manifest carrying all entries keyed on (slug, type)
+          - entity status fields flipped to `installed` on all cards
 
         If any link in the chain regresses, this test fails and CI
         blocks the PR. This is the load-bearing integration contract.
@@ -464,6 +520,19 @@ class TestAliveLoopE2E:
         from ctx.adapters.claude_code.hooks import bundle_orchestrator as _bo
         from ctx.adapters.claude_code.install.skill_install import install_skill
         from ctx.adapters.claude_code.install.agent_install import install_agent
+        from ctx.adapters.claude_code.install import mcp_install
+
+        mcp_calls: list[list[str]] = []
+
+        def fake_mcp_run(args: list[str]) -> tuple[int, str, str]:
+            mcp_calls.append(args)
+            return 0, "ok", ""
+
+        monkeypatch.setattr(
+            mcp_install,
+            "_run_claude_mcp",
+            fake_mcp_run,
+        )
 
         # ── 1. Accumulate signals ────────────────────────────────────
         # Three invocations spanning extension-based AND command-based
@@ -503,8 +572,16 @@ class TestAliveLoopE2E:
             wiki_dir=e2e_world["wiki"],
             agents_dir=e2e_world["agents"],
         )
+        mcp_result = mcp_install.install_mcp(
+            "anthropic-python-sdk",
+            wiki_dir=e2e_world["wiki"],
+            command="npx -y @anthropic-ai/sdk-mcp",
+            auto=True,
+        )
         assert skill_result.status == "installed"
         assert agent_result.status == "installed"
+        assert mcp_result.status == "installed"
+        assert mcp_calls and mcp_calls[0][0] == "add"
 
         # ── 4. End state: filesystem + manifest + entity status ──────
         assert (e2e_world["skills"] / "python-patterns" / "SKILL.md").is_file()
@@ -514,11 +591,16 @@ class TestAliveLoopE2E:
         loaded_pairs = {
             (e.get("skill"), e.get("entity_type")) for e in manifest["load"]
         }
-        assert {("python-patterns", "skill"), ("code-reviewer", "agent")} <= loaded_pairs
+        assert {
+            ("python-patterns", "skill"),
+            ("code-reviewer", "agent"),
+            ("anthropic-python-sdk", "mcp-server"),
+        } <= loaded_pairs
 
         for entity_rel in (
             "entities/skills/python-patterns.md",
             "entities/agents/code-reviewer.md",
+            "entities/mcp-servers/a/anthropic-python-sdk.md",
         ):
             text = (e2e_world["wiki"] / entity_rel).read_text(encoding="utf-8")
             assert "status: installed" in text, (
