@@ -400,7 +400,7 @@ def _stage_harness(
     return setup_runs, verify_runs
 
 
-def _atomic_replace_target(stage_path: Path, target_path: Path) -> None:
+def _atomic_replace_target(stage_path: Path, target_path: Path) -> Path | None:
     backup_path: Path | None = None
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists():
@@ -414,9 +414,15 @@ def _atomic_replace_target(stage_path: Path, target_path: Path) -> None:
         if backup_path is not None and backup_path.exists() and not target_path.exists():
             backup_path.rename(target_path)
         raise
-    finally:
-        if backup_path is not None and backup_path.exists():
-            _remove_path(backup_path)
+    return backup_path
+
+
+def _restore_replaced_target(target_path: Path, backup_path: Path | None) -> None:
+    if backup_path is None or not backup_path.exists():
+        return
+    if target_path.exists():
+        _remove_path(target_path)
+    backup_path.rename(target_path)
 
 
 def _install_to_target(
@@ -428,7 +434,7 @@ def _install_to_target(
     approve_commands: bool,
     run_verify: bool,
     allow_local_sources: bool,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Path | None]:
     if target_path.exists() and not force:
         raise FileExistsError("target already exists; pass --force to replace it")
     root = installs_root.expanduser().resolve()
@@ -442,8 +448,8 @@ def _install_to_target(
             run_verify=run_verify,
             allow_local_sources=allow_local_sources,
         )
-        _atomic_replace_target(stage_path, target_path)
-        return setup_runs, verify_runs
+        backup_path = _atomic_replace_target(stage_path, target_path)
+        return setup_runs, verify_runs, backup_path
     except Exception:
         if stage_path.exists():
             _remove_path(stage_path)
@@ -534,8 +540,9 @@ def install_harness(
         return InstallResult(record.slug, "dry-run", target=target_path)
 
     target_preexisting = target_path.exists()
+    backup_path: Path | None = None
     try:
-        setup_runs, verify_runs = _install_to_target(
+        setup_runs, verify_runs, backup_path = _install_to_target(
             record=record,
             target_path=target_path,
             installs_root=installs_root,
@@ -561,7 +568,13 @@ def install_harness(
             message=str(exc),
         )
     except Exception as exc:  # noqa: BLE001
-        if not target_preexisting and target_path.exists():
+        message = str(exc)
+        if backup_path is not None:
+            try:
+                _restore_replaced_target(target_path, backup_path)
+            except Exception as rollback_exc:  # noqa: BLE001
+                message = f"{message}; rollback failed: {rollback_exc}"
+        elif not target_preexisting and target_path.exists():
             try:
                 _remove_path(target_path)
             except Exception:  # noqa: BLE001
@@ -570,14 +583,22 @@ def install_harness(
             record.slug,
             "install-failed",
             target=target_path,
-            message=str(exc),
+            message=message,
         )
+
+    message = ""
+    if backup_path is not None and backup_path.exists():
+        try:
+            _remove_path(backup_path)
+        except Exception as exc:  # noqa: BLE001
+            message = f"warning: could not remove backup {backup_path}: {exc}"
 
     return InstallResult(
         record.slug,
         "installed",
         target=target_path,
         manifest_path=manifest_path,
+        message=message,
     )
 
 
@@ -809,7 +830,7 @@ def render_no_fit_harness_plan(
     model: str | None,
 ) -> str:
     """Render a build handoff when no catalog harness fits the user's setup."""
-    provider = model_provider or "unknown provider"
+    provider = model_provider or _provider_from_model_slug(model) or "unknown provider"
     model_name = model or "unspecified model"
     goal_text = goal.strip() or "unspecified development goal"
     return "\n".join([
@@ -865,6 +886,13 @@ def render_no_fit_harness_plan(
         "",
         "Design reference: https://github.com/walkinglabs/learn-harness-engineering",
     ]) + "\n"
+
+
+def _provider_from_model_slug(model: str | None) -> str | None:
+    if not model or "/" not in model:
+        return None
+    provider = model.split("/", 1)[0].strip()
+    return provider or None
 
 
 def write_no_fit_harness_plan(

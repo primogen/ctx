@@ -589,6 +589,49 @@ def test_update_failure_preserves_existing_target_and_manifest(
     assert install.manifest_path.read_text(encoding="utf-8") == before_manifest
 
 
+def test_update_manifest_failure_rolls_back_replaced_target(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "README.md").write_text("v1", encoding="utf-8")
+    wiki = tmp_path / "wiki"
+    _write_harness_page(wiki, repo_url=str(source))
+    manifest_dir = tmp_path / "manifests"
+    installs_root = tmp_path / "installs"
+    install = harness_install.install_harness(
+        "text-to-cad",
+        wiki_path=wiki,
+        installs_root=installs_root,
+        manifest_dir=manifest_dir,
+        allow_local_sources=True,
+    )
+    assert install.target is not None
+    assert install.manifest_path is not None
+    before_manifest = install.manifest_path.read_text(encoding="utf-8")
+    (source / "README.md").write_text("v2", encoding="utf-8")
+
+    def fail_manifest(**_kwargs: Any) -> Path:
+        raise OSError("manifest write failed")
+
+    monkeypatch.setattr(harness_install, "_write_manifest", fail_manifest)
+
+    result = harness_install.update_harness(
+        "text-to-cad",
+        wiki_path=wiki,
+        installs_root=installs_root,
+        manifest_dir=manifest_dir,
+        allow_local_sources=True,
+    )
+
+    assert result.status == "install-failed"
+    assert "manifest write failed" in result.message
+    assert (install.target / "README.md").read_text(encoding="utf-8") == "v1"
+    assert install.manifest_path.read_text(encoding="utf-8") == before_manifest
+    assert not list(installs_root.glob(".text-to-cad.backup-*"))
+
+
 def test_update_requires_existing_manifest(tmp_path: Path) -> None:
     wiki = tmp_path / "wiki"
     _write_harness_page(wiki)
@@ -770,5 +813,6 @@ def test_recommend_no_fit_writes_custom_harness_plan(
     assert f"Custom harness plan: {target}" in capsys.readouterr().out
     text = target.read_text(encoding="utf-8")
     assert "repair a legacy Python service" in text
+    assert "Model provider: openrouter" in text
     assert "openrouter/openai/gpt-5.5" in text
     assert "Build the harness described above" in text
