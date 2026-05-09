@@ -44,6 +44,7 @@ model (~100MB on first run). Skip in fast CI with ``-m 'not integration'``.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +67,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "similarity"
 # Raising these is easy; lowering them requires a plan, not a fixup.
 _MIN_PRECISION = 0.90
 _MIN_RECALL = 0.90
+_REQUIRE_SIMILARITY_EVAL = os.environ.get("CTX_REQUIRE_SIMILARITY_EVAL") == "1"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -191,15 +193,24 @@ def _evaluate_pair(pair: _Pair, embedder, cache_root: Path) -> _Outcome:
 def _embedder():
     """Load the real configured embedder once per module run.
 
-    Skips the whole module if the embedding backend can't be built —
-    typical cause is sentence-transformers not being installed or
-    network access being blocked on first download.
+    Local runs may skip when the embedding backend is unavailable. The
+    dedicated CI similarity gate sets CTX_REQUIRE_SIMILARITY_EVAL=1, in
+    which case dependency/model setup failures are hard failures.
     """
-    pytest.importorskip("sentence_transformers")
+    try:
+        import sentence_transformers  # noqa: F401
+    except ImportError as exc:
+        message = f"sentence-transformers is required for similarity evaluation: {exc}"
+        if _REQUIRE_SIMILARITY_EVAL:
+            pytest.fail(message)
+        pytest.skip(message)
     try:
         return cfg.build_intake_embedder()
-    except Exception as exc:  # noqa: BLE001 — environment failures should skip, not fail
-        pytest.skip(f"cannot build intake embedder: {exc}")
+    except Exception as exc:  # noqa: BLE001 - fail/skip policy depends on CI mode
+        message = f"cannot build intake embedder: {exc}"
+        if _REQUIRE_SIMILARITY_EVAL:
+            pytest.fail(message)
+        pytest.skip(message)
 
 
 @pytest.fixture
