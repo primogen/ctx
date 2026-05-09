@@ -187,6 +187,23 @@ _GRAPH_RELEASE_URL = (
     "https://github.com/stevesolun/ctx/releases/download/"
     "v{version}/wiki-graph.tar.gz"
 )
+_GRAPH_REQUIRED_FILES = frozenset({
+    "index.md",
+    "graphify-out/graph.json",
+    "graphify-out/graph-delta.json",
+    "graphify-out/communities.json",
+    "graphify-out/graph-report.md",
+    "graphify-out/graph-export-manifest.json",
+    "external-catalogs/skills-sh/catalog.json",
+})
+_GRAPH_MANAGED_PATHS = (
+    "graphify-out",
+    "entities",
+    "converted",
+    "concepts",
+    "external-catalogs",
+    "index.md",
+)
 
 
 def build_graph(
@@ -199,7 +216,7 @@ def build_graph(
     claude_dir = claude or _claude_dir()
     wiki_dir = claude_dir / "skill-wiki"
     graph_json = wiki_dir / "graphify-out" / "graph.json"
-    if graph_json.exists() and not force:
+    if not force and _graph_install_complete(wiki_dir):
         print(f"Graph already installed at {graph_json}; use --force to refresh.")
         return 0
 
@@ -225,8 +242,10 @@ def build_graph(
         if temp_dir is not None:
             temp_dir.cleanup()
 
-    if not graph_json.exists():
-        print(f"  [error] graph archive did not contain {graph_json}", file=sys.stderr)
+    try:
+        _validate_graph_install_tree(wiki_dir)
+    except ValueError as exc:
+        print(f"  [error] graph install validation failed: {exc}", file=sys.stderr)
         return 1
     return 0
 
@@ -266,6 +285,18 @@ def _download_graph_archive(destination: Path, *, url: str) -> None:
 
 
 def _extract_graph_archive(archive: Path, target_dir: Path) -> None:
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{target_dir.name}-stage-",
+        dir=target_dir.parent,
+    ) as staging_name:
+        staging_dir = Path(staging_name)
+        _extract_graph_archive_to_dir(archive, staging_dir)
+        _validate_graph_install_tree(staging_dir)
+        _promote_graph_tree(staging_dir, target_dir)
+
+
+def _extract_graph_archive_to_dir(archive: Path, target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     target_root = target_dir.resolve()
     with tarfile.open(archive, "r:gz") as tf:
@@ -283,6 +314,76 @@ def _extract_graph_archive(archive: Path, target_dir: Path) -> None:
             _ensure_path_under_root(destination.parent, target_root)
             with source, destination.open("wb") as fh:
                 shutil.copyfileobj(source, fh)
+
+
+def _graph_install_complete(wiki_dir: Path) -> bool:
+    try:
+        _validate_graph_install_tree(wiki_dir)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def _validate_graph_install_tree(wiki_dir: Path) -> None:
+    missing = [
+        name
+        for name in sorted(_GRAPH_REQUIRED_FILES)
+        if not (wiki_dir / name).is_file() or (wiki_dir / name).stat().st_size == 0
+    ]
+    if missing:
+        raise ValueError(f"graph archive is missing required files: {missing}")
+
+    graph = _read_json_file(wiki_dir / "graphify-out" / "graph.json")
+    if not isinstance(graph, dict):
+        raise ValueError("graphify-out/graph.json must contain a JSON object")
+    if not isinstance(graph.get("nodes"), list):
+        raise ValueError("graphify-out/graph.json is missing a nodes list")
+    if not isinstance(graph.get("edges", graph.get("links")), list):
+        raise ValueError("graphify-out/graph.json is missing an edges/links list")
+
+    manifest = _read_json_file(wiki_dir / "graphify-out" / "graph-export-manifest.json")
+    if not isinstance(manifest, dict):
+        raise ValueError("graph-export-manifest.json must contain a JSON object")
+    if manifest.get("version") != 1:
+        raise ValueError("graph export manifest version must be 1")
+    export_id = manifest.get("export_id")
+    if not isinstance(export_id, str) or not export_id.strip():
+        raise ValueError("graph export manifest is missing export_id")
+    artifacts = manifest.get("artifacts")
+    expected_artifacts = {
+        "graph": "graph.json",
+        "delta": "graph-delta.json",
+        "communities": "communities.json",
+        "report": "graph-report.md",
+    }
+    if not isinstance(artifacts, dict) or artifacts != expected_artifacts:
+        raise ValueError("graph export manifest artifacts map is incomplete")
+
+
+def _read_json_file(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _promote_graph_tree(staging_dir: Path, target_dir: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_root = target_dir.resolve()
+    for name in _GRAPH_MANAGED_PATHS:
+        source = staging_dir / name
+        destination = target_dir / name
+        _ensure_path_under_root(destination.parent, target_root)
+        _remove_existing_graph_path(destination)
+        if source.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(destination))
+    _validate_graph_install_tree(target_dir)
+
+
+def _remove_existing_graph_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
 
 
 def _graph_member_destination(
@@ -315,6 +416,8 @@ def _validate_graph_tar_member(member: tarfile.TarInfo) -> None:
         raise ValueError(f"graph archive links are not allowed: {member.name}")
     if not (member.isdir() or member.isfile()):
         raise ValueError(f"unsupported graph archive member: {member.name}")
+    if name.endswith(".original") or name.endswith(".lock"):
+        raise ValueError(f"graph archive backup/lock members are not allowed: {member.name}")
 
 
 # ─── Model onboarding ───────────────────────────────────────────────────────

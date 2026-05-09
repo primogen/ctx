@@ -235,12 +235,46 @@ def _write_graph_archive(tmp_path: Path) -> Path:
     graph_out = source / "graphify-out"
     graph_out.mkdir(parents=True)
     (graph_out / "graph.json").write_text(
-        json.dumps({"nodes": [], "links": []}),
+        json.dumps({"graph": {"export_id": "test-export"}, "nodes": [], "links": []}),
         encoding="utf-8",
     )
+    (graph_out / "graph-delta.json").write_text(
+        json.dumps({"export_id": "test-export", "nodes": [], "edges": []}),
+        encoding="utf-8",
+    )
+    (graph_out / "communities.json").write_text(
+        json.dumps({"export_id": "test-export", "total_communities": 0}),
+        encoding="utf-8",
+    )
+    (graph_out / "graph-report.md").write_text(
+        "# Graph Report\n\n> Export ID: test-export\n",
+        encoding="utf-8",
+    )
+    (graph_out / "graph-export-manifest.json").write_text(
+        json.dumps({
+            "version": 1,
+            "export_id": "test-export",
+            "artifacts": {
+                "graph": "graph.json",
+                "delta": "graph-delta.json",
+                "communities": "communities.json",
+                "report": "graph-report.md",
+            },
+        }),
+        encoding="utf-8",
+    )
+    external = source / "external-catalogs" / "skills-sh"
+    external.mkdir(parents=True)
+    (external / "catalog.json").write_text("{}", encoding="utf-8")
+    entities = source / "entities" / "skills"
+    entities.mkdir(parents=True)
+    (entities / "current.md").write_text("# Current\n", encoding="utf-8")
+    (source / "index.md").write_text("# Wiki\n", encoding="utf-8")
     archive = tmp_path / "wiki-graph.tar.gz"
     with tarfile.open(archive, "w:gz") as tf:
-        tf.add(graph_out / "graph.json", arcname="graphify-out/graph.json")
+        for path in sorted(source.rglob("*")):
+            if path.is_file():
+                tf.add(path, arcname=path.relative_to(source).as_posix())
     return archive
 
 
@@ -276,12 +310,48 @@ def test_main_with_graph_flag_installs_prebuilt_graph(
     rc = ci.main(["--graph", "--model-mode", "skip"])
     assert rc == 0
     graph_json = claude / "skill-wiki" / "graphify-out" / "graph.json"
-    assert json.loads(graph_json.read_text(encoding="utf-8")) == {
-        "nodes": [],
-        "links": [],
-    }
+    graph_payload = json.loads(graph_json.read_text(encoding="utf-8"))
+    assert graph_payload["graph"]["export_id"] == "test-export"
     assert not any("ctx.core.wiki.wiki_graphify" in c for c in calls)
     assert not any(c == "wiki_graphify" for call in calls for c in call)
+
+
+def test_graph_install_rejects_incomplete_archive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "incomplete-source"
+    graph_out = source / "graphify-out"
+    graph_out.mkdir(parents=True)
+    (graph_out / "graph.json").write_text(
+        json.dumps({"graph": {"export_id": "partial"}, "nodes": []}),
+        encoding="utf-8",
+    )
+    archive = tmp_path / "incomplete-wiki-graph.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(graph_out / "graph.json", arcname="graphify-out/graph.json")
+
+    claude = tmp_path / "home"
+    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda: archive)
+
+    assert ci.build_graph(claude) == 1
+    assert not (claude / "skill-wiki" / "graphify-out" / "graph.json").exists()
+
+
+def test_graph_install_force_prunes_stale_generated_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    archive = _write_graph_archive(tmp_path)
+    claude = tmp_path / "home"
+    stale = claude / "skill-wiki" / "entities" / "skills" / "stale.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("# Stale\n", encoding="utf-8")
+    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda: archive)
+
+    assert ci.build_graph(claude, force=True) == 0
+    assert not stale.exists()
+    assert (claude / "skill-wiki" / "entities" / "skills" / "current.md").is_file()
 
 
 def test_graph_install_rejects_path_traversal_archive(
