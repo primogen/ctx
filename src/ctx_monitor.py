@@ -164,6 +164,41 @@ _DASHBOARD_ENTITY_TYPES: tuple[str, ...] = tuple(
 )
 
 
+def _normalize_dashboard_entity_type(raw: object) -> str | None:
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    normalized = {
+        "skills": "skill",
+        "skill": "skill",
+        "agents": "agent",
+        "agent": "agent",
+        "mcp": "mcp-server",
+        "mcp-server": "mcp-server",
+        "mcp-servers": "mcp-server",
+        "harness": "harness",
+        "harnesses": "harness",
+    }.get(value, value)
+    return normalized if normalized in _DASHBOARD_ENTITY_TYPES else None
+
+
+def _audit_entity_type(row: dict) -> str | None:
+    raw_meta = row.get("meta")
+    meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+    for raw in (
+        meta.get("entity_type"),
+        row.get("entity_type"),
+        row.get("subject_type"),
+        row.get("type"),
+    ):
+        normalized = _normalize_dashboard_entity_type(raw)
+        if normalized:
+            return normalized
+    event = str(row.get("event") or "")
+    prefix, _, _ = event.partition(".")
+    return _normalize_dashboard_entity_type(prefix)
+
+
 def _wiki_entity_path(slug: str, entity_type: str | None = None) -> Path | None:
     """Resolve a slug to its wiki entity page.
 
@@ -793,11 +828,32 @@ def _summarize_sessions() -> list[dict]:
         if ts and (row["last_seen"] is None or ts > row["last_seen"]):
             row["last_seen"] = ts
         action = line.get("event")
-        subject = line.get("skill") or line.get("agent") or ""
+        entity_type = (
+            _audit_entity_type(line)
+            or ("agent" if line.get("agent") else None)
+            or ("mcp-server" if line.get("mcp") or line.get("mcp_server") else None)
+            or ("skill" if line.get("skill") else None)
+        )
+        if entity_type == "agent":
+            subject = line.get("agent")
+        elif entity_type == "mcp-server":
+            subject = line.get("mcp") or line.get("mcp_server")
+        else:
+            subject = line.get("skill")
         if action == "load" and subject:
-            row["skills_loaded"].add(subject)
+            if entity_type == "agent":
+                row["agents_loaded"].add(subject)
+            elif entity_type == "mcp-server":
+                row["mcps_loaded"].add(subject)
+            else:
+                row["skills_loaded"].add(subject)
         elif action == "unload" and subject:
-            row["skills_unloaded"].add(subject)
+            if entity_type == "agent":
+                row["agents_unloaded"].add(subject)
+            elif entity_type == "mcp-server":
+                row["mcps_unloaded"].add(subject)
+            else:
+                row["skills_unloaded"].add(subject)
 
     summaries: list[dict] = []
     for row in by_session.values():
@@ -856,6 +912,10 @@ th { background: rgba(0,0,0,0.04); font-weight: 600; }
 tr:hover { background: rgba(0,0,0,0.02); }
 .pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
         font-size: 0.8rem; font-weight: 600; background: #e5e7eb; color: #111; }
+.entity-type-skill { background: #e0e7ff; color: #312e81; }
+.entity-type-agent { background: #fef3c7; color: #78350f; }
+.entity-type-mcp-server { background: #fee2e2; color: #7f1d1d; }
+.entity-type-harness { background: #dcfce7; color: #14532d; }
 .grade-A { background: #d1fae5; color: #065f46; }
 .grade-B { background: #dbeafe; color: #1e3a8a; }
 .grade-C { background: #fef3c7; color: #78350f; }
@@ -931,9 +991,12 @@ def _graph_neighborhood(
         return {"nodes": [], "edges": [], "center": None}
 
     center = None
+    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
+    if entity_type is not None and normalized_entity_type is None:
+        return {"nodes": [], "edges": [], "center": None}
     entity_types = (
-        (entity_type,)
-        if entity_type in _DASHBOARD_ENTITY_TYPES
+        (normalized_entity_type,)
+        if normalized_entity_type is not None
         else _DASHBOARD_ENTITY_TYPES
     )
     for current_type in entity_types:
@@ -1355,8 +1418,12 @@ def _render_skill_detail(slug: str, entity_type: str | None = None) -> str:
     sidecar = _load_sidecar(slug, entity_type=entity_type)
     if sidecar is None:
         return _layout(slug, f"<h1>{html.escape(slug)}</h1><p>No sidecar.</p>")
+    requested_type = (
+        _normalize_dashboard_entity_type(entity_type)
+        or _sidecar_entity_type(sidecar)
+    )
     audit = [r for r in _read_jsonl(_audit_log_path())
-             if r.get("subject") == slug]
+             if r.get("subject") == slug and _audit_entity_type(r) == requested_type]
     audit_rows = "".join(
         f"<tr><td class='muted'>{html.escape(r.get('ts', ''))}</td>"
         f"<td><span class='pill'>{html.escape(r.get('event', ''))}</span></td>"
@@ -1523,6 +1590,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "  const rows = nodes.map(n => {\n"
         "    const d = n.data || {};\n"
         "    const tags = Array.from(d.filter_tokens || d.tags || []).join(' ');\n"
+        "    const typeKey = ['skill', 'agent', 'mcp-server', 'harness'].includes(d.type) ? d.type : 'entity';\n"
         "    return '<a data-testid=\"graph-fallback-node\" class=\"graph-fallback-node\" '\n"
         "      + 'data-slug=\"' + escapeHtml(nodeSlug(d.id)) + '\" '\n"
         "      + 'data-type=\"' + escapeHtml(d.type || '') + '\" '\n"
@@ -1531,7 +1599,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "      + 'href=\"' + escapeHtml(wikiHref(d)) + '\" '\n"
         "      + 'style=\"display:flex; justify-content:space-between; gap:0.75rem; padding:0.45rem 0.6rem; border-bottom:1px solid #e5e7eb; color:inherit; text-decoration:none;\">'\n"
         "      + '<code>' + escapeHtml(d.label || nodeSlug(d.id)) + '</code>'\n"
-        "      + '<span class=\"pill\">' + escapeHtml(d.type || 'entity') + '</span></a>';\n"
+        "      + '<span class=\"pill entity-type-' + escapeHtml(typeKey) + '\">' + escapeHtml(d.type || 'entity') + '</span></a>';\n"
         "  }).join('');\n"
         "  cyMount.innerHTML = '<div data-testid=\"graph-fallback\" style=\"padding:0.75rem; height:100%; overflow:auto;\">'\n"
         "    + '<div class=\"muted\" style=\"margin-bottom:0.5rem;\">Graph renderer unavailable; showing list view.</div>'\n"
@@ -2437,8 +2505,10 @@ def _perform_load(
     """Install/load one entity from the wiki. Returns (ok, message)."""
     if not _is_safe_slug(slug):
         return False, f"invalid slug: {slug!r}"
-    if entity_type not in _DASHBOARD_ENTITY_TYPES:
+    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
+    if normalized_entity_type is None:
         return False, f"unsupported entity_type: {entity_type!r}"
+    entity_type = normalized_entity_type
     if entity_type == "harness":
         return (
             False,
@@ -2492,6 +2562,10 @@ def _perform_unload(slug: str, entity_type: str = "skill") -> tuple[bool, str]:
     """
     if not _is_safe_slug(slug):
         return False, f"invalid slug: {slug!r}"
+    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
+    if normalized_entity_type is None:
+        return False, f"unsupported entity_type: {entity_type!r}"
+    entity_type = normalized_entity_type
     if entity_type == "harness":
         return (
             False,
@@ -2709,6 +2783,14 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                     self._send_json(sidecar)
             elif path.startswith("/api/graph/") and path.endswith(".json"):
                 slug = path[len("/api/graph/"): -len(".json")]
+                requested_type = qs.get("type")
+                graph_entity_type = _normalize_dashboard_entity_type(requested_type)
+                if requested_type is not None and graph_entity_type is None:
+                    self._send_json_status(
+                        400,
+                        {"detail": f"unsupported entity_type: {requested_type!r}"},
+                    )
+                    return
                 try:
                     hops = max(1, min(int(qs.get("hops", 1)), 3))
                     limit = max(5, min(int(qs.get("limit", 40)), 150))
@@ -2719,7 +2801,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                     )
                     return
                 self._send_json(_graph_neighborhood(
-                    slug, hops=hops, limit=limit, entity_type=qs.get("type"),
+                    slug, hops=hops, limit=limit, entity_type=graph_entity_type,
                 ))
             elif path == "/api/events.stream":
                 self._stream_audit_log()

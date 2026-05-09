@@ -16,8 +16,7 @@ Scope:
   - _perform_unload routes by entity_type (skill+agent -> skill_unload,
     mcp-server -> mcp_install.uninstall_mcp)
   - _render_graph has a left-sidebar filter panel (type checkboxes
-    + tag filter) and cytoscape styles for MCP and harness nodes in
-    distinct colours.
+    + tag filter) and distinct list-view styles for MCP and harness nodes.
 """
 
 from __future__ import annotations
@@ -295,9 +294,20 @@ class TestSessionSummaries3Type:
             "\n".join(json.dumps(record) for record in records) + "\n",
             encoding="utf-8",
         )
+        (claude / "skill-events.jsonl").write_text(
+            json.dumps({
+                "timestamp": "2026-05-02T10:03:00Z",
+                "event": "load",
+                "agent": "code-reviewer",
+                "session_id": "S1",
+            }) + "\n",
+            encoding="utf-8",
+        )
 
         session = _cm._summarize_sessions()[0]
 
+        assert session["agents_loaded"] == ["code-reviewer"]
+        assert session["skills_loaded"] == []
         assert session["agents_unloaded"] == ["code-reviewer"]
         assert session["skills_unloaded"] == []
         assert session["mcps_loaded"] == ["anthropic-python-sdk"]
@@ -582,6 +592,67 @@ class TestPerformUnloadByEntityType:
         assert not ok
         assert "invalid slug" in msg
 
+    def test_unknown_entity_type_rejected_before_skill_unload(self, monkeypatch):
+        from ctx.adapters.claude_code.install import skill_unload
+
+        def fail_if_called(slugs, *, entity_type=None):
+            raise AssertionError("skill_unload should not receive unknown types")
+
+        monkeypatch.setattr(skill_unload, "unload_from_session", fail_if_called)
+
+        ok, msg = _cm._perform_unload("python-patterns", entity_type="weird")
+
+        assert not ok
+        assert "unsupported entity_type" in msg
+
+
+class TestRenderSidecarDetail3Type:
+    def test_sidecar_timeline_filters_duplicate_slug_by_entity_type(self, monkeypatch):
+        monkeypatch.setattr(
+            _cm,
+            "_load_sidecar",
+            lambda slug, entity_type=None: {
+                "slug": slug,
+                "subject_type": "harness",
+                "grade": "A",
+                "raw_score": 0.95,
+            },
+        )
+        monkeypatch.setattr(
+            _cm,
+            "_read_jsonl",
+            lambda *args, **kwargs: [
+                {
+                    "ts": "t1",
+                    "event": "skill.loaded",
+                    "subject_type": "skill",
+                    "subject": "langgraph",
+                    "actor": "hook",
+                },
+                {
+                    "ts": "t2",
+                    "event": "agent.unloaded",
+                    "subject_type": "agent",
+                    "subject": "langgraph",
+                    "actor": "hook",
+                },
+                {
+                    "ts": "t3",
+                    "event": "harness.installed",
+                    "subject_type": "harness",
+                    "subject": "langgraph",
+                    "actor": "ctx",
+                },
+            ],
+        )
+
+        html = _cm._render_skill_detail("langgraph", entity_type="harness")
+
+        assert "harness.installed" in html
+        assert "Audit timeline (1 entries)" in html
+        assert "skill.loaded" not in html
+        assert "agent.unloaded" not in html
+
 
 class TestPerformLoadByEntityType:
     def test_skill_type_calls_skill_install(self, monkeypatch):
@@ -752,30 +823,29 @@ class TestRenderGraphSidebar:
         assert "filter_tokens" in html
         assert "isFocus || !tagQ" in html
 
-    def test_cytoscape_styles_mcp_and_harness_nodes_distinctly(self, monkeypatch):
-        """The graph view shows four types; each must be visually
-        distinct or users can't tell them apart. Before the fix, MCPs
-        rendered in the default skill color because no CSS rule
-        matched node[type="mcp-server"]."""
+    def test_graph_list_styles_mcp_and_harness_nodes_distinctly(self, monkeypatch):
+        """The graph list view shows four types; each must be visually distinct."""
         monkeypatch.setattr(_cm, "_graph_stats",
                             lambda: {"nodes": 0, "edges": 0, "available": False})
         monkeypatch.setattr(_cm, "_top_degree_seeds", lambda: [])
         html = _cm._render_graph()
-        assert 'node[type = "mcp-server"]' in html
-        assert 'node[type = "harness"]' in html
-        # The current design uses red for MCPs to distinguish from
-        # indigo (skill) and amber (agent). A future restyle can
-        # loosen this — just require SOME style block exists.
-        assert "shape" in html.split('node[type = "mcp-server"]')[1][:300]
-        assert "shape" in html.split('node[type = "harness"]')[1][:300]
+        assert ".entity-type-skill" in html
+        assert ".entity-type-agent" in html
+        assert ".entity-type-mcp-server" in html
+        assert ".entity-type-harness" in html
+        assert (
+            "const typeKey = ['skill', 'agent', 'mcp-server', 'harness']"
+            in html
+        )
 
-    def test_cytoscape_hides_edges_connected_to_filtered_nodes(self, monkeypatch):
+    def test_graph_filters_fallback_rows_and_connected_edges(self, monkeypatch):
         monkeypatch.setattr(_cm, "_graph_stats",
                             lambda: {"nodes": 0, "edges": 0, "available": False})
         monkeypatch.setattr(_cm, "_top_degree_seeds", lambda: [])
         html = _cm._render_graph()
 
-        assert "edge.hidden-by-filter" in html
+        assert "document.querySelectorAll('[data-testid=\"graph-fallback-node\"]')" in html
+        assert "n.style.display = hidden ? 'none' : 'flex'" in html
         assert "e.toggleClass('hidden-by-filter', srcHidden || tgtHidden)" in html
 
     def test_tap_handler_strips_mcp_server_prefix(self, monkeypatch):
@@ -839,8 +909,13 @@ class TestMonitorRoutesPreserveEntityType:
         sent: dict[str, object] = {}
         handler._send_html = lambda body: sent.setdefault("html", body)
         handler._send_json = lambda body: sent.setdefault("json", body)
+        handler._send_json_status = lambda status, body: sent.setdefault(
+            "json_status",
+            (status, body),
+        )
         handler._send_404 = lambda detail: sent.setdefault("404", detail)
         handler._send_500 = lambda exc: sent.setdefault("500", exc)
+        handler._api_reads_enabled = lambda: True
         if html_fn is not None:
             handler._send_html = html_fn
         if json_fn is not None:
@@ -899,3 +974,18 @@ class TestMonitorRoutesPreserveEntityType:
             "limit": 55,
             "entity_type": "harness",
         }
+
+    def test_graph_api_route_rejects_unknown_type_query(self, monkeypatch):
+        calls = []
+
+        def fake_graph_neighborhood(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {"center": "skill:langgraph", "nodes": [], "edges": []}
+
+        monkeypatch.setattr(_cm, "_graph_neighborhood", fake_graph_neighborhood)
+
+        sent = self._run_get("/api/graph/langgraph.json?type=bogus")
+
+        assert sent["json_status"][0] == 400
+        assert "unsupported entity_type" in sent["json_status"][1]["detail"]
+        assert calls == []

@@ -244,7 +244,7 @@ next run rebuilds instead of trusting mixed graph files.
 | 2026-05-02 GitNexus MCP pass | **2,960,215** | Added GitNexus as a cataloged MCP server entity with 26 cross-type edges to its Skills.sh skill pages and related architecture/refactoring agents; semantic edge count unchanged. |
 | 2026-05-04 v0.7.3 artifact refresh | **2,960,215** | Hydrated one recoverable Skills.sh command-injection-testing body, raising hydrated Skills.sh `SKILL.md` files to 89,463; generated micro-skill markdown now defangs high-risk command-injection payloads before packaging. Graph topology unchanged. |
 | 2026-05-04 body-backed Skills.sh prune | **2,900,834** | Removed 1,383 Skills.sh records that had no packaged `SKILL.md` body and no parseable Skills.sh prose body. Remaining Skills.sh catalog entries, graph nodes, entity pages, and converted `SKILL.md` bodies are all **89,463**. |
-| 2026-05-05 artifact hygiene refresh | **2,900,834** | Repacked `graph/wiki-graph.tar.gz` to remove transient `.lock` files from the shipped LLM-wiki. Topology unchanged; current tar members: **598,133**. |
+| 2026-05-05 artifact hygiene refresh | **2,900,834** | Repacked `graph/wiki-graph.tar.gz` to remove transient `.lock` files from the shipped LLM-wiki. Topology unchanged; current tar members: **598,135**. |
 
 The full audit history lives in `CHANGELOG.md`. The current build is
 fully reproducible from the wiki content.
