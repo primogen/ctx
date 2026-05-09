@@ -245,6 +245,18 @@ dependencies = ["FastAPI", "pydantic", "SQLAlchemy"]
         assert "pydantic" in deps
         assert "sqlalchemy" in deps
 
+    def test_extracts_deps_from_utf8_bom_pyproject(self, tmp_path: Path) -> None:
+        p = tmp_path / "pyproject.toml"
+        p.write_bytes(
+            b"\xef\xbb\xbf[project]\n"
+            b"dependencies = ['FastAPI', 'SQLAlchemy']\n"
+        )
+
+        deps = sr.read_toml_deps(str(p))
+
+        assert "fastapi" in deps
+        assert "sqlalchemy" in deps
+
     def test_extracts_version_pinned_deps(self, tmp_path: Path) -> None:
         p = _write(tmp_path / "pyproject.toml", """
 [project]

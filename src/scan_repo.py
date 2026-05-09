@@ -140,8 +140,7 @@ def read_toml_deps(path: str) -> list[str]:
     specifiers and extras are stripped via PEP 508 splitting.
     """
     try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
+        data = tomllib.loads(Path(path).read_text(encoding="utf-8-sig"))
     except Exception as exc:
         print(f"Warning: failed to read TOML deps from {path}: {exc}", file=sys.stderr)
         return []
