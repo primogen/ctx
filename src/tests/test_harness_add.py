@@ -37,6 +37,16 @@ def _frontmatter(path: Path) -> dict[str, Any]:
     return parsed
 
 
+def test_command_fields_preserve_commas() -> None:
+    record = _record(
+        setup_commands=['python -c "print(\'setup, ok\')"'],
+        verify_commands=['python -c "print(\'verify, ok\')"'],
+    )
+
+    assert record.setup_commands == ('python -c "print(\'setup, ok\')"',)
+    assert record.verify_commands == ('python -c "print(\'verify, ok\')"',)
+
+
 def test_add_harness_creates_page_index_and_log(tmp_path: Path) -> None:
     wiki = tmp_path / "wiki"
     record = _record()

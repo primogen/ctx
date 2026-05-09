@@ -57,5 +57,6 @@ Each toolbox declares:
 
 ## Reasoning
 
-See `docs/roadmap/toolbox.md` for the full design rationale, open decisions,
-and phase rollout.
+See `docs/toolbox/index.md`, `docs/toolbox/starters.md`, and
+`docs/toolbox/verdicts.md` for the current toolbox contract, starter bundles,
+and guardrail behavior.

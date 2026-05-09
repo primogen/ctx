@@ -140,7 +140,7 @@ def _rejects_banned_args(tokens: list[str]) -> str | None:
 @dataclass(frozen=True)
 class InstallResult:
     slug: str
-    status: str  # "installed" | "skipped-existing" | "aborted"
+    status: str  # "installed" | "would-install" | "skipped-existing" | "aborted"
                  # | "not-in-wiki" | "no-command" | "invalid-cmd"
                  # | "claude-cli-failed"
     command: str | None
@@ -150,7 +150,8 @@ class InstallResult:
 @dataclass(frozen=True)
 class UninstallResult:
     slug: str
-    status: str  # "uninstalled" | "not-installed" | "claude-cli-failed"
+    status: str  # "uninstalled" | "would-uninstall" | "not-installed"
+                 # | "claude-cli-failed"
     message: str = ""
 
 
@@ -349,7 +350,7 @@ def install_mcp(
 
     if dry_run:
         return InstallResult(
-            slug=slug, status="aborted", command=effective_cmd,
+            slug=slug, status="would-install", command=effective_cmd,
             message="dry-run: no install performed",
         )
 
@@ -365,7 +366,7 @@ def install_mcp(
     else:
         assert effective_cmd is not None  # narrowed by dry_run branch above
         try:
-            tokens = shlex.split(effective_cmd)
+            tokens = _split_install_command(effective_cmd)
         except ValueError as exc:
             return InstallResult(
                 slug=slug, status="invalid-cmd", command=effective_cmd,
@@ -430,6 +431,20 @@ def install_mcp(
     )
 
 
+def _split_install_command(command: str, *, windows: bool | None = None) -> list[str]:
+    use_windows_rules = os.name == "nt" if windows is None else windows
+    tokens = shlex.split(command, posix=not use_windows_rules)
+    if use_windows_rules:
+        tokens = [_strip_surrounding_quotes(token) for token in tokens]
+    return tokens
+
+
+def _strip_surrounding_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
 def uninstall_mcp(
     slug: str, *, wiki_dir: Path, force: bool = False, dry_run: bool = False,
 ) -> UninstallResult:
@@ -459,7 +474,7 @@ def uninstall_mcp(
 
     if dry_run:
         return UninstallResult(
-            slug=slug, status="uninstalled",
+            slug=slug, status="would-uninstall",
             message="dry-run: would run `claude mcp remove`",
         )
 
@@ -560,7 +575,9 @@ def install_main() -> None:
         tag = "[OK]" if result.status == "installed" else f"[{result.status.upper()}]"
         suffix = f" -- {result.message}" if result.message else ""
         print(f"{tag} {result.slug}{suffix}")
-    sys.exit(0 if result.status in ("installed", "skipped-existing", "aborted") else 1)
+    sys.exit(0 if result.status in (
+        "installed", "would-install", "skipped-existing", "aborted",
+    ) else 1)
 
 
 def uninstall_main() -> None:
@@ -578,7 +595,7 @@ def uninstall_main() -> None:
         tag = "[OK]" if result.status == "uninstalled" else f"[{result.status.upper()}]"
         suffix = f" -- {result.message}" if result.message else ""
         print(f"{tag} {result.slug}{suffix}")
-    sys.exit(0 if result.status == "uninstalled" else 1)
+    sys.exit(0 if result.status in ("uninstalled", "would-uninstall") else 1)
 
 
 # Allow ``python -m mcp_install`` to hit the install main; tests import

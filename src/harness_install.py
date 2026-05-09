@@ -188,7 +188,12 @@ def _resolve_target(
     target: Path | None,
 ) -> Path:
     root = installs_root.expanduser().resolve()
-    chosen = (target.expanduser() if target is not None else root / slug).resolve()
+    if target is None:
+        candidate = root / slug
+    else:
+        expanded = target.expanduser()
+        candidate = expanded if expanded.is_absolute() else root / expanded
+    chosen = candidate.resolve()
     if not _is_strictly_within(chosen, root):
         raise ValueError(f"target must stay under installs root {root}")
     return chosen
@@ -312,9 +317,10 @@ def _run_command(command: str, *, cwd: Path) -> dict[str, Any]:
     }
 
 
-def _split_command(command: str) -> list[str]:
-    parts = shlex.split(command, posix=os.name != "nt")
-    if os.name == "nt":
+def _split_command(command: str, *, windows: bool | None = None) -> list[str]:
+    use_windows_rules = os.name == "nt" if windows is None else windows
+    parts = shlex.split(command, posix=not use_windows_rules)
+    if use_windows_rules:
         parts = [_strip_surrounding_quotes(part) for part in parts]
     return parts
 

@@ -193,6 +193,32 @@ class TestCollectRows:
             ("filesystem", "mcp-server")
         ]
 
+    def test_duplicate_skill_and_mcp_slugs_are_distinct_rows(
+        self, sources: cl.LifecycleSources,
+    ) -> None:
+        _write_skill(sources.skills_dir, "langgraph", tags=["python"])
+        _write_quality(
+            sources.sidecar_dir,
+            "langgraph",
+            subject_type="skill",
+            grade="B",
+            score=0.65,
+        )
+        _write_quality(
+            sources.sidecar_dir / "mcp",
+            "langgraph",
+            subject_type="mcp-server",
+            grade="A",
+            score=0.9,
+        )
+
+        rows = kd.collect_rows(sources=sources)
+
+        assert sorted((r.slug, r.subject_type, r.grade) for r in rows) == [
+            ("langgraph", "mcp-server", "A"),
+            ("langgraph", "skill", "B"),
+        ]
+
     def test_corrupt_quality_sidecar_is_skipped(
         self, sources: cl.LifecycleSources,
     ) -> None:

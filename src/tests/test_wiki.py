@@ -6,6 +6,7 @@ Covers:
     update_index, append_log, SCHEMA.md required sections
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -305,10 +306,12 @@ class TestWikiSchemaRequiredSections:
 
     def test_global_skill_wiki_schema_when_present(self) -> None:
         """
-        If the user has a deployed ~/.claude/skill-wiki/SCHEMA.md, it should
-        contain the sections required by the system prompt.  This test is
-        skipped when the file does not exist (e.g. CI with no ~/.claude).
+        Optional local deployment smoke. Disabled by default so the public
+        suite never depends on the runner's home directory.
         """
+        if os.environ.get("CTX_TEST_GLOBAL_WIKI_SCHEMA") != "1":
+            pytest.skip("set CTX_TEST_GLOBAL_WIKI_SCHEMA=1 to check local deployment")
+
         global_schema = Path.home() / ".claude" / "skill-wiki" / "SCHEMA.md"
         if not global_schema.exists():
             pytest.skip("~/.claude/skill-wiki/SCHEMA.md not present; skipping global schema check")

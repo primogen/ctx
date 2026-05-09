@@ -296,20 +296,13 @@ jobs:
           lfs: false
 
       - name: Resolve graph LFS artifacts
-        id: graph-lfs
         shell: bash
         run: |
           set -euo pipefail
           git lfs install --local
-          if git lfs pull --include="graph/wiki-graph.tar.gz" --exclude=""; then
-            echo "hydrated=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::Git LFS artifact download failed; validating pointer metadata only."
-            echo "hydrated=false" >> "$GITHUB_OUTPUT"
-          fi
+          git lfs pull --include="graph/wiki-graph.tar.gz,graph/skills-sh-catalog.json.gz" --exclude=""
 
       - name: Validate shipped graph artifacts
-        if: ${{ steps.graph-lfs.outputs.hydrated == 'true' }}
         run: |
           python src/validate_graph_artifacts.py \
             --graph-dir graph \
@@ -331,26 +324,6 @@ jobs:
             --expected-harness-pages 13 \
             --line-threshold 180 \
             --max-stage-lines 40
-
-      - name: Validate graph artifact pointer when LFS unavailable
-        if: ${{ steps.graph-lfs.outputs.hydrated != 'true' }}
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          pointer = Path("graph/wiki-graph.tar.gz")
-          text = pointer.read_text(encoding="utf-8")
-          if "version https://git-lfs.github.com/spec/v1" not in text:
-              raise SystemExit("graph/wiki-graph.tar.gz is neither hydrated nor an LFS pointer")
-          oid = re.search(r"^oid sha256:([0-9a-f]{64})$", text, re.MULTILINE)
-          size = re.search(r"^size ([0-9]+)$", text, re.MULTILINE)
-          if oid is None or size is None:
-              raise SystemExit("graph/wiki-graph.tar.gz LFS pointer is malformed")
-          if int(size.group(1)) < 100_000_000:
-              raise SystemExit("graph/wiki-graph.tar.gz LFS pointer size is unexpectedly small")
-          print(f"validated graph LFS pointer sha256={oid.group(1)} size={size.group(1)}")
-          PY
 
   browser-security:
     name: "Browser monitor security"

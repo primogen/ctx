@@ -125,6 +125,37 @@ jobs:
         env:
           INPUT_REPOSITORY: ${{ github.event.inputs.repository || 'pypi' }}
 
+      - name: Resolve release graph LFS artifacts
+        run: |
+          git lfs install --local
+          git lfs pull --include="graph/wiki-graph.tar.gz,graph/skills-sh-catalog.json.gz" --exclude=""
+
+      - name: Validate release graph artifacts
+        run: |
+          python src/validate_graph_artifacts.py \
+            --graph-dir graph \
+            --deep \
+            --min-nodes 100000 \
+            --min-edges 2000000 \
+            --min-skills-sh-nodes 89000 \
+            --min-semantic-edges 1000000 \
+            --expected-nodes 102696 \
+            --expected-edges 2900834 \
+            --expected-semantic-edges 1682825 \
+            --expected-harness-nodes 13 \
+            --expected-skills-sh-nodes 89463 \
+            --expected-skills-sh-catalog-entries 89463 \
+            --expected-skills-sh-converted 89463 \
+            --expected-skill-pages 91432 \
+            --expected-agent-pages 464 \
+            --expected-mcp-pages 10787 \
+            --expected-harness-pages 13 \
+            --line-threshold 180 \
+            --max-stage-lines 40
+
+      - name: Validate README and docs stats
+        run: python src/update_repo_stats.py --check
+
       - name: Static gates
         run: |
           python -m ruff check src hooks scripts
@@ -250,9 +281,50 @@ jobs:
           name: dist
           path: dist/
 
+      - name: Upload graph artifact bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: graph-release-assets
+          path: |
+            graph/wiki-graph.tar.gz
+            graph/skills-sh-catalog.json.gz
+            graph/communities.json
+
+  release-assets:
+    name: Upload graph release assets
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download graph artifact bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: graph-release-assets
+          path: graph-release-assets
+
+      - name: Upload graph assets to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG_NAME" >/dev/null 2>&1 \
+            || gh release create "$TAG_NAME" \
+              --title "$TAG_NAME" \
+              --notes "ctx $TAG_NAME"
+          gh release upload "$TAG_NAME" \
+            graph-release-assets/wiki-graph.tar.gz \
+            graph-release-assets/skills-sh-catalog.json.gz \
+            graph-release-assets/communities.json \
+            --clobber
+
   publish:
     name: Publish to PyPI
-    needs: build
+    needs:
+      - build
+      - release-assets
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.release-assets.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -35,6 +35,20 @@ _EDGE_KEYS = frozenset({"links", "edges"})
 _SIMILARITY_EDGE_KEYS = frozenset({"semantic_sim", "tag_sim", "token_sim"})
 
 
+def _truthy_flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
+def _never_load_node(G: nx.Graph, node_id: str) -> bool:
+    return _truthy_flag(G.nodes.get(node_id, {}).get("never_load"))
+
+
 def _export_manifest_allows_graph(graph_path: Path, data: dict) -> bool:
     graph_export_id: str | None = None
     graph_meta = data.get("graph")
@@ -208,6 +222,8 @@ def resolve_by_seeds(
             for neighbor in G.neighbors(nid):
                 if exclude_seeds and neighbor in seed_ids:
                     continue
+                if _never_load_node(G, neighbor):
+                    continue
 
                 edge_data = G[nid][neighbor]
                 weight = edge_data.get("weight", 1) * decay
@@ -267,6 +283,8 @@ def resolve_by_tags(
     tag_set = set(tags)
 
     for nid, data in G.nodes(data=True):
+        if _truthy_flag(data.get("never_load")):
+            continue
         node_tags = set(data.get("tags", []))
         overlap = tag_set & node_tags
         if overlap:

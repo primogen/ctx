@@ -62,6 +62,7 @@ HARNESS_ENTITIES = WIKI_DIR / "entities" / "harnesses"
 CONCEPTS_DIR = WIKI_DIR / "concepts"
 GRAPH_OUT = WIKI_DIR / "graphify-out"
 GRAPH_EXPORT_MANIFEST = "graph-export-manifest.json"
+GRAPH_SCORING_SIGNATURE_KEY = "ctx_graph_scoring_signature"
 # Source of truth for per-node quality: sidecars produced by
 # ``src/skill_quality.py``. Graph nodes get ``quality_score`` and
 # ``quality_grade`` attached when a matching sidecar exists.
@@ -290,6 +291,32 @@ def _effective_semantic_cache_dir(configured_cache_dir: Path) -> Path:
     if WIKI_DIR != DEFAULT_WIKI_DIR and configured_resolved == DEFAULT_GRAPH_SEMANTIC_CACHE_DIR:
         return WIKI_DIR / ".embedding-cache" / "graph"
     return configured
+
+
+def _graph_scoring_signature(config: object) -> dict[str, float | int | str]:
+    """Return the config fields that can change graph edge materialisation."""
+    return {
+        "version": 1,
+        "edge_weight_semantic": round(float(getattr(config, "graph_edge_weight_semantic")), 10),
+        "edge_weight_tags": round(float(getattr(config, "graph_edge_weight_tags")), 10),
+        "edge_weight_tokens": round(float(getattr(config, "graph_edge_weight_tokens")), 10),
+        "min_edge_weight": round(float(getattr(config, "graph_edge_min_weight")), 10),
+        "semantic_top_k": int(getattr(config, "graph_semantic_top_k")),
+        "semantic_build_floor": round(float(getattr(config, "graph_semantic_build_floor")), 10),
+        "dense_tag_threshold": int(getattr(config, "graph_dense_tag_threshold")),
+        "shared_tag_saturation": int(getattr(config, "graph_shared_tag_saturation")),
+        "dense_token_threshold": int(getattr(config, "graph_dense_token_threshold")),
+        "shared_token_saturation": int(getattr(config, "graph_shared_token_saturation")),
+        "dense_source_threshold": int(getattr(config, "graph_dense_source_threshold")),
+        "boost_direct_link": round(float(getattr(config, "graph_edge_boost_direct_link")), 10),
+        "boost_source_overlap": round(float(getattr(config, "graph_edge_boost_source_overlap")), 10),
+        "boost_adamic_adar": round(float(getattr(config, "graph_edge_boost_adamic_adar")), 10),
+        "boost_type_affinity": round(float(getattr(config, "graph_edge_boost_type_affinity")), 10),
+        "boost_usage": round(float(getattr(config, "graph_edge_boost_usage")), 10),
+        "boost_quality": round(float(getattr(config, "graph_edge_boost_quality")), 10),
+        "intake_backend": str(getattr(config, "intake_backend")),
+        "intake_model": str(getattr(config, "intake_model")),
+    }
 
 
 def _type_affinity_score(left: str, right: str) -> float:
@@ -549,11 +576,13 @@ def build_graph(
     )
 
     # ── Phase 3: semantic edges (expensive) ──────────────────────────
+    scoring_signature = _graph_scoring_signature(_cfg)
+
     # ``build_floor`` governs inclusion in graph.json; ``min_cosine`` is
     # the query-time filter applied by consumers. Materialising everything
     # down to the floor lets operators A/B different display thresholds
     # without regraphifying — the slow path only runs when the floor
-    # itself, top_k, or the embedding text changes.
+    # itself, top_k, graph scoring config, or the embedding text changes.
     semantic_affected: set[str] = set()
     if _cfg.graph_edge_weight_semantic > 0.0:
         sem_pairs = _sem.compute_semantic_edges(
@@ -715,6 +744,15 @@ def build_graph(
                 flush=True,
             )
             prior_graph = None
+    if prior_graph is not None:
+        prior_signature = prior_graph.graph.get(GRAPH_SCORING_SIGNATURE_KEY)
+        if prior_signature != scoring_signature:
+            print(
+                "graphify: graph scoring config changed since prior export — "
+                "forcing full rebuild.",
+                flush=True,
+            )
+            prior_graph = None
     current_node_info: dict[str, dict] = {
         nid: {
             "label": data.get("label", nid.split(":", 1)[-1]),
@@ -763,6 +801,7 @@ def build_graph(
     G.graph["semantic_build_floor"] = round(_cfg.graph_semantic_build_floor, 4)
     G.graph["semantic_min_cosine_default"] = round(_cfg.graph_semantic_min_cosine, 4)
     G.graph["min_edge_weight"] = round(_cfg.graph_edge_min_weight, 4)
+    G.graph[GRAPH_SCORING_SIGNATURE_KEY] = scoring_signature
 
     print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     print(

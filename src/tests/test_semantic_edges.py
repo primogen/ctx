@@ -11,6 +11,7 @@ optional. We exercise every branch reachable without a real embedder:
   - _l2_normalize (incl. zero-vectors)
   - _topk_pairs (hand-crafted embeddings; known top-K asserted)
   - _topk_pairs_subset (incremental subset path)
+  - _state_topk_from_pairs (state must preserve asymmetric pairs)
   - _reuse_prior_pairs (filter by unchanged set + min_cosine)
   - _load_cache / _save_cache round-trip (tmp_path, fake .npz)
   - _load_topk_state / _save_topk_state round-trip (tmp_path, JSON)
@@ -60,6 +61,7 @@ from ctx.core.graph.semantic_edges import (  # noqa: E402
     _reuse_prior_pairs,
     _save_cache,
     _save_topk_state,
+    _state_topk_from_pairs,
     _topk_pairs,
     _topk_pairs_subset,
     compute_semantic_edges,
@@ -410,6 +412,26 @@ class TestTopKPairsSubset:
         ids = ["a", "b"]
         assert _topk_pairs_subset(vecs, ids, [0], top_k=1, min_cosine=0.999)
         assert not _topk_pairs_subset(vecs, ids, [0], top_k=1, min_cosine=1.1)
+
+
+# ===========================================================================
+# _state_topk_from_pairs
+# ===========================================================================
+
+
+def test_state_topk_from_pairs_preserves_asymmetric_incident_pairs() -> None:
+    pairs = {
+        ("a", "b"): 0.80,
+        ("a", "c"): 0.90,
+        ("b", "c"): 0.95,
+    }
+
+    state = _state_topk_from_pairs(["a", "b", "c"], pairs)
+
+    assert ["b", 0.80] in state["a"]
+    assert ["a", 0.80] in state["b"]
+    assert state["a"][0] == ["c", 0.90]
+    assert state["b"][0] == ["c", 0.95]
 
 
 # ===========================================================================

@@ -817,8 +817,9 @@ def _harness_frontmatter_from_wiki(slug: str) -> dict[str, Any]:
 def _load_recommendation_graph() -> Any:
     """Load the ctx knowledge graph for harness onboarding."""
     from ctx.core.graph.resolve_graph import load_graph  # noqa: PLC0415
+    from ctx_config import cfg  # noqa: PLC0415
 
-    return load_graph()
+    return load_graph(cfg.wiki_dir / "graphify-out" / "graph.json")
 
 
 def validate_model_connection(

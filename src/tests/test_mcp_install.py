@@ -307,7 +307,7 @@ class TestInstallMcp:
         r = mcp_install.install_mcp(
             "gh", wiki_dir=wiki_dir, command="npx -y p", dry_run=True,
         )
-        assert r.status == "aborted"
+        assert r.status == "would-install"
         assert fake_claude["calls"] == []
 
     def test_user_declines(
@@ -378,6 +378,21 @@ class TestInstallMcp:
             auto=True,
         )
         assert r.status == "invalid-cmd"
+
+    def test_windows_command_split_preserves_drive_path_backslashes(
+        self,
+    ) -> None:
+        tokens = mcp_install._split_install_command(
+            r'python C:\Users\me\server.py --flag "two words"',
+            windows=True,
+        )
+
+        assert tokens == [
+            "python",
+            r"C:\Users\me\server.py",
+            "--flag",
+            "two words",
+        ]
 
     # Strix vuln-0002 regression: even when the first token is allowlisted,
     # code-execution argument forms must be rejected. A tampered frontmatter
@@ -552,7 +567,7 @@ class TestUninstallMcp:
     ) -> None:
         _write_entity(wiki_dir, "gh", {"status": "installed"})
         r = mcp_install.uninstall_mcp("gh", wiki_dir=wiki_dir, dry_run=True)
-        assert r.status == "uninstalled"
+        assert r.status == "would-uninstall"
         assert fake_claude["calls"] == []
 
     def test_happy_path(

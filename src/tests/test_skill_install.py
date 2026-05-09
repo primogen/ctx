@@ -215,7 +215,7 @@ class TestInstallSkill:
         r = skill_install.install_skill(
             "s", wiki_dir=wiki_dir, skills_dir=skills_dir, dry_run=True,
         )
-        assert r.status == "installed"
+        assert r.status == "would-install"
         assert r.references_copied == 1
         assert not (skills_dir / "s").exists()
         # Manifest untouched.

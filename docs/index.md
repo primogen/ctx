@@ -182,7 +182,7 @@ ones are flagged. New ones self-ingest.
     ---
 
     **v0.7.x** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
-    3,659 tests collected. Ships console scripts including `ctx-init`,
+    3,682 tests collected. Ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
     skills, agents, and MCP servers, plus harness wiki/graph browsing),
     `ctx-dedup-check` (pre-ship near-duplicate gate), and
@@ -197,10 +197,15 @@ ones are flagged. New ones self-ingest.
 
 ## Principles
 
-- **Foundation first.** Data model, CLI, and starter bundles ship before
-  any hook integration. Each phase is independently usable.
-- **User-configurable everything.** Dedup policy, suggestion loudness,
-  trigger set, council composition.
+- **Single source of truth.** The wiki and graph drive Claude Code
+  recommendations, custom-model harness recommendations, dashboard views,
+  and catalog update reviews.
+- **Explicit approval.** ctx can recommend, review, install, update, unload,
+  or uninstall, but it does not mutate live skills, agents, MCP servers, or
+  harness installs without a command or approval path.
+- **Configurable gates.** Recommendation floors, semantic edge thresholds,
+  micro-skill line limits, and harness match floors live in config so teams
+  can tune behavior without forking the code.
 - **Evidence over opinion.** Suggestions cite real usage data plus
   knowledge-graph edges. No black-box prompts.
 - **Token discipline.** Every council run honors `max_tokens` /

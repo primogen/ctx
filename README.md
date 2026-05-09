@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![PyPI](https://img.shields.io/pypi/v/claude-ctx.svg)](https://pypi.org/project/claude-ctx/)
-[![Tests](https://img.shields.io/badge/Tests-3659_collected-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/Tests-3682_collected-brightgreen.svg)](#)
 [![Graph](https://img.shields.io/badge/Graph-102%2C696_nodes_/_2.9M_edges-red.svg)](graph/)
 [![Docs](https://img.shields.io/badge/docs-MkDocs_Material-blue.svg)](https://stevesolun.github.io/ctx/)
 
@@ -49,7 +49,10 @@ mkdir -p ~/.claude/skill-wiki
 tar xzf graph/wiki-graph.tar.gz -C ~/.claude/skill-wiki/
 ```
 
-> **Windows / Git-Bash / MSYS:** pass `--force-local` so `tar` doesn't read the `c:` in the path as a remote host: `tar --force-local xzf graph/wiki-graph.tar.gz -C ~/.claude/skill-wiki/`. Linux/macOS users can ignore.
+> **Windows:** PowerShell's built-in `tar.exe` does not support
+> `--force-local`; use `tar -xzf graph\wiki-graph.tar.gz -C "$env:USERPROFILE\.claude\skill-wiki"`.
+> In Git Bash or MSYS, use `--force-local` only when your `-C` target is a
+> drive-letter path such as `C:/Users/...`.
 
 ## Use
 

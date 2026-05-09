@@ -64,6 +64,23 @@ def test_dry_run_prints_plan_without_writing(tmp_path: Path, capsys: Any) -> Non
     assert "Text to CAD" in capsys.readouterr().out
 
 
+def test_relative_custom_target_resolves_under_installs_root(tmp_path: Path) -> None:
+    wiki = tmp_path / "wiki"
+    _write_harness_page(wiki)
+
+    result = harness_install.install_harness(
+        "text-to-cad",
+        wiki_path=wiki,
+        installs_root=tmp_path / "installs",
+        manifest_dir=tmp_path / "manifests",
+        target=Path("custom"),
+        dry_run=True,
+    )
+
+    assert result.status == "dry-run"
+    assert result.target == (tmp_path / "installs" / "custom").resolve()
+
+
 def test_install_copies_local_source_and_writes_manifest(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -651,10 +668,11 @@ def test_run_command_resolves_bare_executable(
     assert captured_cmd[0] == resolved
 
 
-def test_split_command_preserves_windows_backslashes(monkeypatch: Any) -> None:
-    monkeypatch.setattr(harness_install.os, "name", "nt")
-
-    parts = harness_install._split_command(r'python "C:\Users\me\script.py"')
+def test_split_command_preserves_windows_backslashes() -> None:
+    parts = harness_install._split_command(
+        r'python "C:\Users\me\script.py"',
+        windows=True,
+    )
 
     assert parts == ["python", r"C:\Users\me\script.py"]
 

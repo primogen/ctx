@@ -15,8 +15,8 @@ Routes:
     /skill/<slug>               Sidecar breakdown + timeline of audit events
     /wiki                       Wiki entity index — all pages with search
     /wiki/<slug>?type=<entity>  One wiki entity page (frontmatter + body)
-    /graph                      Cytoscape graph explorer + popular seeds
-    /graph?slug=<slug>&type=... Focus cytoscape on a specific entity
+    /graph                      Built-in graph explorer + popular seeds
+    /graph?slug=<slug>&type=... Focus graph view on a specific entity
     /status                     Durable queue + graph/wiki artifact state
     /kpi                        Grade / lifecycle / category KPIs
     /runtime                    Generic harness validation/escalation ledger
@@ -27,7 +27,7 @@ Routes:
     /api/status.json            Queue counts + artifact promotion metadata
     /api/runtime.json           Generic harness validation/escalation summary
     /api/skill/<slug>.json      Sidecar passthrough
-    /api/graph/<slug>.json      Cytoscape-shaped neighborhood; accepts type
+    /api/graph/<slug>.json      Dashboard-shaped neighborhood; accepts type
     /api/kpi.json               DashboardSummary passthrough
 
 Design notes:
@@ -162,6 +162,41 @@ _DASHBOARD_ENTITY_SOURCES: tuple[tuple[str, str, bool], ...] = (
 _DASHBOARD_ENTITY_TYPES: tuple[str, ...] = tuple(
     entity_type for _, entity_type, _ in _DASHBOARD_ENTITY_SOURCES
 )
+
+
+def _normalize_dashboard_entity_type(raw: object) -> str | None:
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    normalized = {
+        "skills": "skill",
+        "skill": "skill",
+        "agents": "agent",
+        "agent": "agent",
+        "mcp": "mcp-server",
+        "mcp-server": "mcp-server",
+        "mcp-servers": "mcp-server",
+        "harness": "harness",
+        "harnesses": "harness",
+    }.get(value, value)
+    return normalized if normalized in _DASHBOARD_ENTITY_TYPES else None
+
+
+def _audit_entity_type(row: dict) -> str | None:
+    raw_meta = row.get("meta")
+    meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+    for raw in (
+        meta.get("entity_type"),
+        row.get("entity_type"),
+        row.get("subject_type"),
+        row.get("type"),
+    ):
+        normalized = _normalize_dashboard_entity_type(raw)
+        if normalized:
+            return normalized
+    event = str(row.get("event") or "")
+    prefix, _, _ = event.partition(".")
+    return _normalize_dashboard_entity_type(prefix)
 
 
 def _wiki_entity_path(slug: str, entity_type: str | None = None) -> Path | None:
@@ -583,7 +618,7 @@ def _read_jsonl(path: Path, limit: int | None = None) -> list[dict]:
     return list(out)
 
 
-def _runtime_lifecycle_events(limit: int = 200) -> list[dict[str, Any]]:
+def _runtime_lifecycle_events(limit: int | None = 200) -> list[dict[str, Any]]:
     events = _read_jsonl(_runtime_lifecycle_path(), limit=limit)
     return [
         event for event in events
@@ -591,18 +626,34 @@ def _runtime_lifecycle_events(limit: int = 200) -> list[dict[str, Any]]:
     ]
 
 
+def _runtime_escalation_key(event: dict[str, Any]) -> str:
+    for field in ("escalation_id", "event_id", "id"):
+        value = event.get(field)
+        if value:
+            return str(value)
+    return "\0".join(
+        str(event.get(field) or "")
+        for field in ("session_id", "trigger", "reason", "severity")
+    )
+
+
 def _runtime_lifecycle_summary(limit: int = 200) -> dict[str, Any]:
-    events = _runtime_lifecycle_events(limit=limit)
+    events = _runtime_lifecycle_events(limit=None)
     validations = [
         event for event in events if event.get("action") == "validation"
     ]
     escalations = [
         event for event in events if event.get("action") == "escalation"
     ]
-    open_escalations = [
-        event for event in escalations
-        if str(event.get("status") or "open").lower() == "open"
-    ]
+    open_by_key: dict[str, dict[str, Any]] = {}
+    for event in escalations:
+        key = _runtime_escalation_key(event)
+        status = str(event.get("status") or "open").lower()
+        if status == "open":
+            open_by_key[key] = event
+        else:
+            open_by_key.pop(key, None)
+    open_escalations = list(open_by_key.values())
     validation_failures = [
         event for event in validations
         if str(event.get("status") or "").lower() in {"failed", "error"}
@@ -777,11 +828,32 @@ def _summarize_sessions() -> list[dict]:
         if ts and (row["last_seen"] is None or ts > row["last_seen"]):
             row["last_seen"] = ts
         action = line.get("event")
-        subject = line.get("skill") or line.get("agent") or ""
+        entity_type = (
+            _audit_entity_type(line)
+            or ("agent" if line.get("agent") else None)
+            or ("mcp-server" if line.get("mcp") or line.get("mcp_server") else None)
+            or ("skill" if line.get("skill") else None)
+        )
+        if entity_type == "agent":
+            subject = line.get("agent")
+        elif entity_type == "mcp-server":
+            subject = line.get("mcp") or line.get("mcp_server")
+        else:
+            subject = line.get("skill")
         if action == "load" and subject:
-            row["skills_loaded"].add(subject)
+            if entity_type == "agent":
+                row["agents_loaded"].add(subject)
+            elif entity_type == "mcp-server":
+                row["mcps_loaded"].add(subject)
+            else:
+                row["skills_loaded"].add(subject)
         elif action == "unload" and subject:
-            row["skills_unloaded"].add(subject)
+            if entity_type == "agent":
+                row["agents_unloaded"].add(subject)
+            elif entity_type == "mcp-server":
+                row["mcps_unloaded"].add(subject)
+            else:
+                row["skills_unloaded"].add(subject)
 
     summaries: list[dict] = []
     for row in by_session.values():
@@ -840,6 +912,10 @@ th { background: rgba(0,0,0,0.04); font-weight: 600; }
 tr:hover { background: rgba(0,0,0,0.02); }
 .pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
         font-size: 0.8rem; font-weight: 600; background: #e5e7eb; color: #111; }
+.entity-type-skill { background: #e0e7ff; color: #312e81; }
+.entity-type-agent { background: #fef3c7; color: #78350f; }
+.entity-type-mcp-server { background: #fee2e2; color: #7f1d1d; }
+.entity-type-harness { background: #dcfce7; color: #14532d; }
 .grade-A { background: #d1fae5; color: #065f46; }
 .grade-B { background: #dbeafe; color: #1e3a8a; }
 .grade-C { background: #fef3c7; color: #78350f; }
@@ -899,7 +975,7 @@ def _graph_neighborhood(
     limit: int = 40,
     entity_type: str | None = None,
 ) -> dict:
-    """Return cytoscape-shaped {nodes, edges} for the N-hop neighborhood.
+    """Return dashboard-shaped {nodes, edges} for the N-hop neighborhood.
 
     Uses ``resolve_graph.load_graph`` so the NetworkX 'links' vs 'edges'
     schema is handled centrally. Returns an empty shape if the graph
@@ -915,9 +991,12 @@ def _graph_neighborhood(
         return {"nodes": [], "edges": [], "center": None}
 
     center = None
+    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
+    if entity_type is not None and normalized_entity_type is None:
+        return {"nodes": [], "edges": [], "center": None}
     entity_types = (
-        (entity_type,)
-        if entity_type in _DASHBOARD_ENTITY_TYPES
+        (normalized_entity_type,)
+        if normalized_entity_type is not None
         else _DASHBOARD_ENTITY_TYPES
     )
     for current_type in entity_types:
@@ -1339,8 +1418,12 @@ def _render_skill_detail(slug: str, entity_type: str | None = None) -> str:
     sidecar = _load_sidecar(slug, entity_type=entity_type)
     if sidecar is None:
         return _layout(slug, f"<h1>{html.escape(slug)}</h1><p>No sidecar.</p>")
+    requested_type = (
+        _normalize_dashboard_entity_type(entity_type)
+        or _sidecar_entity_type(sidecar)
+    )
     audit = [r for r in _read_jsonl(_audit_log_path())
-             if r.get("subject") == slug]
+             if r.get("subject") == slug and _audit_entity_type(r) == requested_type]
     audit_rows = "".join(
         f"<tr><td class='muted'>{html.escape(r.get('ts', ''))}</td>"
         f"<td><span class='pill'>{html.escape(r.get('event', ''))}</span></td>"
@@ -1401,12 +1484,7 @@ def _top_degree_seeds(limit: int = 18) -> list[dict]:
 
 
 def _render_graph(focus: str | None = None, focus_type: str | None = None) -> str:
-    """Interactive graph view — cytoscape-rendered N-hop neighborhood.
-
-    Cytoscape.js is loaded from a CDN. This is a local-dev dashboard
-    so the cost of one external asset is acceptable; stdlib-only
-    remains the server invariant.
-    """
+    """Interactive graph view backed by the built-in list renderer."""
     focus_slug = focus or ""
     focus_js = json.dumps(focus_slug)
     focus_type_js = json.dumps(focus_type or "")
@@ -1441,7 +1519,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         f"signals (weight = final_weight). {stats_html}</p>"
         + seed_html
         # Two-column layout — filter sidebar on the left (mirrors /wiki),
-        # cytoscape canvas on the right. Client-side JS hides nodes by
+        # graph list on the right. Client-side JS hides nodes by
         # type + tag without hitting the server so a user can carve out
         # a subgraph without rebuilding anything.
         + "<div style='display:grid; grid-template-columns:240px 1fr; "
@@ -1491,11 +1569,10 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "</div>"
         "<div class='card'><span id='msg' class='muted'></span></div>"
         "</aside>"
-        # Right: cytoscape canvas
+        # Right: graph list panel
         "<div id='cy' style='width:100%; height:75vh; border:1px solid #ddd; "
         "border-radius:6px; background:#fafafa;'></div>"
         "</div>"
-        "<script src='https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js'></script>"
         "<script>\n"
         f"const initial = {focus_js};\n"
         f"const initialType = {focus_type_js};\n"
@@ -1513,6 +1590,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "  const rows = nodes.map(n => {\n"
         "    const d = n.data || {};\n"
         "    const tags = Array.from(d.filter_tokens || d.tags || []).join(' ');\n"
+        "    const typeKey = ['skill', 'agent', 'mcp-server', 'harness'].includes(d.type) ? d.type : 'entity';\n"
         "    return '<a data-testid=\"graph-fallback-node\" class=\"graph-fallback-node\" '\n"
         "      + 'data-slug=\"' + escapeHtml(nodeSlug(d.id)) + '\" '\n"
         "      + 'data-type=\"' + escapeHtml(d.type || '') + '\" '\n"
@@ -1521,54 +1599,13 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "      + 'href=\"' + escapeHtml(wikiHref(d)) + '\" '\n"
         "      + 'style=\"display:flex; justify-content:space-between; gap:0.75rem; padding:0.45rem 0.6rem; border-bottom:1px solid #e5e7eb; color:inherit; text-decoration:none;\">'\n"
         "      + '<code>' + escapeHtml(d.label || nodeSlug(d.id)) + '</code>'\n"
-        "      + '<span class=\"pill\">' + escapeHtml(d.type || 'entity') + '</span></a>';\n"
+        "      + '<span class=\"pill entity-type-' + escapeHtml(typeKey) + '\">' + escapeHtml(d.type || 'entity') + '</span></a>';\n"
         "  }).join('');\n"
         "  cyMount.innerHTML = '<div data-testid=\"graph-fallback\" style=\"padding:0.75rem; height:100%; overflow:auto;\">'\n"
         "    + '<div class=\"muted\" style=\"margin-bottom:0.5rem;\">Graph renderer unavailable; showing list view.</div>'\n"
         "    + rows + '</div>';\n"
         "}\n"
-        "if (typeof cytoscape === 'function') {\n"
-        "  cy = cytoscape({\n"
-        "    container: cyMount,\n"
-        "    style: [\n"
-        "      { selector: 'node', style: {\n"
-        "        'label': 'data(label)', 'font-size': '10px',\n"
-        "        'text-valign': 'center', 'color': '#111',\n"
-        "        'background-color': '#6366f1', 'width': 22, 'height': 22,\n"
-        "      }},\n"
-        "      { selector: 'node[type = \"agent\"]', style: {\n"
-        "        'background-color': '#f59e0b',\n"  # amber for agents
-        "      }},\n"
-        "      { selector: 'node[type = \"mcp-server\"]', style: {\n"
-        "        'background-color': '#ef4444',\n"  # red for MCPs so the
-        # dashboard entity types are visually distinct at a glance in the graph.
-        "        'shape': 'diamond', 'width': 24, 'height': 24,\n"
-        "      }},\n"
-        "      { selector: 'node[type = \"harness\"]', style: {\n"
-        "        'background-color': '#22c55e',\n"
-        "        'shape': 'hexagon', 'width': 26, 'height': 26,\n"
-        "      }},\n"
-        "      { selector: 'node[depth = 0]', style: {\n"
-        "        'background-color': '#10b981', 'width': 34, 'height': 34,\n"
-        "        'font-weight': 'bold',\n"
-        "      }},\n"
-        "      { selector: 'node.hidden-by-filter', style: {\n"
-        "        'display': 'none',\n"
-        "      }},\n"
-        "      { selector: 'edge.hidden-by-filter', style: {\n"
-        "        'display': 'none',\n"
-        "      }},\n"
-        "      { selector: 'edge', style: {\n"
-        "        'width': 'mapData(weight, 1, 10, 0.5, 4)',\n"
-        "        'line-color': '#cbd5e1', 'curve-style': 'straight',\n"
-        "      }},\n"
-        "    ],\n"
-        "    layout: { name: 'cose', animate: false, padding: 30 },\n"
-        "  });\n"
-        "  cy.on('tap', 'node', (e) => { window.location.href = wikiHref(e.target.data()); });\n"
-        "} else {\n"
-        "  cyMount.innerHTML = '<div data-testid=\"graph-fallback\" class=\"muted\" style=\"padding:0.75rem;\">Graph renderer unavailable; enter a slug to load list view.</div>';\n"
-        "}\n"
+        "cyMount.innerHTML = '<div data-testid=\"graph-fallback\" class=\"muted\" style=\"padding:0.75rem;\">Enter a slug to load graph list view.</div>';\n"
         # ── Client-side filtering (type + tag substring) ─────────────
         "function applyFilters() {\n"
         "  const allowedTypes = new Set(\n"
@@ -2468,8 +2505,10 @@ def _perform_load(
     """Install/load one entity from the wiki. Returns (ok, message)."""
     if not _is_safe_slug(slug):
         return False, f"invalid slug: {slug!r}"
-    if entity_type not in _DASHBOARD_ENTITY_TYPES:
+    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
+    if normalized_entity_type is None:
         return False, f"unsupported entity_type: {entity_type!r}"
+    entity_type = normalized_entity_type
     if entity_type == "harness":
         return (
             False,
@@ -2523,6 +2562,10 @@ def _perform_unload(slug: str, entity_type: str = "skill") -> tuple[bool, str]:
     """
     if not _is_safe_slug(slug):
         return False, f"invalid slug: {slug!r}"
+    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
+    if normalized_entity_type is None:
+        return False, f"unsupported entity_type: {entity_type!r}"
+    entity_type = normalized_entity_type
     if entity_type == "harness":
         return (
             False,
@@ -2609,6 +2652,21 @@ class _MonitorHandler(BaseHTTPRequestHandler):
             and secrets.compare_digest(token, _MONITOR_TOKEN)
         )
 
+    def _api_reads_enabled(self) -> bool:
+        return self._mutations_enabled()
+
+    def _send_security_headers(self, *, html_response: bool = False) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        if html_response:
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline'; connect-src 'self'; "
+                "object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            )
+
     def _content_length(self) -> int | None:
         raw = self.headers.get("Content-Length")
         if raw is None:
@@ -2665,6 +2723,12 @@ class _MonitorHandler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             qs = {k: v[0] for k, v in parse_qs(raw_query).items()}
         try:
+            if path.startswith("/api/") and not self._api_reads_enabled():
+                self._send_json_status(
+                    403,
+                    {"detail": "monitor read APIs disabled on non-loopback bind"},
+                )
+                return
             if path == "/":
                 self._send_html(_render_home())
             elif path == "/sessions":
@@ -2719,6 +2783,14 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                     self._send_json(sidecar)
             elif path.startswith("/api/graph/") and path.endswith(".json"):
                 slug = path[len("/api/graph/"): -len(".json")]
+                requested_type = qs.get("type")
+                graph_entity_type = _normalize_dashboard_entity_type(requested_type)
+                if requested_type is not None and graph_entity_type is None:
+                    self._send_json_status(
+                        400,
+                        {"detail": f"unsupported entity_type: {requested_type!r}"},
+                    )
+                    return
                 try:
                     hops = max(1, min(int(qs.get("hops", 1)), 3))
                     limit = max(5, min(int(qs.get("limit", 40)), 150))
@@ -2729,7 +2801,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                     )
                     return
                 self._send_json(_graph_neighborhood(
-                    slug, hops=hops, limit=limit, entity_type=qs.get("type"),
+                    slug, hops=hops, limit=limit, entity_type=graph_entity_type,
                 ))
             elif path == "/api/events.stream":
                 self._stream_audit_log()
@@ -2805,6 +2877,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -2813,6 +2886,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self._send_security_headers(html_response=True)
         self.end_headers()
         self.wfile.write(raw)
 
@@ -2821,6 +2895,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -2829,6 +2904,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers(html_response=True)
         self.end_headers()
         self.wfile.write(body)
 
@@ -2838,6 +2914,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(500)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers(html_response=True)
         self.end_headers()
         self.wfile.write(body)
 
@@ -2847,6 +2924,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
+        self._send_security_headers()
         self.end_headers()
 
         path = _audit_log_path()

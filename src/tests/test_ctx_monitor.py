@@ -531,6 +531,52 @@ def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
     assert summary["open_escalations"][0]["trigger"] == "validation-failed"
 
 
+def test_runtime_lifecycle_summary_uses_full_history_for_open_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = tmp_path / "runtime" / "events.jsonl"
+    monkeypatch.setattr(cm, "_runtime_lifecycle_path", lambda: events)
+    records = [{
+        "action": "escalation",
+        "session_id": "s-1",
+        "trigger": "validation-failed",
+        "reason": "pytest failed",
+        "status": "open",
+        "severity": "blocking",
+        "created_at": "2026-05-08T00:00:00Z",
+    }]
+    records.extend({
+        "action": "validation",
+        "session_id": "s-1",
+        "check_name": f"check-{idx}",
+        "status": "passed",
+        "created_at": f"2026-05-08T01:{idx % 60:02d}:00Z",
+    } for idx in range(201))
+    _write_runtime_events(events, records)
+
+    summary = cm._runtime_lifecycle_summary()
+
+    assert summary["validations_total"] == 201
+    assert summary["open_escalations_total"] == 1
+    assert summary["open_escalations"][0]["trigger"] == "validation-failed"
+
+    records.append({
+        "action": "escalation",
+        "session_id": "s-1",
+        "trigger": "validation-failed",
+        "reason": "pytest failed",
+        "status": "resolved",
+        "severity": "blocking",
+        "created_at": "2026-05-08T02:00:00Z",
+    })
+    _write_runtime_events(events, records)
+
+    summary = cm._runtime_lifecycle_summary()
+    assert summary["open_escalations_total"] == 0
+    assert summary["escalations_total"] == 2
+
+
 def test_render_runtime_lifecycle_surfaces_checks_and_open_escalations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -787,8 +833,19 @@ def test_monitor_non_loopback_bind_is_read_only(
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/loaded", timeout=5) as response:
             loaded_html = response.read().decode("utf-8")
+            csp = response.headers.get("Content-Security-Policy", "")
         assert "browser-token" not in loaded_html
         assert "Read-only mode" in loaded_html
+        assert "script-src 'self' 'unsafe-inline'" in csp
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/manifest.json",
+                timeout=5,
+            )
+        assert excinfo.value.code == 403
+        body = json.loads(excinfo.value.read().decode("utf-8"))
+        assert "read APIs disabled" in body["detail"]
 
         status, body = _post_json(
             port,
@@ -941,7 +998,7 @@ def test_render_wiki_entity_missing_slug(fake_claude: Path) -> None:
     assert "No wiki page" in out
 
 
-def test_render_graph_emits_cytoscape_mount(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_render_graph_uses_builtin_list_mount(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cm,
         "_graph_stats",
@@ -949,7 +1006,8 @@ def test_render_graph_emits_cytoscape_mount(monkeypatch: pytest.MonkeyPatch) -> 
     )
     html_out = cm._render_graph("python-patterns")
     assert "id='cy'" in html_out
-    assert "cytoscape" in html_out
+    assert "https://unpkg.com" not in html_out
+    assert "Enter a slug to load graph list view" in html_out
     # Initial slug must be embedded as JSON literal so the JS picks it up.
     assert "\"python-patterns\"" in html_out
 
@@ -1281,7 +1339,7 @@ def test_render_graph_landing_hides_seeds_when_graph_absent(monkeypatch) -> None
     html_out = cm._render_graph(None)
     # No seeds section when graph isn't available.
     assert "Popular seed slugs" not in html_out
-    # But the search box and cytoscape mount still render.
+    # But the search box and graph list mount still render.
     assert "id='focus'" in html_out
     assert "id='cy'" in html_out
 
