@@ -32,7 +32,7 @@ Current shipped snapshot:
 ```bash
 pip install claude-ctx
 ctx-init                    # terminal wizard: hooks, graph, model, harness goal
-ctx-init --graph --model-mode skip  # non-interactive setup with recommendations
+ctx-init --graph --hooks --model-mode skip  # non-interactive graph + Claude Code hooks
 ctx-init --wizard           # force the same wizard from scripts/tests
 ctx-init --model-mode custom --model openai/gpt-5.5 --goal "build a CAD agent"
 ```
@@ -63,7 +63,8 @@ tarball. The same tarball includes `external-catalogs/skills-sh/catalog.json`,
 
 ## Use
 
-After install, the `ctx` hooks integrate automatically with Claude Code's `PostToolUse` + `Stop` events. Typical flow:
+After `ctx-init --hooks` or the wizard hook step, ctx observes Claude Code's
+`PostToolUse` + `Stop` events. Typical flow:
 
 ```bash
 ctx-scan-repo --repo .     # scan current repo and stack signals
@@ -71,6 +72,7 @@ ctx-scan-repo --repo . --recommend  # include skill/agent/MCP recommendations
 ctx-agent-add --agent-path ./code-reviewer.md --name code-reviewer
 ctx-harness-add --repo https://github.com/earthtojake/text-to-cad --tag cad
 ctx-harness-install text-to-cad --dry-run   # inspect before cloning/running anything
+ctx-harness-install text-to-cad             # install after reviewing the plan
 ctx-harness-install text-to-cad --update --dry-run
 ctx-harness-install text-to-cad --uninstall --dry-run
 ctx-skill-quality list     # four-signal quality score for every skill

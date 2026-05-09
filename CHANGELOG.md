@@ -5,7 +5,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-- No unreleased changes yet.
+### Fixed
+
+- Recorded the user's ctx knowledge-source mode during `ctx-init` so shipped
+  knowledge, local-only knowledge, and enriched knowledge are explicit choices.
+- Rolled back harness updates when attach or manifest writes fail after target
+  replacement, preserving the previous installed harness and manifest.
+- Inferred the no-fit custom harness PRD provider from model slugs such as
+  `openrouter/openai/gpt-5.5` when `--model-provider` is omitted.
+- Made release publishing fail closed when graph LFS artifacts cannot be
+  hydrated, so PyPI releases do not ship without the matching graph assets.
+- Corrected first-time README harness and hook commands plus stale graph
+  refresh instructions in the repo-stats maintenance skill.
 
 ## [0.7.9] - 2026-05-09
 
