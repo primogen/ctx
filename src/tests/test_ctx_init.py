@@ -132,6 +132,7 @@ def test_main_auto_wizard_in_terminal_configures_custom_model(
 
     answers = iter([
         "y",                  # hooks
+        "enriched",           # knowledge mode
         "n",                  # graph
         "custom",             # model mode
         "openai/gpt-5.5",     # model
@@ -166,6 +167,9 @@ def test_main_auto_wizard_in_terminal_configures_custom_model(
     assert profile["model"] == "openai/gpt-5.5"
     assert profile["api_key_env"] == "OPENAI_API_KEY"
     assert profile["goal"] == "build CAD artifacts"
+    assert profile["knowledge_mode"] == "enriched"
+    user_config = json.loads((tmp_path / "skill-system-config.json").read_text())
+    assert user_config["knowledge"]["mode"] == "enriched"
 
 
 def test_wizard_flag_prompts_without_tty(tmp_path: Path, monkeypatch) -> None:
@@ -180,7 +184,7 @@ def test_wizard_flag_prompts_without_tty(tmp_path: Path, monkeypatch) -> None:
 
     answers = iter([
         "n",                  # hooks
-        "n",                  # graph
+        "local",              # knowledge mode
         "claude-code",        # model mode
         "maintain FastAPI services",
     ])
@@ -192,6 +196,9 @@ def test_wizard_flag_prompts_without_tty(tmp_path: Path, monkeypatch) -> None:
     profile = json.loads((tmp_path / "ctx-model-profile.json").read_text())
     assert profile["mode"] == "claude-code"
     assert profile["goal"] == "maintain FastAPI services"
+    assert profile["knowledge_mode"] == "local"
+    user_config = json.loads((tmp_path / "skill-system-config.json").read_text())
+    assert user_config["knowledge"]["mode"] == "local"
 
 
 def test_explicit_args_do_not_auto_wizard_in_terminal(
@@ -207,7 +214,9 @@ def test_explicit_args_do_not_auto_wizard_in_terminal(
         lambda _prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")),
     )
 
-    assert ci.main(["--model-mode", "skip"]) == 0
+    assert ci.main(["--model-mode", "skip", "--knowledge-mode", "local"]) == 0
+    user_config = json.loads((tmp_path / "skill-system-config.json").read_text())
+    assert user_config["knowledge"]["mode"] == "local"
 
 
 def test_main_with_hooks_flag_invokes_inject(tmp_path: Path, monkeypatch) -> None:

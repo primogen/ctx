@@ -97,6 +97,8 @@ _STARTER_USER_CONFIG = """{
   "_config_path": "~/.claude/skill-system-config.json"
 }
 """
+_KNOWLEDGE_MODES = frozenset({"shipped", "local", "enriched", "skip"})
+_ACTIVE_KNOWLEDGE_MODES = frozenset({"shipped", "local", "enriched"})
 
 
 def seed_user_config(claude: Path, *, force: bool = False) -> Path | None:
@@ -105,6 +107,33 @@ def seed_user_config(claude: Path, *, force: bool = False) -> Path | None:
     if target.exists() and not force:
         return None
     target.write_text(_STARTER_USER_CONFIG, encoding="utf-8")
+    return target
+
+
+def write_knowledge_config(claude: Path, mode: str) -> Path | None:
+    """Persist the user's knowledge-source choice in skill-system-config.json."""
+    if mode == "skip":
+        return None
+    if mode not in _ACTIVE_KNOWLEDGE_MODES:
+        raise ValueError(f"unknown knowledge mode: {mode}")
+    target = claude / "skill-system-config.json"
+    try:
+        data = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{target} is not valid JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{target} must contain a JSON object")
+    data.setdefault(
+        "_comment",
+        "User-level overrides for ctx (claude-ctx) defaults. Edit me.",
+    )
+    data.setdefault("_config_path", "~/.claude/skill-system-config.json")
+    data["knowledge"] = {
+        "mode": mode,
+        "use_shipped_graph": mode in {"shipped", "enriched"},
+        "allow_user_enrichment": mode in {"local", "enriched"},
+    }
+    target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return target
 
 
@@ -1115,6 +1144,18 @@ def _prompt_model_mode(default: str = "claude-code") -> str:
         print("  Please choose claude-code, custom, or skip.")
 
 
+def _prompt_knowledge_mode(default: str = "shipped") -> str:
+    while True:
+        answer = input(
+            "Use ctx shipped knowledge, local/private knowledge, or both? "
+            f"[{default}; choices: shipped/local/enriched/skip] "
+        ).strip().lower()
+        mode = answer or default
+        if mode in _KNOWLEDGE_MODES:
+            return mode
+        print("  Please choose shipped, local, enriched, or skip.")
+
+
 def _stdio_is_interactive() -> bool:
     return bool(
         getattr(sys.stdin, "isatty", lambda: False)()
@@ -1136,10 +1177,14 @@ def run_wizard(args: argparse.Namespace) -> None:
         "Install Claude Code observation hooks now?",
         default=args.hooks,
     )
-    args.graph = _prompt_yes_no(
-        "Build the knowledge graph now? This can take a while.",
-        default=args.graph,
-    )
+    args.knowledge_mode = _prompt_knowledge_mode(args.knowledge_mode or "shipped")
+    if args.knowledge_mode in {"shipped", "enriched"}:
+        args.graph = _prompt_yes_no(
+            "Install the shipped ctx graph/wiki now?",
+            default=args.graph,
+        )
+    elif args.knowledge_mode == "local":
+        args.graph = False
 
     args.model_mode = _prompt_model_mode(args.model_mode or "claude-code")
     if args.model_mode == "skip":
@@ -1208,6 +1253,7 @@ def run_model_onboarding(args: argparse.Namespace, claude: Path) -> int:
         "api_key_env": api_key_env,
         "base_url": args.base_url,
         "goal": goal,
+        "knowledge_mode": args.knowledge_mode,
     }
     written = write_model_profile(claude, profile, force=args.force)
     if written:
@@ -1281,6 +1327,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Override the pre-built wiki-graph.tar.gz download URL",
     )
     parser.add_argument(
+        "--knowledge-mode",
+        choices=("shipped", "local", "enriched", "skip"),
+        help=(
+            "Knowledge source policy: shipped ctx graph/wiki, local/private "
+            "only, shipped plus user enrichment, or skip recording a policy."
+        ),
+    )
+    parser.add_argument(
         "--force", action="store_true",
         help="Overwrite existing config files if present",
     )
@@ -1318,6 +1372,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(raw_argv)
     if _should_run_wizard(args, raw_argv):
         run_wizard(args)
+    if args.knowledge_mode == "local" and args.graph:
+        print(
+            "  [warn] --knowledge-mode local cannot be combined with --graph; "
+            "use --knowledge-mode enriched to install shipped ctx knowledge "
+            "and add your own.",
+            file=sys.stderr,
+        )
+        return 1
 
     claude = _claude_dir()
     print(f"ctx-init: setting up {claude}")
@@ -1333,6 +1395,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  [ok] wrote {seeded_config.name}")
     else:
         print("  [skip] skill-system-config.json already present (use --force to overwrite)")
+
+    if args.knowledge_mode and args.knowledge_mode != "skip":
+        try:
+            written = write_knowledge_config(claude, args.knowledge_mode)
+        except ValueError as exc:
+            print(f"  [warn] {exc}", file=sys.stderr)
+            return 1
+        if written:
+            print(f"  [ok] recorded knowledge mode: {args.knowledge_mode}")
 
     toolbox_seed = seed_toolboxes(force=args.force)
     if isinstance(toolbox_seed, ToolboxSeedResult):
@@ -1380,7 +1451,7 @@ def main(argv: list[str] | None = None) -> int:
     print("  - ctx-monitor serve                # local dashboard at :8765")
     if not args.hooks:
         print("  - ctx-init --hooks                 # wire live observation")
-    if not args.graph:
+    if not args.graph and args.knowledge_mode != "local":
         print("  - ctx-init --graph                 # install knowledge graph")
     return final_rc
 

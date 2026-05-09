@@ -15,6 +15,11 @@
     "catalog": "~/.claude/skill-wiki/catalog.md"
   },
 
+  "knowledge": {
+    "_comment": "User knowledge-source policy. shipped = use ctx's shipped graph/wiki; local = private/local wiki only; enriched = start from shipped ctx knowledge and add user/project content.",
+    "mode": "shipped"
+  },
+
   "resolver": {
     "_comment": "Resolver + recommendation tuning. max_skills is the HARD ceiling for a single resolve call (anti-budget-blowout). recommendation_top_k is the hard cap shown to users as an execution bundle — a mixed recommendation spanning skills + agents + MCPs ordered by graph score. Harnesses use the separate harness catalog flow. Keep top_k small (default/max 5) so users aren't overwhelmed by options; recommendation_min_normalized_score drops weak graph matches instead of recommending at all cost.",
     "max_skills": 15,
