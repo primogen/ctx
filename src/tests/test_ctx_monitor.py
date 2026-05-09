@@ -831,7 +831,15 @@ def test_monitor_non_loopback_bind_is_read_only(
         host="0.0.0.0",
     )
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/loaded", timeout=5) as response:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/loaded", timeout=5)
+        assert excinfo.value.code == 403
+        assert "monitor read token required" in excinfo.value.read().decode("utf-8")
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/loaded?token=browser-token",
+            timeout=5,
+        ) as response:
             loaded_html = response.read().decode("utf-8")
             csp = response.headers.get("Content-Security-Policy", "")
         assert "browser-token" not in loaded_html
@@ -845,7 +853,7 @@ def test_monitor_non_loopback_bind_is_read_only(
             )
         assert excinfo.value.code == 403
         body = json.loads(excinfo.value.read().decode("utf-8"))
-        assert "read APIs disabled" in body["detail"]
+        assert "read token required" in body["detail"]
 
         status, body = _post_json(
             port,
@@ -1252,6 +1260,12 @@ def test_render_kpi_with_sidecars(fake_claude: Path) -> None:
         "hard_floor": "intake_fail",
         "computed_at": "2026-04-19T10:00:00+00:00",
     })
+    _write_sidecar(fake_claude, "reviewer", {
+        "slug": "reviewer", "subject_type": "agent",
+        "grade": "F", "raw_score": 0.06, "score": 0.06,
+        "hard_floor": None,
+        "computed_at": "2026-04-19T10:00:00+00:00",
+    })
     html_out = cm._render_kpi()
     # The five section headings must all be present.
     assert "Grade distribution" in html_out
@@ -1261,6 +1275,7 @@ def test_render_kpi_with_sidecars(fake_claude: Path) -> None:
     assert "Archived" in html_out
     # Slug must be linked into the demotion-candidates table.
     assert "foxtrot" in html_out
+    assert "/skill/reviewer?type=agent" in html_out
     # Cross-link to the JSON endpoint + /skills drill-down.
     assert "/api/kpi.json" in html_out
     assert "/skills" in html_out
@@ -1297,7 +1312,7 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
 
 def test_render_graph_landing_shows_seeds_when_available(monkeypatch) -> None:
     """With a non-empty graph, /graph (no slug) should surface popular
-    seed slugs so the first-time visitor has something to click."""
+    seed slugs when the graph is already cached."""
     import networkx as nx
     G = nx.Graph()
     # High-degree hub: 'skill:python-patterns' with 5 neighbors.
@@ -1305,14 +1320,12 @@ def test_render_graph_landing_shows_seeds_when_available(monkeypatch) -> None:
                  "agent:code-reviewer", "skill:pydantic", "skill:sqlalchemy"):
         G.add_edge("skill:python-patterns", peer, weight=2)
     G.nodes["skill:python-patterns"]["label"] = "python-patterns"
-    fake = type("M", (), {"load_graph": staticmethod(lambda _path=None: G)})
-    import sys
-    # ctx_monitor lazy-imports 'from ctx.core.graph.resolve_graph import load_graph'
-    # at call time; inject at the canonical dotted path so the lazy import
-    # resolves to our stub. Also populate the legacy shim path belt-and-
-    # braces in case a downstream path still routes through it.
-    monkeypatch.setitem(sys.modules, "ctx.core.graph.resolve_graph", fake)
-    monkeypatch.setitem(sys.modules, "resolve_graph", fake)
+    monkeypatch.setattr(cm, "_graph_stats", lambda: {
+        "nodes": G.number_of_nodes(),
+        "edges": G.number_of_edges(),
+        "available": True,
+    })
+    monkeypatch.setattr(cm, "_GRAPH_CACHE_VALUE", G)
 
     html_out = cm._render_graph(None)
     # Landing page shows the seeds block.
@@ -1321,6 +1334,31 @@ def test_render_graph_landing_shows_seeds_when_available(monkeypatch) -> None:
     assert "python-patterns" in html_out
     # Graph stats line shows node/edge counts.
     assert "nodes" in html_out
+
+
+def test_render_graph_landing_does_not_cold_load_graph_for_seed_chips(
+    monkeypatch,
+) -> None:
+    calls = 0
+
+    def fake_load_graph():
+        nonlocal calls
+        calls += 1
+        raise AssertionError("graph cold-loaded")
+
+    monkeypatch.setattr(cm, "_graph_stats", lambda: {
+        "nodes": 102696,
+        "edges": 2900834,
+        "available": True,
+    })
+    monkeypatch.setattr(cm, "_load_dashboard_graph", fake_load_graph)
+    monkeypatch.setattr(cm, "_GRAPH_CACHE_VALUE", None)
+
+    html_out = cm._render_graph(None)
+
+    assert "id='focus'" in html_out
+    assert "Popular seed slugs" not in html_out
+    assert calls == 0
 
 
 def test_render_graph_landing_hides_seeds_when_graph_absent(monkeypatch) -> None:
