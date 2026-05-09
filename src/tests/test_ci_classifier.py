@@ -182,6 +182,8 @@ def test_pre_commit_refreshes_all_repo_stats_outputs() -> None:
     assert "skills-sh-catalog\\.json\\.gz" in hook
     assert "git add README.md docs/index.md" in hook
     assert "README.md and docs/index.md refreshed and re-staged" in hook
+    assert "CTX_REPO_STATS_TIMEOUT:-240s" in hook
+    assert 'timeout "$STATS_TIMEOUT"' in hook
 
 
 def test_no_test_policy_exempts_release_metadata_only_changes() -> None:
