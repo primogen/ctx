@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gzip
+import json
 import sys
 from pathlib import Path
 
@@ -161,6 +163,11 @@ def test_hf_export_copies_hydrated_tracked_artifacts(
             b"graph/skills-sh-catalog.json.gz\0"
         ),
     )
+    monkeypatch.setattr(
+        sync_huggingface,
+        "_validate_graph_artifact_integrity",
+        lambda _repo: None,
+    )
 
     sync_huggingface._export_tracked_tree(repo, export_dir)
 
@@ -198,3 +205,31 @@ def test_hf_export_rejects_lfs_pointer_artifact(tmp_path: Path, monkeypatch) -> 
         assert "Git LFS pointer" in str(exc)
     else:
         raise AssertionError("expected LFS pointer rejection")
+
+
+def test_hf_export_rejects_corrupt_large_graph_artifact(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    graph_dir = repo / "graph"
+    graph_dir.mkdir()
+    (graph_dir / "wiki-graph.tar.gz").write_bytes(b"\x1f\x8bnot-a-valid-tar")
+    with gzip.open(graph_dir / "skills-sh-catalog.json.gz", "wt", encoding="utf-8") as f:
+        json.dump({"skills": []}, f)
+    (graph_dir / "communities.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        sync_huggingface,
+        "HYDRATED_ARTIFACT_MIN_BYTES",
+        {
+            Path("graph/wiki-graph.tar.gz"): 4,
+            Path("graph/skills-sh-catalog.json.gz"): 4,
+        },
+    )
+
+    try:
+        sync_huggingface._assert_hydrated_artifacts(repo)
+    except RuntimeError as exc:
+        assert "graph artifact integrity validation failed" in str(exc)
+    else:
+        raise AssertionError("expected corrupt graph artifact rejection")

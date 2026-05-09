@@ -7,6 +7,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -91,6 +92,22 @@ def _assert_hydrated_artifacts(repo: Path) -> None:
             raise RuntimeError(
                 f"{rel.as_posix()} is a Git LFS pointer, not the hydrated artifact"
             )
+    _validate_graph_artifact_integrity(repo)
+
+
+def _validate_graph_artifact_integrity(repo: Path) -> None:
+    src_dir = repo / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    try:
+        from validate_graph_artifacts import validate_graph_artifacts
+
+        validate_graph_artifacts(repo / "graph")
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "graph artifact integrity validation failed before Hugging Face sync: "
+            f"{exc}"
+        ) from exc
 
 
 def _export_tracked_tree(repo: Path, export_dir: Path) -> None:
