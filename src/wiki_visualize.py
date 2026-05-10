@@ -72,12 +72,13 @@ COMMUNITY_COLORS = [
 ]
 
 
-def load_graph() -> nx.Graph:
+def load_graph(path: Path | str | None = None) -> nx.Graph:
     """Load the knowledge graph."""
-    if not GRAPH_PATH.exists():
-        print(f"Error: {GRAPH_PATH} not found. Run wiki_graphify.py first.", file=sys.stderr)
+    graph_path = Path(path) if path is not None else GRAPH_PATH
+    if not graph_path.exists():
+        print(f"Error: {graph_path} not found. Run wiki_graphify.py first.", file=sys.stderr)
         sys.exit(1)
-    with open(GRAPH_PATH, encoding="utf-8") as f:
+    with open(graph_path, encoding="utf-8") as f:
         data = json.load(f)
     # Auto-detect NetworkX 2.x "links" vs 3.x "edges" schema — graph.json
     # was written with the legacy key on build machines that had the old
@@ -86,11 +87,12 @@ def load_graph() -> nx.Graph:
     return node_link_graph(data, edges=edges_key)
 
 
-def load_communities() -> dict:
+def load_communities(path: Path | str | None = None) -> dict:
     """Load community assignments."""
-    if not COMMUNITIES_PATH.exists():
+    communities_path = Path(path) if path is not None else COMMUNITIES_PATH
+    if not communities_path.exists():
         return {}
-    with open(COMMUNITIES_PATH, encoding="utf-8") as f:
+    with open(communities_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -101,6 +103,7 @@ def extract_subgraph(
     hops: int = 1,
     min_weight: float = 0.0,
     community_id: int | None = None,
+    communities: dict | None = None,
     tag_filter: str | None = None,
     top_n: int | None = None,
 ) -> nx.Graph:
@@ -131,8 +134,8 @@ def extract_subgraph(
             frontier = next_frontier
 
     elif community_id is not None:
-        communities = load_communities()
-        comm_data = communities.get("communities", {}).get(str(community_id))
+        community_data = communities if communities is not None else load_communities()
+        comm_data = community_data.get("communities", {}).get(str(community_id))
         if not comm_data:
             print(f"Error: community {community_id} not found", file=sys.stderr)
             return nx.Graph()
@@ -177,11 +180,23 @@ def compute_layout(G: nx.Graph) -> dict[str, tuple[float, float]]:
     return nx.spring_layout(G, k=2.0 / math.sqrt(max(G.number_of_nodes(), 1)), iterations=50, seed=42)
 
 
-def build_html_with_filters(G: nx.Graph, pos: dict, title: str = "Knowledge Graph") -> str:
+def build_html_with_filters(
+    G: nx.Graph,
+    pos: dict,
+    title: str = "Knowledge Graph",
+    *,
+    communities: dict | None = None,
+    metadata: dict | None = None,
+) -> str:
     """Build a self-contained HTML page with sidebar filter controls."""
     # Prepare node data as JSON for the JS frontend
     nodes_data = []
-    communities = load_communities()
+    communities = communities if communities is not None else load_communities()
+    metadata = dict(metadata or {})
+    if "export_id" not in metadata and G.graph.get("export_id"):
+        metadata["export_id"] = G.graph.get("export_id")
+    metadata.setdefault("nodes", G.number_of_nodes())
+    metadata.setdefault("edges", G.number_of_edges())
     node_community: dict[str, int] = {}
     for cid, comm_data in communities.get("communities", {}).items():
         for member in comm_data.get("members", []):
@@ -217,10 +232,16 @@ def build_html_with_filters(G: nx.Graph, pos: dict, title: str = "Knowledge Grap
 
     top_tags = sorted(tag_counts.items(), key=lambda x: -x[1])[:25]
     safe_title = html.escape(title)
+    export_id = str(metadata.get("export_id") or "")
+    export_meta = (
+        f'<meta name="ctx-graph-export-id" content="{html.escape(export_id, quote=True)}">'
+        if export_id else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>{safe_title}</title>
+{export_meta}
 <!-- Pinned to an explicit version (not -latest) so served content can't change
      silently. A real SRI hash would be better but must be generated from the
      published release — see https://cdn.plot.ly/ for hashes. -->
@@ -288,6 +309,7 @@ def build_html_with_filters(G: nx.Graph, pos: dict, title: str = "Knowledge Grap
 const NODES = {_safe_json_for_script(nodes_data)};
 const EDGES = {_safe_json_for_script(edges_data)};
 const TYPE_COLORS = {_safe_json_for_script(TYPE_COLORS)};
+const CTX_GRAPH_METADATA = {_safe_json_for_script(metadata)};
 const COMM_COLORS = ["#ef4444","#f97316","#eab308","#22c55e","#06b6d4","#3b82f6","#8b5cf6","#ec4899","#14b8a6","#f43f5e","#84cc16","#0ea5e9","#a855f7","#e11d48","#10b981"];
 
 function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }}
@@ -668,9 +690,16 @@ def main() -> None:
     parser.add_argument("--top", type=int, help="Show only the top-N most connected nodes")
     parser.add_argument("--output", help="Save to HTML file instead of opening browser")
     parser.add_argument("--stats", action="store_true", help="Print graph stats and exit")
+    parser.add_argument("--graph-json", type=Path, help="Load this graph.json instead of ~/.claude")
+    parser.add_argument(
+        "--communities-json",
+        type=Path,
+        help="Load this communities.json instead of ~/.claude",
+    )
     args = parser.parse_args()
 
-    G = load_graph()
+    G = load_graph(args.graph_json)
+    communities = load_communities(args.communities_json)
 
     if args.stats:
         print(f"Full graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
@@ -681,7 +710,6 @@ def main() -> None:
         print("\nTop 10 by connections:")
         for n in top:
             print(f"  {G.nodes[n].get('label', n)} ({G.degree(n)} connections)")
-        communities = load_communities()
         print(f"\nCommunities: {len(communities.get('communities', {}))}")
         return
 
@@ -699,6 +727,7 @@ def main() -> None:
         hops=args.hops,
         min_weight=args.min_weight,
         community_id=args.community,
+        communities=communities,
         tag_filter=args.tag,
         top_n=args.top,
     )
@@ -724,7 +753,19 @@ def main() -> None:
     # Layout + render with embedded filter sidebar
     pos = compute_layout(sub)
     output_path = args.output or "graph-view.html"
-    html = build_html_with_filters(sub, pos, title=title)
+    html = build_html_with_filters(
+        sub,
+        pos,
+        title=title,
+        communities=communities,
+        metadata={
+            "export_id": G.graph.get("export_id"),
+            "source_graph_nodes": G.number_of_nodes(),
+            "source_graph_edges": G.number_of_edges(),
+            "view_nodes": sub.number_of_nodes(),
+            "view_edges": sub.number_of_edges(),
+        },
+    )
     Path(output_path).write_text(html, encoding="utf-8")
     print(f"Saved to {output_path}")
 
