@@ -7,6 +7,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.0] - 2026-05-10
+
+### Added
+
+- Promoted ctx to the first stable release with shipped graph/wiki
+  recommendations for skills, agents, MCP servers, and harnesses.
+- Captured structured custom-model harness requirements during `ctx-init`
+  and `ctx-harness-install --recommend`: runtime/OS, autonomy, allowed tools,
+  verification, privacy/network constraints, and ctx attachment mode.
+
+### Fixed
+
+- Made graph HTML previews export-aware and covered them in the graph artifact
+  validator, so stale preview pages cannot ship beside a newer graph export.
+- Removed stale static graph PNG previews from the repository.
+- Classified `graph/*.html` as graph artifacts in CI so docs/graph checks run
+  when shipped graph previews change.
+
 ## [0.7.18] - 2026-05-09
 
 ### Fixed
