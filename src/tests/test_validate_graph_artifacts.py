@@ -17,6 +17,14 @@ from validate_graph_artifacts import (
     validate_graph_artifacts,
 )
 
+_PREVIEW_HTML_FILES = (
+    "sample-top60.html",
+    "viz-ai-agents.html",
+    "viz-overview.html",
+    "viz-python.html",
+    "viz-security.html",
+)
+
 
 def _add_text(tf: tarfile.TarFile, name: str, text: str) -> None:
     payload = text.encode("utf-8")
@@ -125,6 +133,23 @@ def _write_archive(
             _add_text(tf, "./converted/skills-sh-example-skill/SKILL.md.original", "# Raw\n")
         if include_lock:
             _add_text(tf, "./index.md.lock", "")
+    for preview in _PREVIEW_HTML_FILES:
+        (graph_dir / preview).write_text(
+            "\n".join([
+                "<!DOCTYPE html>",
+                "<html><head>",
+                f'<meta name="ctx-graph-export-id" content="{manifest_export_id}">',
+                "</head><body>",
+                "const CTX_GRAPH_METADATA = "
+                + json.dumps({
+                    "export_id": manifest_export_id,
+                    "source_graph_nodes": 2,
+                    "source_graph_edges": 1,
+                }),
+                "</body></html>",
+            ]),
+            encoding="utf-8",
+        )
 
 
 def test_validate_graph_artifacts_checks_catalog_paths_and_deep_graph_stats(
@@ -201,6 +226,35 @@ def test_validate_graph_artifacts_rejects_mixed_export_generation(
     _write_archive(tmp_path, graph_export_id="new-export", delta_export_id="old-export")
 
     with pytest.raises(GraphArtifactError, match="export_id mismatch"):
+        validate_graph_artifacts(
+            tmp_path,
+            deep=True,
+            min_nodes=2,
+            min_edges=1,
+            min_skills_sh_nodes=1,
+            min_semantic_edges=1,
+            expected_harnesses={"langgraph"},
+        )
+
+
+def test_validate_graph_artifacts_rejects_stale_preview_html(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    (tmp_path / "communities.json").write_text(
+        json.dumps({"total_communities": 1}),
+        encoding="utf-8",
+    )
+    _write_archive(tmp_path)
+    (tmp_path / "viz-overview.html").write_text(
+        '<meta name="ctx-graph-export-id" content="old-export">',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(GraphArtifactError, match="stale graph preview"):
         validate_graph_artifacts(
             tmp_path,
             deep=True,
