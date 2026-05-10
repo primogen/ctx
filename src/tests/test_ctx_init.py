@@ -530,13 +530,25 @@ def test_main_custom_model_no_fit_points_to_harness_plan(
     rc = ci.main([
         "--model-mode", "custom",
         "--model", "ollama/llama3.1",
+        "--model-provider", "ollama",
         "--goal", "private local CAD workflow",
+        "--harness-runtime", "linux server",
+        "--harness-tools", "filesystem shell",
+        "--harness-verify", "pytest",
+        "--harness-privacy", "offline source code",
+        "--harness-attach-mode", "mcp",
     ])
 
     assert rc == 0
     output = capsys.readouterr().out
     assert "no harness recommendations matched yet" in output
     assert "ctx-harness-install --recommend" in output
+    assert "--model-provider \"ollama\"" in output
+    assert "--harness-runtime \"linux server\"" in output
+    assert "--harness-tools \"filesystem shell\"" in output
+    assert "--harness-verify \"pytest\"" in output
+    assert "--harness-privacy \"offline source code\"" in output
+    assert "--harness-attach-mode \"mcp\"" in output
     assert "--plan-on-no-fit" in output
 
 

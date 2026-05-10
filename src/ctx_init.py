@@ -594,6 +594,15 @@ _HARNESS_REQUIREMENT_FIELDS = (
     ("attach_mode", "harness_attach_mode"),
 )
 
+_HARNESS_REQUIREMENT_FLAGS = {
+    "runtime": "--harness-runtime",
+    "autonomy": "--harness-autonomy",
+    "tools": "--harness-tools",
+    "verification": "--harness-verify",
+    "privacy": "--harness-privacy",
+    "attach_mode": "--harness-attach-mode",
+}
+
 
 def _model_provider_prefix(model: str) -> str:
     return model.split("/", 1)[0] if "/" in model else model
@@ -1181,6 +1190,29 @@ def _harness_requirements_text(requirements: dict[str, str]) -> str:
     )
 
 
+def _harness_plan_command(
+    *,
+    goal: str,
+    model_provider: str | None,
+    model: str | None,
+    harness_requirements: dict[str, str],
+) -> str:
+    parts = [
+        "ctx-harness-install --recommend",
+        f"--goal {json.dumps(goal or model or 'custom model work')}",
+    ]
+    if model_provider:
+        parts.append(f"--model-provider {json.dumps(model_provider)}")
+    if model:
+        parts.append(f"--model {json.dumps(model)}")
+    for key, _attr in _HARNESS_REQUIREMENT_FIELDS:
+        value = harness_requirements.get(key)
+        if value:
+            parts.append(f"{_HARNESS_REQUIREMENT_FLAGS[key]} {json.dumps(value)}")
+    parts.append("--plan-on-no-fit")
+    return " ".join(parts)
+
+
 def _prompt_harness_requirements(args: argparse.Namespace) -> None:
     args.harness_runtime = _prompt_text(
         "Runtime / OS target for the harness",
@@ -1358,11 +1390,12 @@ def run_model_onboarding(args: argparse.Namespace, claude: Path) -> int:
             print(f"         install: ctx-harness-install {name} --dry-run")
     elif goal or mode == "custom":
         print("  [info] no harness recommendations matched yet")
-        print(
-            "       build plan: ctx-harness-install --recommend "
-            f"--goal {json.dumps(goal or args.model or 'custom model work')} "
-            f"--model {json.dumps(args.model or '')} --plan-on-no-fit"
-        )
+        print("       build plan: " + _harness_plan_command(
+            goal=goal,
+            model_provider=provider,
+            model=args.model,
+            harness_requirements=harness_requirements,
+        ))
     return rc
 
 
