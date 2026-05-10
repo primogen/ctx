@@ -7,6 +7,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.3] - 2026-05-11
+
+### Fixed
+
+- Fixed ctx-core graph cache invalidation on Windows and other filesystems
+  where rapid same-size rewrites can preserve timestamp and size metadata.
+  Graph and semantic cache signatures now include a bounded content
+  fingerprint.
+- Verified the main GitHub Actions test workflow passes again, including the
+  Windows Python 3.11 and 3.12 pytest matrix jobs.
+
 ## [1.0.2] - 2026-05-10
 
 ### Fixed
@@ -1467,6 +1478,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.3]: https://github.com/stevesolun/ctx/releases/tag/v1.0.3
 [1.0.2]: https://github.com/stevesolun/ctx/releases/tag/v1.0.2
 [1.0.1]: https://github.com/stevesolun/ctx/releases/tag/v1.0.1
 [1.0.0]: https://github.com/stevesolun/ctx/releases/tag/v1.0.0
