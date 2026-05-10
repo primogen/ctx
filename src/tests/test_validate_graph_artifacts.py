@@ -51,6 +51,57 @@ def _write_catalog(graph_dir: Path, *, converted_path: str | None = None) -> Non
         json.dump(catalog, f)
 
 
+def _write_runtime_archive(
+    graph_dir: Path,
+    *,
+    graph: dict[str, Any],
+    include_delta: bool = True,
+    include_report: bool = True,
+    include_manifest: bool = True,
+    delta_export_id: str = "export-test",
+    communities_export_id: str = "export-test",
+    report_export_id: str = "export-test",
+    manifest_export_id: str = "export-test",
+) -> None:
+    with tarfile.open(graph_dir / "wiki-graph-runtime.tar.gz", "w:gz") as tf:
+        _add_text(tf, "index.md", "# Wiki\n")
+        _add_text(tf, "graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
+        if include_delta:
+            _add_text(
+                tf,
+                "graphify-out/graph-delta.json",
+                json.dumps({"export_id": delta_export_id, "nodes": [], "edges": []}),
+            )
+        _add_text(
+            tf,
+            "graphify-out/communities.json",
+            json.dumps({"export_id": communities_export_id, "total_communities": 1}),
+        )
+        if include_report:
+            _add_text(
+                tf,
+                "graphify-out/graph-report.md",
+                f"# Graph Report\n\n> Export ID: {report_export_id}\n",
+            )
+        if include_manifest:
+            _add_text(
+                tf,
+                "graphify-out/graph-export-manifest.json",
+                json.dumps({
+                    "version": 1,
+                    "export_id": manifest_export_id,
+                    "artifacts": {
+                        "graph": "graph.json",
+                        "delta": "graph-delta.json",
+                        "communities": "communities.json",
+                        "report": "graph-report.md",
+                    },
+                    "counts": {"nodes": 2, "edges": 1, "communities": 1},
+                }),
+            )
+        _add_text(tf, "external-catalogs/skills-sh/catalog.json", "{}")
+
+
 def _write_archive(
     graph_dir: Path,
     *,
@@ -150,6 +201,17 @@ def _write_archive(
             ]),
             encoding="utf-8",
         )
+    _write_runtime_archive(
+        graph_dir,
+        graph=graph,
+        include_delta=include_delta,
+        include_report=include_report,
+        include_manifest=include_manifest,
+        delta_export_id=delta_export_id,
+        communities_export_id=communities_export_id,
+        report_export_id=report_export_id,
+        manifest_export_id=manifest_export_id,
+    )
 
 
 def test_validate_graph_artifacts_checks_catalog_paths_and_deep_graph_stats(

@@ -49,6 +49,15 @@ _PREVIEW_HTML_FILES = (
     "viz-python.html",
     "viz-security.html",
 )
+_GRAPH_RUNTIME_REQUIRED_NAMES = {
+    "index.md",
+    "graphify-out/graph.json",
+    "graphify-out/graph-delta.json",
+    "graphify-out/communities.json",
+    "graphify-out/graph-report.md",
+    "graphify-out/graph-export-manifest.json",
+    "external-catalogs/skills-sh/catalog.json",
+}
 
 
 class GraphArtifactError(RuntimeError):
@@ -236,11 +245,13 @@ def validate_graph_artifacts(
 ) -> GraphArtifactStats:
     graph_dir = Path(graph_dir)
     tarball = graph_dir / "wiki-graph.tar.gz"
+    runtime_tarball = graph_dir / "wiki-graph-runtime.tar.gz"
     catalog_path = graph_dir / "skills-sh-catalog.json.gz"
     communities_path = graph_dir / "communities.json"
-    for path in (tarball, catalog_path, communities_path):
+    for path in (tarball, runtime_tarball, catalog_path, communities_path):
         _require_real_file(path)
 
+    _validate_runtime_graph_archive(runtime_tarball)
     catalog = _load_gzip_json(catalog_path)
     _load_json(communities_path)
     skills = _catalog_skills(catalog)
@@ -341,15 +352,7 @@ def validate_graph_artifacts(
                             f"{member.name} has {lines} lines, above limit {limit}",
                         )
 
-    required_names = {
-        "index.md",
-        "graphify-out/graph.json",
-        "graphify-out/graph-delta.json",
-        "graphify-out/communities.json",
-        "graphify-out/graph-report.md",
-        "graphify-out/graph-export-manifest.json",
-        "external-catalogs/skills-sh/catalog.json",
-    }
+    required_names = _GRAPH_RUNTIME_REQUIRED_NAMES
     missing_required = sorted(required_names - names)
     if missing_required:
         raise GraphArtifactError(f"wiki graph archive is missing: {missing_required}")
@@ -438,6 +441,64 @@ def validate_graph_artifacts(
                 f"{field_name} exact count mismatch: expected {expected}, got {actual}",
             )
     return stats
+
+
+def _validate_runtime_graph_archive(tarball: Path) -> None:
+    names: set[str] = set()
+    export_ids: dict[str, str] = {}
+    manifest: dict[str, Any] | None = None
+    with tarfile.open(tarball, "r:gz") as tf:
+        for member in tf:
+            name = _safe_tar_name(member.name)
+            names.add(name)
+            if not (member.isfile() or member.isdir()):
+                raise GraphArtifactError(
+                    f"runtime archive member is not a regular file/dir: {member.name}",
+                )
+            if name.endswith(".original"):
+                raise GraphArtifactError(
+                    f"runtime archive contains raw backup member: {member.name}",
+                )
+            if name.endswith(".lock"):
+                raise GraphArtifactError(
+                    f"runtime archive contains lock member: {member.name}",
+                )
+            if member.isfile() and name == "graphify-out/graph.json":
+                f = tf.extractfile(member)
+                if f is None:
+                    raise GraphArtifactError("runtime graph.json could not be read")
+                _record_export_id(export_ids, name, _scan_graph_export_id(f))
+            elif member.isfile() and name == "graphify-out/graph-delta.json":
+                data = _read_tar_json(tf, member, name)
+                _record_export_id(export_ids, name, _export_id_from_json(data, name))
+            elif member.isfile() and name == "graphify-out/communities.json":
+                data = _read_tar_json(tf, member, name)
+                _record_export_id(export_ids, name, _export_id_from_json(data, name))
+            elif member.isfile() and name == "graphify-out/graph-export-manifest.json":
+                data = _read_tar_json(tf, member, name)
+                if not isinstance(data, dict):
+                    raise GraphArtifactError(f"{name} did not contain a JSON object")
+                manifest = data
+            elif member.isfile() and name == "graphify-out/graph-report.md":
+                f = tf.extractfile(member)
+                if f is None:
+                    raise GraphArtifactError(f"{member.name} could not be read")
+                _record_export_id(export_ids, name, _export_id_from_report(f.read()))
+
+    missing_required = sorted(_GRAPH_RUNTIME_REQUIRED_NAMES - names)
+    if missing_required:
+        raise GraphArtifactError(
+            f"runtime graph archive is missing: {missing_required}",
+        )
+    manifest_export_id = _validate_graph_export_manifest(manifest, names)
+    _record_export_id(
+        export_ids,
+        "graphify-out/graph-export-manifest.json",
+        manifest_export_id,
+    )
+    if "graphify-out/graph.json" not in export_ids:
+        raise GraphArtifactError("runtime graph.json is missing export_id")
+    _validate_export_ids(export_ids, expected=manifest_export_id)
 
 
 def _validate_graph_previews(

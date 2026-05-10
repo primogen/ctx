@@ -582,6 +582,7 @@ def _artifact_status() -> dict[str, Any]:
             repo_graph_dir / "wiki-graph.tar.gz",
         ),
         "skills_sh_catalog": _first_existing_file_status(
+            wiki / "external-catalogs" / "skills-sh" / "catalog.json",
             claude_graph_dir / "skills-sh-catalog.json.gz",
             repo_graph_dir / "skills-sh-catalog.json.gz",
         ),
