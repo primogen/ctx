@@ -56,6 +56,16 @@ def test_graph_artifacts_are_graph_only_not_docs_only() -> None:
     assert flags["source_changed"] is False
 
 
+def test_graph_preview_html_is_graph_artifact() -> None:
+    flags = classify_paths(["graph/viz-overview.html"])
+
+    assert flags["docs_changed"] is False
+    assert flags["docs_only"] is False
+    assert flags["graph_artifact_changed"] is True
+    assert flags["graph_changed"] is True
+    assert flags["graph_only"] is True
+
+
 def test_graph_readme_is_docs_not_graph_artifact() -> None:
     flags = classify_paths(["graph/README.md"])
 
