@@ -187,10 +187,18 @@ def test_publish_workflow_validates_and_uploads_graph_assets() -> None:
     assert "gh release upload" in workflow
     assert '--repo "$GITHUB_REPOSITORY"' in workflow
     assert "needs.release-assets.result == 'success'" in workflow
+    assert "github.event_name == 'workflow_dispatch' || needs.release-assets.result == 'success'" not in workflow
     assert "continue-on-error: true" not in workflow
     assert "needs.release-assets.result == 'skipped'" not in workflow
     assert "PyPI publish will continue without release asset upload" not in workflow
     assert "graph_assets_available" in workflow
+
+
+def test_changelog_defines_current_release_link() -> None:
+    changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+
+    assert "## [1.0.0] - 2026-05-10" in changelog
+    assert "[1.0.0]: https://github.com/stevesolun/ctx/releases/tag/v1.0.0" in changelog
 
 
 def test_pre_commit_refreshes_all_repo_stats_outputs() -> None:

@@ -1442,6 +1442,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.0]: https://github.com/stevesolun/ctx/releases/tag/v1.0.0
 [0.5.1]: https://github.com/stevesolun/ctx/releases/tag/v0.5.1
 [0.5.0]: https://github.com/stevesolun/ctx/releases/tag/v0.5.0
 [0.5.0-rc1]: https://github.com/stevesolun/ctx/releases/tag/v0.5.0-rc1
