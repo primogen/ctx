@@ -61,8 +61,21 @@ def _harness_graph() -> nx.Graph:
         "harness:text-to-cad",
         label="text-to-cad",
         type="harness",
-        tags=["cad", "3d", "local", "ollama", "harness"],
-        model_providers=["ollama"],
+        tags=[
+            "cad",
+            "3d",
+            "local",
+            "ollama",
+            "harness",
+            "python",
+            "node",
+            "robotics",
+            "validation",
+            "filesystem",
+            "geometry",
+            "export",
+        ],
+        model_providers=["model-agnostic"],
     )
     graph.add_node(
         "skill:python-helper",
@@ -213,6 +226,39 @@ def test_ctx_init_ignores_model_version_tokens_for_local_harness_fit(
     assert results[0]["name"] == "text-to-cad"
     assert results[0]["fit_score"] >= 0.85
     assert "llama3" not in results[0]["missing_signals"]
+
+
+def test_ctx_init_keeps_domain_goal_strong_with_install_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ctx_init, "_load_recommendation_graph", _harness_graph)
+
+    results = ctx_init.recommend_harnesses(
+        "build CAD and robotics tools from local files with validation "
+        "windows python node local filesystem filesystem shell browser "
+        "pytest npm build geometry export checks local files only no secrets "
+        "mcp openai openai/gpt-5.5 harness",
+        top_k=5,
+        model_provider="openai",
+        model="openai/gpt-5.5",
+    )
+
+    assert results
+    assert results[0]["name"] == "text-to-cad"
+    assert results[0]["fit_score"] >= 0.85
+    assert set(results[0]["fit_signals"]) >= {
+        "cad",
+        "export",
+        "geometry",
+        "local",
+        "node",
+        "python",
+        "robotics",
+        "validation",
+    }
+    assert "windows" not in results[0]["missing_signals"]
+    assert "mcp" not in results[0]["missing_signals"]
+    assert "gpt-5" not in results[0]["fit_signals"]
 
 
 def test_ctx_init_recommends_harness_from_wiki_frontmatter_only(

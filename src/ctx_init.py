@@ -598,25 +598,53 @@ _HARNESS_GOAL_NOISE = frozenset({
     "repo",
     "development",
     "dev",
+    "from",
+    "only",
 })
 
 _HARNESS_SIGNAL_ALIASES: dict[str, set[str]] = {
     "ai": {"ai", "llm", "model"},
     "agent": {"agent", "agents", "agentic"},
     "agents": {"agent", "agents", "agentic"},
-    "browser": {"browser", "web"},
+    "browser": {"browser", "viewer", "web"},
     "cad": {"cad", "3d", "modeling", "modelling"},
+    "checks": {"check", "checks", "test", "tests", "validation", "verify", "verification"},
     "checkpoint": {"checkpoint", "checkpoints", "checkpointing"},
     "checkpointing": {"checkpoint", "checkpoints", "checkpointing"},
     "cli": {"cli", "command", "commands"},
+    "export": {"export", "dxf", "glb", "stl"},
+    "files": {"file", "files", "filesystem", "local"},
+    "filesystem": {"file", "files", "filesystem", "local"},
+    "geometry": {"cad", "geometry", "3d"},
     "local": {"local", "ollama", "vllm"},
     "mcp": {"mcp", "server", "servers"},
     "openai": {"openai", "gpt"},
     "private": {"private", "local", "offline", "self", "hosted"},
+    "pytest": {"pytest", "test", "tests", "validation", "verify", "verification"},
     "python": {"python", "py"},
+    "robotics": {"robot", "robotics", "urdf"},
+    "shell": {"shell", "cli", "command", "commands", "script", "scripts"},
     "tool": {"tool", "tools"},
     "tools": {"tool", "tools"},
 }
+
+_HARNESS_SOFT_REQUIREMENT_SIGNALS = frozenset({
+    "browser",
+    "check",
+    "checks",
+    "darwin",
+    "linux",
+    "mac",
+    "macos",
+    "mcp",
+    "npm",
+    "pytest",
+    "secret",
+    "secrets",
+    "shell",
+    "win32",
+    "windows",
+})
 
 _DEFAULT_HARNESS_RELIABILITY_WEIGHTS = {
     "context": 0.34,
@@ -864,14 +892,20 @@ def _annotate_harness_fit(
     terms = _harness_candidate_terms(graph, row)
     scored_signals: list[str] = []
     matched: list[str] = []
+    soft_matched: list[str] = []
     for signal in relevant_signals:
+        if _looks_like_model_version_signal(signal):
+            continue
         signal_matches = _harness_signal_matches(signal, terms)
-        if not signal_matches and _looks_like_model_version_signal(signal):
+        if _is_soft_harness_requirement_signal(signal):
+            if signal_matches:
+                soft_matched.append(signal)
             continue
         scored_signals.append(signal)
         if signal_matches:
             matched.append(signal)
     matched_set = set(matched)
+    all_matched_set = matched_set | set(soft_matched)
     missing = [
         signal for signal in scored_signals
         if signal not in matched_set
@@ -881,7 +915,7 @@ def _annotate_harness_fit(
         len(matched) / len(scored_signals)
         if scored_signals else 0.0
     )
-    breadth = min(len(matched_set) / 3.0, 1.0)
+    breadth = min(len(all_matched_set) / 3.0, 1.0)
     raw_strength = _clamp_harness_score(float(row.get("score") or 0.0) / 75.0)
     fit_score = round(
         _clamp_harness_score((0.8 * coverage * breadth) + (0.2 * raw_strength)),
@@ -889,7 +923,7 @@ def _annotate_harness_fit(
     )
     return {
         "fit_score": fit_score,
-        "fit_signals": sorted(matched_set),
+        "fit_signals": sorted(all_matched_set),
         "missing_signals": missing[:8],
         "fit_reason": _harness_fit_reason(matched, scored_signals),
         **_harness_reliability_metadata(terms),
@@ -922,6 +956,11 @@ def _looks_like_model_version_signal(signal: str) -> bool:
     return any(char.isdigit() for char in token) and token.startswith(
         _MODEL_VERSION_PREFIXES
     )
+
+
+def _is_soft_harness_requirement_signal(signal: str) -> bool:
+    """Return true for install/environment details that should not dominate fit."""
+    return signal.strip().lower() in _HARNESS_SOFT_REQUIREMENT_SIGNALS
 
 
 def _harness_candidate_terms(graph: Any, row: dict[str, Any]) -> set[str]:
