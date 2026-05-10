@@ -233,6 +233,7 @@ _GRAPH_MANAGED_PATHS = (
     "external-catalogs",
     "index.md",
 )
+_GRAPH_JSON_OUTLINE_BYTES = 1024 * 1024
 
 
 def build_graph(
@@ -362,13 +363,7 @@ def _validate_graph_install_tree(wiki_dir: Path) -> None:
     if missing:
         raise ValueError(f"graph archive is missing required files: {missing}")
 
-    graph = _read_json_file(wiki_dir / "graphify-out" / "graph.json")
-    if not isinstance(graph, dict):
-        raise ValueError("graphify-out/graph.json must contain a JSON object")
-    if not isinstance(graph.get("nodes"), list):
-        raise ValueError("graphify-out/graph.json is missing a nodes list")
-    if not isinstance(graph.get("edges", graph.get("links")), list):
-        raise ValueError("graphify-out/graph.json is missing an edges/links list")
+    _validate_graph_json_outline(wiki_dir / "graphify-out" / "graph.json")
 
     manifest = _read_json_file(wiki_dir / "graphify-out" / "graph-export-manifest.json")
     if not isinstance(manifest, dict):
@@ -387,6 +382,29 @@ def _validate_graph_install_tree(wiki_dir: Path) -> None:
     }
     if not isinstance(artifacts, dict) or artifacts != expected_artifacts:
         raise ValueError("graph export manifest artifacts map is incomplete")
+
+
+def _validate_graph_json_outline(path: Path) -> None:
+    size = path.stat().st_size
+    read_size = min(size, _GRAPH_JSON_OUTLINE_BYTES)
+    with path.open("rb") as f:
+        head = f.read(read_size)
+        if size > read_size:
+            f.seek(max(0, size - read_size))
+            tail = f.read(read_size)
+        else:
+            tail = b""
+    head_text = head.decode("utf-8", errors="ignore")
+    tail_text = tail.decode("utf-8", errors="ignore")
+    if not head_text.lstrip().startswith("{"):
+        raise ValueError("graphify-out/graph.json must contain a JSON object")
+    if tail_text and not tail_text.rstrip().endswith("}"):
+        raise ValueError("graphify-out/graph.json appears truncated")
+    outline = f"{head_text}\n{tail_text}"
+    if '"nodes"' not in outline:
+        raise ValueError("graphify-out/graph.json is missing a nodes list")
+    if '"edges"' not in outline and '"links"' not in outline:
+        raise ValueError("graphify-out/graph.json is missing an edges/links list")
 
 
 def _read_json_file(path: Path) -> Any:

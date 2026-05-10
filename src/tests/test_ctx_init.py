@@ -361,6 +361,57 @@ def test_graph_install_rejects_incomplete_archive(
     assert not (claude / "skill-wiki" / "graphify-out" / "graph.json").exists()
 
 
+def test_graph_install_validation_does_not_parse_full_graph_json(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_out = wiki / "graphify-out"
+    graph_out.mkdir(parents=True)
+    (wiki / "index.md").write_text("# Wiki\n", encoding="utf-8")
+    (graph_out / "graph.json").write_text(
+        json.dumps({"graph": {"export_id": "test-export"}, "nodes": [], "links": []}),
+        encoding="utf-8",
+    )
+    (graph_out / "graph-delta.json").write_text(
+        json.dumps({"export_id": "test-export", "nodes": [], "edges": []}),
+        encoding="utf-8",
+    )
+    (graph_out / "communities.json").write_text(
+        json.dumps({"export_id": "test-export", "total_communities": 0}),
+        encoding="utf-8",
+    )
+    (graph_out / "graph-report.md").write_text(
+        "# Graph Report\n\n> Export ID: test-export\n",
+        encoding="utf-8",
+    )
+    (graph_out / "graph-export-manifest.json").write_text(
+        json.dumps({
+            "version": 1,
+            "export_id": "test-export",
+            "artifacts": {
+                "graph": "graph.json",
+                "delta": "graph-delta.json",
+                "communities": "communities.json",
+                "report": "graph-report.md",
+            },
+        }),
+        encoding="utf-8",
+    )
+    external = wiki / "external-catalogs" / "skills-sh"
+    external.mkdir(parents=True)
+    (external / "catalog.json").write_text("{}", encoding="utf-8")
+
+    def guarded_read(path: Path) -> object:
+        if path.name == "graph.json":
+            raise AssertionError("install validation must not parse full graph.json")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(ci, "_read_json_file", guarded_read)
+
+    ci._validate_graph_install_tree(wiki)
+
+
 def test_graph_install_force_prunes_stale_generated_files(
     tmp_path: Path,
     monkeypatch,
