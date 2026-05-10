@@ -140,6 +140,12 @@ def test_main_auto_wizard_in_terminal_configures_custom_model(
         "",                   # api key env default: OPENAI_API_KEY
         "",                   # base URL
         "build CAD artifacts",
+        "windows python",      # runtime / OS
+        "supervised",          # autonomy
+        "filesystem shell",    # allowed tools
+        "pytest ruff",         # verification
+        "private repo",        # privacy / network
+        "mcp",                 # attach mode
         "n",                  # validate model
     ])
     monkeypatch.setattr(builtins, "input", lambda _prompt: next(answers))
@@ -168,6 +174,14 @@ def test_main_auto_wizard_in_terminal_configures_custom_model(
     assert profile["api_key_env"] == "OPENAI_API_KEY"
     assert profile["goal"] == "build CAD artifacts"
     assert profile["knowledge_mode"] == "enriched"
+    assert profile["harness_requirements"] == {
+        "runtime": "windows python",
+        "autonomy": "supervised",
+        "tools": "filesystem shell",
+        "verification": "pytest ruff",
+        "privacy": "private repo",
+        "attach_mode": "mcp",
+    }
     user_config = json.loads((tmp_path / "skill-system-config.json").read_text())
     assert user_config["knowledge"]["mode"] == "enriched"
 
@@ -448,6 +462,60 @@ def test_main_custom_model_writes_profile_and_recommends_harness(
     assert recommendation_calls[0]["model_provider"] == "openai"
     assert recommendation_calls[0]["model"] == "openai/gpt-5.5"
     assert "text-to-cad" in capsys.readouterr().out
+
+
+def test_main_custom_model_records_structured_harness_requirements(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(ci, "_claude_dir", lambda: tmp_path)
+    monkeypatch.setattr(ci, "seed_toolboxes", lambda force=False: 0)
+    recommendation_calls: list[dict[str, object]] = []
+
+    def fake_recommend(
+        goal: str,
+        top_k: int = 5,
+        model_provider: str | None = None,
+        model: str | None = None,
+    ) -> list[dict[str, object]]:
+        recommendation_calls.append({
+            "goal": goal,
+            "top_k": top_k,
+            "model_provider": model_provider,
+            "model": model,
+        })
+        return []
+
+    monkeypatch.setattr(ci, "recommend_harnesses", fake_recommend)
+
+    rc = ci.main([
+        "--model-mode", "custom",
+        "--model", "openai/gpt-5.5",
+        "--goal", "build a code agent",
+        "--harness-runtime", "windows python",
+        "--harness-autonomy", "supervised",
+        "--harness-tools", "filesystem shell browser",
+        "--harness-verify", "pytest ruff",
+        "--harness-privacy", "private repo no secrets",
+        "--harness-attach-mode", "mcp",
+    ])
+
+    assert rc == 0
+    profile = json.loads((tmp_path / "ctx-model-profile.json").read_text())
+    assert profile["harness_requirements"] == {
+        "runtime": "windows python",
+        "autonomy": "supervised",
+        "tools": "filesystem shell browser",
+        "verification": "pytest ruff",
+        "privacy": "private repo no secrets",
+        "attach_mode": "mcp",
+    }
+    query = str(recommendation_calls[0]["goal"])
+    assert "windows python" in query
+    assert "filesystem shell browser" in query
+    assert "pytest ruff" in query
+    assert "private repo no secrets" in query
+    assert "mcp" in query
 
 
 def test_main_custom_model_no_fit_points_to_harness_plan(
