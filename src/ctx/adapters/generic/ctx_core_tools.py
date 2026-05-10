@@ -37,6 +37,7 @@ Plan 001 Phase H6.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -61,6 +62,9 @@ _logger = logging.getLogger(__name__)
 # calls with names starting "ctx{TOOL_SEPARATOR}" to CtxCoreToolbox,
 # anything else falls back to its normal tool_executor.
 _NAMESPACE = f"ctx{TOOL_SEPARATOR}"
+_FILE_SIGNATURE_SAMPLE_BYTES = 64 * 1024
+
+FileSignature = tuple[int, int, str]
 
 
 @dataclass(frozen=True)
@@ -106,9 +110,9 @@ class CtxCoreToolbox:
         self._lifecycle = RuntimeLifecycleStore(lifecycle_dir)
         self._graph: Any | None = None       # networkx.Graph
         self._pages: list[Any] | None = None  # list[SkillPage]
-        self._graph_signature: tuple[int, int] | None = None
+        self._graph_signature: FileSignature | None = None
         self._pages_signature: tuple[int, int, int] | None = None
-        self._semantic_signature: tuple[tuple[int, int] | None, ...] | None = None
+        self._semantic_signature: tuple[FileSignature | None, ...] | None = None
 
     # ── Public Protocol surface ─────────────────────────────────────────
 
@@ -649,12 +653,31 @@ def _wiki_get_candidates(
     ]
 
 
-def _file_signature(path: Path) -> tuple[int, int] | None:
+def _file_signature(path: Path) -> FileSignature | None:
     try:
         stat = path.stat()
     except OSError:
         return None
-    return stat.st_mtime_ns, stat.st_size
+    return (
+        stat.st_mtime_ns,
+        stat.st_size,
+        _file_content_fingerprint(path, stat.st_size),
+    )
+
+
+def _file_content_fingerprint(path: Path, size: int) -> str:
+    hasher = hashlib.blake2b(digest_size=8)
+    try:
+        with path.open("rb") as fh:
+            hasher.update(fh.read(_FILE_SIGNATURE_SAMPLE_BYTES))
+            if size > _FILE_SIGNATURE_SAMPLE_BYTES * 2:
+                fh.seek(-_FILE_SIGNATURE_SAMPLE_BYTES, 2)
+                hasher.update(fh.read(_FILE_SIGNATURE_SAMPLE_BYTES))
+            elif size > _FILE_SIGNATURE_SAMPLE_BYTES:
+                hasher.update(fh.read())
+    except OSError:
+        return "unreadable"
+    return hasher.hexdigest()
 
 
 def _wiki_pages_signature(wiki: Path) -> tuple[int, int, int]:
@@ -677,7 +700,7 @@ def _wiki_pages_signature(wiki: Path) -> tuple[int, int, int]:
 
 def _semantic_cache_signature(
     wiki: Path | None,
-) -> tuple[tuple[int, int] | None, ...] | None:
+) -> tuple[FileSignature | None, ...] | None:
     try:
         from ctx_config import cfg  # noqa: PLC0415
 
