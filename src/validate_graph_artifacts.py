@@ -34,10 +34,21 @@ _SOURCE_SKILLS_SH_RE = re.compile(rb'"source_catalog"\s*:\s*"skills\.sh"')
 _HARNESS_TYPE_RE = re.compile(rb'"type"\s*:\s*"harness"')
 _GRAPH_KEY_RE = re.compile(rb'"graph"\s*:\s*\{')
 _REPORT_EXPORT_ID_RE = re.compile(r"^>\s*Export ID:\s*(\S+)\s*$", re.MULTILINE)
+_PREVIEW_EXPORT_ID_RE = re.compile(
+    r'<meta\s+name=["\']ctx-graph-export-id["\']\s+content=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
 _SEMANTIC_SIM_RE = re.compile(
     rb'"semantic_sim"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)',
 )
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_PREVIEW_HTML_FILES = (
+    "sample-top60.html",
+    "viz-ai-agents.html",
+    "viz-overview.html",
+    "viz-python.html",
+    "viz-security.html",
+)
 
 
 class GraphArtifactError(RuntimeError):
@@ -351,6 +362,7 @@ def validate_graph_artifacts(
     if "graphify-out/graph.json" not in export_ids:
         raise GraphArtifactError("graphify-out/graph.json is missing export_id")
     _validate_export_ids(export_ids, expected=manifest_export_id)
+    _validate_graph_previews(graph_dir, export_id=manifest_export_id, manifest=manifest)
     missing_pages = sorted(required_skill_pages - names)
     if missing_pages:
         raise GraphArtifactError(f"missing Skills.sh entity pages: {missing_pages[:5]}")
@@ -426,6 +438,43 @@ def validate_graph_artifacts(
                 f"{field_name} exact count mismatch: expected {expected}, got {actual}",
             )
     return stats
+
+
+def _validate_graph_previews(
+    graph_dir: Path,
+    *,
+    export_id: str,
+    manifest: dict[str, Any] | None,
+) -> None:
+    counts = manifest.get("counts") if isinstance(manifest, dict) else None
+    source_nodes = counts.get("nodes") if isinstance(counts, dict) else None
+    source_edges = counts.get("edges") if isinstance(counts, dict) else None
+    for filename in _PREVIEW_HTML_FILES:
+        path = graph_dir / filename
+        if not path.is_file() or path.stat().st_size == 0:
+            raise GraphArtifactError(f"missing graph preview: {filename}")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        match = _PREVIEW_EXPORT_ID_RE.search(text)
+        actual_export = match.group(1).strip() if match else ""
+        if actual_export != export_id:
+            raise GraphArtifactError(
+                f"stale graph preview {filename}: expected export_id {export_id}, "
+                f"got {actual_export or 'missing'}",
+            )
+        if isinstance(source_nodes, int) and not re.search(
+            rf'"source_graph_nodes"\s*:\s*{source_nodes}\b',
+            text,
+        ):
+            raise GraphArtifactError(
+                f"stale graph preview {filename}: missing source_graph_nodes {source_nodes}",
+            )
+        if isinstance(source_edges, int) and not re.search(
+            rf'"source_graph_edges"\s*:\s*{source_edges}\b',
+            text,
+        ):
+            raise GraphArtifactError(
+                f"stale graph preview {filename}: missing source_graph_edges {source_edges}",
+            )
 
 
 def _read_tar_json(tf: tarfile.TarFile, member: tarfile.TarInfo, name: str) -> Any:

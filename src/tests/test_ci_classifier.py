@@ -56,6 +56,16 @@ def test_graph_artifacts_are_graph_only_not_docs_only() -> None:
     assert flags["source_changed"] is False
 
 
+def test_graph_preview_html_is_graph_artifact() -> None:
+    flags = classify_paths(["graph/viz-overview.html"])
+
+    assert flags["docs_changed"] is False
+    assert flags["docs_only"] is False
+    assert flags["graph_artifact_changed"] is True
+    assert flags["graph_changed"] is True
+    assert flags["graph_only"] is True
+
+
 def test_graph_readme_is_docs_not_graph_artifact() -> None:
     flags = classify_paths(["graph/README.md"])
 
@@ -138,12 +148,14 @@ def test_ci_workflows_default_to_read_only_token_permissions() -> None:
         assert "\npermissions:\n  contents: read\n" in workflow
 
 
-def test_graph_artifact_job_fails_closed_without_lfs_hydration() -> None:
+def test_graph_artifact_job_uses_release_asset_fallback_for_lfs_budget() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
 
     assert "Resolve graph LFS artifacts" in workflow
-    assert "graph/wiki-graph.tar.gz,graph/skills-sh-catalog.json.gz" in workflow
-    assert "Validate graph artifact pointer when LFS unavailable" not in workflow
+    assert "Git LFS download failed; trying matching prior release asset." in workflow
+    assert "sha256:{expected_oid} size:{expected_size}" in workflow
+    assert "Hydrated graph/wiki-graph.tar.gz from" in workflow
+    assert "python src/validate_graph_artifacts.py" in workflow
     assert "validating pointer metadata only" not in workflow
 
 
@@ -177,10 +189,18 @@ def test_publish_workflow_validates_and_uploads_graph_assets() -> None:
     assert "gh release upload" in workflow
     assert '--repo "$GITHUB_REPOSITORY"' in workflow
     assert "needs.release-assets.result == 'success'" in workflow
+    assert "github.event_name == 'workflow_dispatch' || needs.release-assets.result == 'success'" not in workflow
     assert "continue-on-error: true" not in workflow
     assert "needs.release-assets.result == 'skipped'" not in workflow
     assert "PyPI publish will continue without release asset upload" not in workflow
     assert "graph_assets_available" in workflow
+
+
+def test_changelog_defines_current_release_link() -> None:
+    changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+
+    assert "## [1.0.0] - 2026-05-10" in changelog
+    assert "[1.0.0]: https://github.com/stevesolun/ctx/releases/tag/v1.0.0" in changelog
 
 
 def test_pre_commit_refreshes_all_repo_stats_outputs() -> None:

@@ -585,6 +585,24 @@ _PROVIDER_KEY_ENV: dict[str, str] = {
     "ollama": "",
 }
 
+_HARNESS_REQUIREMENT_FIELDS = (
+    ("runtime", "harness_runtime"),
+    ("autonomy", "harness_autonomy"),
+    ("tools", "harness_tools"),
+    ("verification", "harness_verify"),
+    ("privacy", "harness_privacy"),
+    ("attach_mode", "harness_attach_mode"),
+)
+
+_HARNESS_REQUIREMENT_FLAGS = {
+    "runtime": "--harness-runtime",
+    "autonomy": "--harness-autonomy",
+    "tools": "--harness-tools",
+    "verification": "--harness-verify",
+    "privacy": "--harness-privacy",
+    "attach_mode": "--harness-attach-mode",
+}
+
 
 def _model_provider_prefix(model: str) -> str:
     return model.split("/", 1)[0] if "/" in model else model
@@ -1156,6 +1174,72 @@ def _prompt_knowledge_mode(default: str = "shipped") -> str:
         print("  Please choose shipped, local, enriched, or skip.")
 
 
+def _harness_requirements_from_args(args: argparse.Namespace) -> dict[str, str]:
+    requirements: dict[str, str] = {}
+    for key, attr in _HARNESS_REQUIREMENT_FIELDS:
+        value = str(getattr(args, attr, "") or "").strip()
+        if value:
+            requirements[key] = value
+    return requirements
+
+
+def _harness_requirements_text(requirements: dict[str, str]) -> str:
+    return " ".join(
+        value for _key, value in requirements.items()
+        if value.strip()
+    )
+
+
+def _harness_plan_command(
+    *,
+    goal: str,
+    model_provider: str | None,
+    model: str | None,
+    harness_requirements: dict[str, str],
+) -> str:
+    parts = [
+        "ctx-harness-install --recommend",
+        f"--goal {json.dumps(goal or model or 'custom model work')}",
+    ]
+    if model_provider:
+        parts.append(f"--model-provider {json.dumps(model_provider)}")
+    if model:
+        parts.append(f"--model {json.dumps(model)}")
+    for key, _attr in _HARNESS_REQUIREMENT_FIELDS:
+        value = harness_requirements.get(key)
+        if value:
+            parts.append(f"{_HARNESS_REQUIREMENT_FLAGS[key]} {json.dumps(value)}")
+    parts.append("--plan-on-no-fit")
+    return " ".join(parts)
+
+
+def _prompt_harness_requirements(args: argparse.Namespace) -> None:
+    args.harness_runtime = _prompt_text(
+        "Runtime / OS target for the harness",
+        default=getattr(args, "harness_runtime", None),
+    )
+    args.harness_autonomy = _prompt_text(
+        "Autonomy level, e.g. supervised or autonomous",
+        default=getattr(args, "harness_autonomy", None) or "supervised",
+    )
+    args.harness_tools = _prompt_text(
+        "Allowed tools/access, e.g. filesystem shell browser",
+        default=getattr(args, "harness_tools", None),
+    )
+    args.harness_verify = _prompt_text(
+        "Verification commands or gates, e.g. pytest ruff",
+        default=getattr(args, "harness_verify", None),
+    )
+    args.harness_privacy = _prompt_text(
+        "Privacy/network constraints",
+        default=getattr(args, "harness_privacy", None),
+    )
+    args.harness_attach_mode = _prompt_text(
+        "How ctx should attach, e.g. mcp, cli, or api",
+        default=getattr(args, "harness_attach_mode", None) or "mcp",
+    )
+
+
 def _stdio_is_interactive() -> bool:
     return bool(
         getattr(sys.stdin, "isatty", lambda: False)()
@@ -1221,6 +1305,7 @@ def run_wizard(args: argparse.Namespace) -> None:
         default=args.goal,
     )
     if args.model_mode == "custom":
+        _prompt_harness_requirements(args)
         args.validate_model = _prompt_yes_no(
             "Validate the model with one tiny provider call now?",
             default=args.validate_model,
@@ -1246,6 +1331,9 @@ def run_model_onboarding(args: argparse.Namespace, claude: Path) -> int:
         _model_provider_prefix(args.model) if args.model else None
     )
     api_key_env = _resolve_api_key_env(args.api_key_env, args.model, provider)
+    harness_requirements = (
+        _harness_requirements_from_args(args) if mode == "custom" else {}
+    )
     profile: dict[str, Any] = {
         "mode": mode,
         "provider": provider,
@@ -1255,6 +1343,8 @@ def run_model_onboarding(args: argparse.Namespace, claude: Path) -> int:
         "goal": goal,
         "knowledge_mode": getattr(args, "knowledge_mode", "shipped"),
     }
+    if harness_requirements:
+        profile["harness_requirements"] = harness_requirements
     written = write_model_profile(claude, profile, force=args.force)
     if written:
         print(f"  [ok] wrote {written.name}")
@@ -1277,7 +1367,13 @@ def run_model_onboarding(args: argparse.Namespace, claude: Path) -> int:
         return rc
 
     recommendation_query = " ".join(
-        part for part in [goal, provider or "", args.model or "", "harness"]
+        part for part in [
+            goal,
+            _harness_requirements_text(harness_requirements),
+            provider or "",
+            args.model or "",
+            "harness",
+        ]
         if part
     )
     harnesses = recommend_harnesses(
@@ -1294,11 +1390,12 @@ def run_model_onboarding(args: argparse.Namespace, claude: Path) -> int:
             print(f"         install: ctx-harness-install {name} --dry-run")
     elif goal or mode == "custom":
         print("  [info] no harness recommendations matched yet")
-        print(
-            "       build plan: ctx-harness-install --recommend "
-            f"--goal {json.dumps(goal or args.model or 'custom model work')} "
-            f"--model {json.dumps(args.model or '')} --plan-on-no-fit"
-        )
+        print("       build plan: " + _harness_plan_command(
+            goal=goal,
+            model_provider=provider,
+            model=args.model,
+            harness_requirements=harness_requirements,
+        ))
     return rc
 
 
@@ -1362,6 +1459,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--goal",
         help="What the user wants to build; used for harness recommendations",
+    )
+    parser.add_argument(
+        "--harness-runtime",
+        help="Runtime/OS target for custom-model harness recommendations",
+    )
+    parser.add_argument(
+        "--harness-autonomy",
+        help="Desired harness autonomy level, e.g. supervised or autonomous",
+    )
+    parser.add_argument(
+        "--harness-tools",
+        help="Allowed harness tools/access, e.g. filesystem shell browser",
+    )
+    parser.add_argument(
+        "--harness-verify",
+        help="Verification commands or gates the harness should run",
+    )
+    parser.add_argument(
+        "--harness-privacy",
+        help="Privacy, network, or data-access constraints for the harness",
+    )
+    parser.add_argument(
+        "--harness-attach-mode",
+        help="Preferred ctx attachment mode, e.g. mcp, cli, or api",
     )
     parser.add_argument(
         "--validate-model",

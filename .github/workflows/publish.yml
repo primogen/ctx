@@ -5,9 +5,9 @@ name: Publish to PyPI
 # no API token needed once the pending publisher is configured at
 # https://pypi.org/manage/account/publishing/.
 #
-# Also deployable on demand via workflow_dispatch. Manual PyPI publishes must
-# run from a version tag that matches pyproject.toml; branch dispatches are
-# allowed only for TestPyPI.
+# Also deployable on demand to TestPyPI via workflow_dispatch. Production
+# PyPI publishes must use a version tag push so graph release assets are
+# uploaded before the wheel is published.
 
 on:
   push:
@@ -66,6 +66,11 @@ jobs:
           ref_type = os.environ.get("GITHUB_REF_TYPE", "")
           ref_name = os.environ["GITHUB_REF_NAME"]
 
+          if event == "workflow_dispatch" and target_repository == "pypi":
+              raise SystemExit(
+                  "Manual PyPI publish is disabled; push a version tag so "
+                  "graph release assets are uploaded before publishing"
+              )
           if event == "workflow_dispatch" and target_repository == "testpypi":
               print(f"manual TestPyPI publish allowed from {ref_type}:{ref_name}")
               raise SystemExit(0)
@@ -417,7 +422,7 @@ jobs:
     needs:
       - build
       - release-assets
-    if: ${{ always() && needs.build.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.release-assets.result == 'success') }}
+    if: ${{ always() && needs.build.result == 'success' && (needs.release-assets.result == 'success' || (github.event_name == 'workflow_dispatch' && github.event.inputs.repository == 'testpypi')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -433,7 +438,7 @@ jobs:
           path: dist/
 
       - name: Publish to PyPI
-        if: github.event_name == 'push' || github.event.inputs.repository == 'pypi'
+        if: github.event_name == 'push'
         uses: pypa/gh-action-pypi-publish@release/v1
 
       - name: Publish to TestPyPI

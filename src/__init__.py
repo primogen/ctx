@@ -1,3 +1,3 @@
 """ctx — skill and agent recommendation for Claude Code."""
 
-__version__ = "0.7.13"
+__version__ = "1.0.0"

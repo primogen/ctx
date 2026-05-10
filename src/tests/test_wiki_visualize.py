@@ -13,6 +13,7 @@ and assert that the payload never appears in an executable form.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -118,3 +119,52 @@ def test_visualizer_renders_mcp_and_harness_type_filters():
     assert 'data-type="harness"' in html
     assert '"mcp-server": "#06b6d4"' in html
     assert '"harness": "#22c55e"' in html
+
+
+def test_visualizer_can_load_explicit_graph_and_communities(tmp_path):
+    import wiki_visualize as wv
+
+    graph_path = tmp_path / "graph.json"
+    communities_path = tmp_path / "communities.json"
+    graph_path.write_text(json.dumps({
+        "directed": False,
+        "multigraph": False,
+        "graph": {"export_id": "ctx-graph-test-2-1"},
+        "nodes": [
+            {"id": "skill:a", "label": "alpha", "type": "skill", "tags": ["python"]},
+            {"id": "harness:b", "label": "beta", "type": "harness", "tags": ["agent"]},
+        ],
+        "edges": [{"source": "skill:a", "target": "harness:b", "weight": 0.9}],
+    }), encoding="utf-8")
+    communities_path.write_text(json.dumps({
+        "communities": {"7": {"members": ["skill:a", "harness:b"]}},
+    }), encoding="utf-8")
+
+    G = wv.load_graph(graph_path)
+    communities = wv.load_communities(communities_path)
+
+    assert G.graph["export_id"] == "ctx-graph-test-2-1"
+    assert G.number_of_nodes() == 2
+    assert communities["communities"]["7"]["members"] == ["skill:a", "harness:b"]
+
+
+def test_visualizer_embeds_export_metadata_for_preview_freshness():
+    import wiki_visualize as wv
+
+    G = nx.Graph(export_id="ctx-graph-test-2-1")
+    G.add_node("skill:a", label="alpha", type="skill", tags=["python"])
+    G.add_node("harness:b", label="beta", type="harness", tags=["agent"])
+    G.add_edge("skill:a", "harness:b", weight=0.9)
+    pos = {"skill:a": (0.0, 0.0), "harness:b": (1.0, 1.0)}
+
+    html = wv.build_html_with_filters(
+        G,
+        pos,
+        title="Knowledge Graph",
+        metadata={"export_id": "ctx-graph-test-2-1", "nodes": 2, "edges": 1},
+    )
+
+    assert '<meta name="ctx-graph-export-id" content="ctx-graph-test-2-1">' in html
+    assert '"export_id": "ctx-graph-test-2-1"' in html
+    assert '"nodes": 2' in html
+    assert '"edges": 1' in html
