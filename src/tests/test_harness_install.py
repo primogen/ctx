@@ -764,6 +764,93 @@ def test_recommend_mode_prints_install_handoff(
     assert "ctx-harness-install text-to-cad --dry-run" in output
 
 
+def test_recommend_mode_passes_structured_harness_requirements(
+    monkeypatch: Any,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_recommend(**kwargs: Any) -> list[dict[str, object]]:
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(harness_install, "recommend_harnesses_for_cli", fake_recommend)
+
+    rc = harness_install.main([
+        "--recommend",
+        "--goal",
+        "build a code agent",
+        "--model",
+        "openai/gpt-5.5",
+        "--harness-runtime",
+        "windows python",
+        "--harness-autonomy",
+        "supervised",
+        "--harness-tools",
+        "filesystem shell browser",
+        "--harness-verify",
+        "pytest ruff",
+        "--harness-privacy",
+        "private repo no secrets",
+        "--harness-attach-mode",
+        "mcp",
+    ])
+
+    assert rc == 0
+    assert calls[0]["harness_requirements"] == {
+        "runtime": "windows python",
+        "autonomy": "supervised",
+        "tools": "filesystem shell browser",
+        "verification": "pytest ruff",
+        "privacy": "private repo no secrets",
+        "attach_mode": "mcp",
+    }
+
+
+def test_recommend_cli_query_includes_structured_harness_requirements(
+    monkeypatch: Any,
+) -> None:
+    import ctx_init
+
+    calls: list[dict[str, object]] = []
+
+    def fake_recommend(
+        goal: str,
+        top_k: int = 5,
+        model_provider: str | None = None,
+        model: str | None = None,
+    ) -> list[dict[str, object]]:
+        calls.append({
+            "goal": goal,
+            "top_k": top_k,
+            "model_provider": model_provider,
+            "model": model,
+        })
+        return []
+
+    monkeypatch.setattr(ctx_init, "recommend_harnesses", fake_recommend)
+
+    harness_install.recommend_harnesses_for_cli(
+        goal="build a code agent",
+        model_provider="openai",
+        model="openai/gpt-5.5",
+        top_k=5,
+        harness_requirements={
+            "runtime": "windows python",
+            "tools": "filesystem shell browser",
+            "verification": "pytest ruff",
+            "privacy": "private repo no secrets",
+            "attach_mode": "mcp",
+        },
+    )
+
+    query = str(calls[0]["goal"])
+    assert "windows python" in query
+    assert "filesystem shell browser" in query
+    assert "pytest ruff" in query
+    assert "private repo no secrets" in query
+    assert "mcp" in query
+
+
 def test_recommend_no_fit_prints_custom_harness_plan(
     monkeypatch: Any,
     capsys: Any,
@@ -778,6 +865,14 @@ def test_recommend_no_fit_prints_custom_harness_plan(
         "ollama",
         "--model",
         "ollama/llama3.1",
+        "--harness-runtime",
+        "linux server",
+        "--harness-tools",
+        "filesystem shell",
+        "--harness-verify",
+        "pytest",
+        "--harness-privacy",
+        "offline source code",
         "--plan-on-no-fit",
     ])
 
@@ -788,6 +883,10 @@ def test_recommend_no_fit_prints_custom_harness_plan(
     assert "ctx-mcp-server" in output
     assert "ctx.recommend_bundle" in output
     assert "Windows, macOS, and Linux" in output
+    assert "Runtime / OS: linux server" in output
+    assert "Allowed tools/access: filesystem shell" in output
+    assert "Verification: pytest" in output
+    assert "Privacy/network: offline source code" in output
 
 
 def test_recommend_no_fit_writes_custom_harness_plan(

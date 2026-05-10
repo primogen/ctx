@@ -809,11 +809,18 @@ def recommend_harnesses_for_cli(
     model_provider: str | None,
     model: str | None,
     top_k: int,
+    harness_requirements: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    from ctx_init import recommend_harnesses  # noqa: PLC0415
+    from ctx_init import _harness_requirements_text, recommend_harnesses  # noqa: PLC0415
 
     query = " ".join(
-        part for part in [goal, model_provider or "", model or "", "harness"] if part
+        part for part in [
+            goal,
+            _harness_requirements_text(harness_requirements or {}),
+            model_provider or "",
+            model or "",
+            "harness",
+        ] if part
     )
     return recommend_harnesses(
         query,
@@ -828,11 +835,13 @@ def render_no_fit_harness_plan(
     goal: str,
     model_provider: str | None,
     model: str | None,
+    harness_requirements: dict[str, str] | None = None,
 ) -> str:
     """Render a build handoff when no catalog harness fits the user's setup."""
     provider = model_provider or _provider_from_model_slug(model) or "unknown provider"
     model_name = model or "unspecified model"
     goal_text = goal.strip() or "unspecified development goal"
+    requirement_lines = _format_harness_requirement_lines(harness_requirements or {})
     return "\n".join([
         "# Custom Harness PRD",
         "",
@@ -845,6 +854,7 @@ def render_no_fit_harness_plan(
         f"- Model provider: {provider}",
         f"- Model: {model_name}",
         "- Target operating systems: Windows, macOS, and Linux unless narrowed by the user",
+        *requirement_lines,
         "",
         "## Required Interview Before Building",
         "",
@@ -895,12 +905,31 @@ def _provider_from_model_slug(model: str | None) -> str | None:
     return provider or None
 
 
+def _format_harness_requirement_lines(
+    requirements: dict[str, str],
+) -> list[str]:
+    labels = {
+        "runtime": "Runtime / OS",
+        "autonomy": "Autonomy",
+        "tools": "Allowed tools/access",
+        "verification": "Verification",
+        "privacy": "Privacy/network",
+        "attach_mode": "Preferred ctx attachment",
+    }
+    return [
+        f"- {label}: {requirements[key]}"
+        for key, label in labels.items()
+        if requirements.get(key)
+    ]
+
+
 def write_no_fit_harness_plan(
     path: Path,
     *,
     goal: str,
     model_provider: str | None,
     model: str | None,
+    harness_requirements: dict[str, str] | None = None,
 ) -> Path:
     target = path.expanduser()
     reject_symlink_path(target)
@@ -910,6 +939,7 @@ def write_no_fit_harness_plan(
             goal=goal,
             model_provider=model_provider,
             model=model,
+            harness_requirements=harness_requirements,
         ),
     )
     return target
@@ -956,6 +986,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--goal", help="What you want to build or automate")
     parser.add_argument("--model-provider", help="Model provider prefix, e.g. openai or ollama")
     parser.add_argument("--model", help="Model slug, e.g. openrouter/openai/gpt-5.5")
+    parser.add_argument("--harness-runtime", help="Runtime/OS target for harness fit")
+    parser.add_argument("--harness-autonomy", help="Desired autonomy level")
+    parser.add_argument("--harness-tools", help="Allowed tools/access for the harness")
+    parser.add_argument("--harness-verify", help="Verification commands or gates")
+    parser.add_argument("--harness-privacy", help="Privacy, network, or data constraints")
+    parser.add_argument("--harness-attach-mode", help="Preferred ctx attachment mode")
     parser.add_argument("--top-k", type=int, default=5, help="Maximum recommendations to print")
     parser.add_argument(
         "--plan-on-no-fit",
@@ -1021,11 +1057,15 @@ def main(argv: list[str] | None = None) -> int:
         if not goal.strip():
             print("Error: --recommend requires --goal or a free-text query", file=sys.stderr)
             return 2
+        from ctx_init import _harness_requirements_from_args  # noqa: PLC0415
+
+        harness_requirements = _harness_requirements_from_args(args)
         results = recommend_harnesses_for_cli(
             goal=goal,
             model_provider=args.model_provider,
             model=args.model,
             top_k=max(1, min(int(args.top_k), 5)),
+            harness_requirements=harness_requirements,
         )
         print_recommendations(results)
         if not results and args.plan_on_no_fit:
@@ -1035,6 +1075,7 @@ def main(argv: list[str] | None = None) -> int:
                     goal=goal,
                     model_provider=args.model_provider,
                     model=args.model,
+                    harness_requirements=harness_requirements,
                 )
                 print(f"Custom harness plan: {path}")
             else:
@@ -1043,6 +1084,7 @@ def main(argv: list[str] | None = None) -> int:
                     goal=goal,
                     model_provider=args.model_provider,
                     model=args.model,
+                    harness_requirements=harness_requirements,
                 ), end="")
         elif not results:
             print("Use --plan-on-no-fit to generate a custom harness PRD.")
