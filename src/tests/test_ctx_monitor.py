@@ -360,7 +360,11 @@ def test_artifact_status_reads_promotion_metadata(
     repo_graph = tmp_path / "repo-graph"
     repo_graph.mkdir()
     (repo_graph / "wiki-graph.tar.gz").write_bytes(b"tar")
-    (repo_graph / "skills-sh-catalog.json.gz").write_bytes(b"catalog")
+    runtime_catalog = (
+        fake_claude / "skill-wiki" / "external-catalogs" / "skills-sh" / "catalog.json"
+    )
+    runtime_catalog.parent.mkdir(parents=True)
+    runtime_catalog.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(cm, "_repo_graph_dir", lambda: repo_graph)
     (graph_dir / "graph.json.promotion.json").write_text(
         json.dumps({
@@ -378,9 +382,7 @@ def test_artifact_status_reads_promotion_metadata(
     assert status["graph_json"]["exists"] is True
     assert status["graph_json"]["size"] == graph.stat().st_size
     assert status["wiki_graph_tar"]["path"] == str(repo_graph / "wiki-graph.tar.gz")
-    assert status["skills_sh_catalog"]["path"] == str(
-        repo_graph / "skills-sh-catalog.json.gz",
-    )
+    assert status["skills_sh_catalog"]["path"] == str(runtime_catalog)
     assert status["promotion_count"] == 1
     assert status["promotions"][0]["status"] == "promoted"
     assert status["promotions"][0]["current_sha256"] == "new"

@@ -23,6 +23,7 @@ The runtime recommendation paths use this graph in two ways:
 
 | File | Contents |
 |---|---|
+| `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the external Skills.sh catalog, 13 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
 | `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, external catalogs, and Obsidian metadata |
 | `skills-sh-catalog.json.gz` | Compressed Skills.sh catalog for the 89,463 body-backed entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
@@ -36,6 +37,15 @@ Preview HTML files are generated from the shipped `graphify-out/graph.json`
 and embed the graph export ID in `<meta name="ctx-graph-export-id">`. Static
 PNG snapshots are intentionally not shipped because they can drift from the
 current tarball without an executable freshness check.
+
+## Runtime vs Full Wiki
+
+`ctx-init --graph` installs `wiki-graph-runtime.tar.gz` by default. That is the
+right path for recommendations and first-time installs because it avoids
+expanding hundreds of thousands of markdown files while still shipping the
+harness catalog pages needed by `ctx-harness-install --dry-run`. Use
+`ctx-init --graph --graph-install-mode full` or manual full extraction when you
+want local wiki browsing, Obsidian, or the converted skill body tree.
 
 ## What Is Inside `wiki-graph.tar.gz`
 
@@ -60,6 +70,14 @@ packaged tarball excludes them so users do not ingest raw long bodies after
 conversion.
 
 ## Extract
+
+Default runtime install:
+
+```bash
+ctx-init --graph
+```
+
+Full wiki extraction:
 
 ```bash
 mkdir -p ~/.claude/skill-wiki

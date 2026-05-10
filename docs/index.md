@@ -25,10 +25,12 @@ memory that gets smarter every session.
     model harness runs, `pip install "claude-ctx[dev]"` for the
     pytest/mypy/ruff toolchain. After install the `ctx-scan-repo`,
     `ctx-skill-quality`, `ctx-skill-health`, and `ctx-toolbox` console
-    scripts are on PATH. `ctx-init --graph` installs the pre-built wiki
-    graph that powers recommendations; source checkouts use
-    `graph/wiki-graph.tar.gz`, while pip installs download the matching
-    GitHub release asset.
+    scripts are on PATH. `ctx-init --graph` installs the fast pre-built
+    runtime graph that powers recommendations and harness dry-runs; source checkouts use
+    `graph/wiki-graph-runtime.tar.gz`, while pip installs download the
+    matching GitHub release asset. Use
+    `ctx-init --graph --graph-install-mode full` when you want the full
+    markdown LLM-wiki expanded locally.
 
     Custom-model users can run
     `ctx-init --model-mode custom --model <provider/model> --goal "<task>"`
@@ -185,14 +187,14 @@ ones are flagged. New ones self-ingest.
 
     ---
 
-    **v1.0.0** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
-    3,706 tests collected. Ships console scripts including `ctx-init`,
+    **v1.0.1** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
+    3,707 tests collected. Ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
     skills, agents, and MCP servers, plus harness wiki/graph browsing),
     `ctx-dedup-check` (pre-ship near-duplicate gate), and
-    `ctx-tag-backfill` (catalog hygiene), plus the ~336 MiB pre-built
-    wiki tarball with **102,696 nodes / 2,900,834 edges / 52 Louvain
-    communities**.
+    `ctx-tag-backfill` (catalog hygiene), plus a fast runtime graph artifact
+    and the full ~336 MiB wiki tarball with **102,696 nodes / 2,900,834
+    edges / 52 Louvain communities**.
 
     [:octicons-arrow-right-24: CHANGELOG](https://github.com/stevesolun/ctx/blob/main/CHANGELOG.md) ·
     [Repository](https://github.com/stevesolun/ctx)

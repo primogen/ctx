@@ -43,20 +43,27 @@ shipped tarball.
 
 ## Install
 
-Use `ctx-init --graph` to install the graph. Source checkouts use
-`graph/wiki-graph.tar.gz`; pip installs download the matching GitHub
-release asset for the installed package version:
+Use `ctx-init --graph` to install the fast runtime graph. Source checkouts use
+`graph/wiki-graph-runtime.tar.gz`; pip installs download the matching GitHub
+release asset for the installed package version. This installs
+`graphify-out/*`, the external Skills.sh catalog used by recommendations, and
+the harness catalog pages used by `ctx-harness-install`:
 
 ```bash
 ctx-init --graph
 ```
 
-Manual extraction is still supported for offline/source installs. Extract
-the tarball into your `~/.claude/skill-wiki/` to get a ready-to-query graph
-plus every shipped skill/agent/MCP entity page, cataloged harness pages when
-present, remote-cataloged Skills.sh skill pages, concept pages, and converted
-micro-skill pipelines. The extracted tree also includes the Skills.sh catalog
-JSON used by the shared recommender:
+To expand every shipped skill/agent/MCP entity page, cataloged harness page,
+remote-cataloged Skills.sh page, concept page, converted micro-skill pipeline,
+and Obsidian vault metadata, request the full wiki artifact explicitly:
+
+```bash
+ctx-init --graph --graph-install-mode full
+```
+
+Manual extraction is still supported for offline/source installs. Extract the
+full tarball into your `~/.claude/skill-wiki/` when you want local markdown
+wiki browsing:
 
 ```bash
 mkdir -p ~/.claude/skill-wiki

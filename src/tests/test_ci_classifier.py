@@ -45,7 +45,11 @@ def test_docs_tooling_changes_are_docs_only() -> None:
 
 
 def test_graph_artifacts_are_graph_only_not_docs_only() -> None:
-    flags = classify_paths(["graph/wiki-graph.tar.gz", "graph/communities.json"])
+    flags = classify_paths([
+        "graph/wiki-graph.tar.gz",
+        "graph/wiki-graph-runtime.tar.gz",
+        "graph/communities.json",
+    ])
 
     assert flags["docs_changed"] is False
     assert flags["docs_only"] is False
@@ -154,7 +158,8 @@ def test_graph_artifact_job_uses_release_asset_fallback_for_lfs_budget() -> None
     assert "Resolve graph LFS artifacts" in workflow
     assert "Git LFS download failed; trying matching prior release asset." in workflow
     assert "sha256:{expected_oid} size:{expected_size}" in workflow
-    assert "Hydrated graph/wiki-graph.tar.gz from" in workflow
+    assert "Hydrated {path_name} from" in workflow
+    assert "graph/wiki-graph-runtime.tar.gz" in workflow
     assert "python src/validate_graph_artifacts.py" in workflow
     assert "validating pointer metadata only" not in workflow
 

@@ -140,7 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           git lfs install --local
-          if git lfs pull --include="graph/wiki-graph.tar.gz" --exclude=""; then
+          if git lfs pull --include="graph/wiki-graph.tar.gz,graph/wiki-graph-runtime.tar.gz" --exclude=""; then
             exit 0
           fi
           echo "Git LFS download failed; trying matching prior release asset."
@@ -152,75 +152,80 @@ jobs:
           import subprocess
           import urllib.request
 
-          graph_tar = Path("graph/wiki-graph.tar.gz")
-          pointer = graph_tar.read_text(encoding="utf-8", errors="replace")
-          expected_oid = ""
-          expected_size = 0
-          for line in pointer.splitlines():
-              if line.startswith("oid sha256:"):
-                  expected_oid = line.split(":", 1)[1].strip()
-              elif line.startswith("size "):
-                  expected_size = int(line.split(" ", 1)[1].strip())
-          if not expected_oid:
-              if graph_tar.stat().st_size > 100_000_000:
-                  print(f"{graph_tar} is already hydrated")
-                  raise SystemExit(0)
-              raise SystemExit("graph/wiki-graph.tar.gz is neither hydrated nor an LFS pointer")
-
           repo = os.environ["GITHUB_REPOSITORY"]
           current_tag = os.environ.get("TAG_NAME", "")
           releases = json.loads(subprocess.check_output(
               ["gh", "api", f"repos/{repo}/releases?per_page=50"],
               text=True,
           ))
-          candidates = []
-          for release in releases:
-              if release.get("draft") or release.get("prerelease"):
-                  continue
-              if release.get("tag_name") == current_tag:
-                  continue
-              for asset in release.get("assets", []):
-                  if asset.get("name") != "wiki-graph.tar.gz":
-                      continue
-                  digest = str(asset.get("digest") or "")
-                  size = int(asset.get("size") or 0)
-                  if size != expected_size:
-                      continue
-                  if digest and digest != f"sha256:{expected_oid}":
-                      continue
-                  candidates.append((release.get("tag_name"), asset))
 
-          if not candidates:
-              raise SystemExit(
-                  "No previous release asset matches graph/wiki-graph.tar.gz "
-                  f"sha256:{expected_oid} size:{expected_size}"
-              )
+          def hydrate_from_release(path_name: str, hydrated_min_size: int) -> None:
+              graph_tar = Path(path_name)
+              pointer = graph_tar.read_text(encoding="utf-8", errors="replace")
+              expected_oid = ""
+              expected_size = 0
+              for line in pointer.splitlines():
+                  if line.startswith("oid sha256:"):
+                      expected_oid = line.split(":", 1)[1].strip()
+                  elif line.startswith("size "):
+                      expected_size = int(line.split(" ", 1)[1].strip())
+              if not expected_oid:
+                  if graph_tar.stat().st_size > hydrated_min_size:
+                      print(f"{graph_tar} is already hydrated")
+                      return
+                  raise SystemExit(f"{path_name} is neither hydrated nor an LFS pointer")
 
-          source_tag, asset = candidates[0]
-          tmp = graph_tar.with_name("wiki-graph.tar.gz.download")
-          sha = hashlib.sha256()
-          total = 0
-          with urllib.request.urlopen(asset["browser_download_url"], timeout=300) as resp:  # noqa: S310
-              with tmp.open("wb") as fh:
-                  while True:
-                      chunk = resp.read(1024 * 1024)
-                      if not chunk:
-                          break
-                      sha.update(chunk)
-                      total += len(chunk)
-                      fh.write(chunk)
-          actual_oid = sha.hexdigest()
-          if actual_oid != expected_oid or total != expected_size:
-              tmp.unlink(missing_ok=True)
-              raise SystemExit(
-                  "Downloaded graph tar does not match LFS pointer: "
+              candidates = []
+              for release in releases:
+                  if release.get("draft") or release.get("prerelease"):
+                      continue
+                  if release.get("tag_name") == current_tag:
+                      continue
+                  for asset in release.get("assets", []):
+                      if asset.get("name") != graph_tar.name:
+                          continue
+                      digest = str(asset.get("digest") or "")
+                      size = int(asset.get("size") or 0)
+                      if size != expected_size:
+                          continue
+                      if digest and digest != f"sha256:{expected_oid}":
+                          continue
+                      candidates.append((release.get("tag_name"), asset))
+
+              if not candidates:
+                  raise SystemExit(
+                      f"No previous release asset matches {path_name} "
+                      f"sha256:{expected_oid} size:{expected_size}"
+                  )
+
+              source_tag, asset = candidates[0]
+              tmp = graph_tar.with_name(f"{graph_tar.name}.download")
+              sha = hashlib.sha256()
+              total = 0
+              with urllib.request.urlopen(asset["browser_download_url"], timeout=300) as resp:  # noqa: S310
+                  with tmp.open("wb") as fh:
+                      while True:
+                          chunk = resp.read(1024 * 1024)
+                          if not chunk:
+                              break
+                          sha.update(chunk)
+                          total += len(chunk)
+                          fh.write(chunk)
+              actual_oid = sha.hexdigest()
+              if actual_oid != expected_oid or total != expected_size:
+                  tmp.unlink(missing_ok=True)
+                  raise SystemExit(
+                      f"Downloaded {path_name} does not match LFS pointer: "
+                      f"sha256:{actual_oid} size:{total}"
+                  )
+              tmp.replace(graph_tar)
+              print(
+                  f"Hydrated {path_name} from {source_tag} release asset "
                   f"sha256:{actual_oid} size:{total}"
               )
-          tmp.replace(graph_tar)
-          print(
-              "Hydrated graph/wiki-graph.tar.gz from "
-              f"{source_tag} release asset sha256:{actual_oid} size:{total}"
-          )
+
+          hydrate_from_release("graph/wiki-graph.tar.gz", 100_000_000)
+          hydrate_from_release("graph/wiki-graph-runtime.tar.gz", 10_000_000)
           PY
 
       - name: Validate release graph artifacts
@@ -383,6 +388,7 @@ jobs:
           name: graph-release-assets
           path: |
             graph/wiki-graph.tar.gz
+            graph/wiki-graph-runtime.tar.gz
             graph/skills-sh-catalog.json.gz
             graph/communities.json
 
@@ -413,6 +419,7 @@ jobs:
           gh release upload "$TAG_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             graph-release-assets/wiki-graph.tar.gz \
+            graph-release-assets/wiki-graph-runtime.tar.gz \
             graph-release-assets/skills-sh-catalog.json.gz \
             graph-release-assets/communities.json \
             --clobber

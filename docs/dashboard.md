@@ -48,16 +48,21 @@ generated graph/wiki artifacts that ctx can ship or consume. It reports:
   opened or queried
 - artifact presence and byte size for generated
   `~/.claude/skill-wiki/graphify-out/{graph.json,graph-delta.json,communities.json}`
-  plus `wiki-graph.tar.gz` and `skills-sh-catalog.json.gz` from
-  `~/.claude/graph/` when installed there, falling back to the repo `graph/`
-  directory during source checkouts
+  plus the runtime Skills.sh catalog under
+  `~/.claude/skill-wiki/external-catalogs/skills-sh/catalog.json`, falling
+  back to `~/.claude/graph/skills-sh-catalog.json.gz` or the repo `graph/`
+  directory during source checkouts. The status page also reports the full
+  `wiki-graph.tar.gz` artifact when present.
 - artifact promotion metadata, including the latest promoted hash when
   the crash-safe promotion path has recorded it
 
 ### Browse the LLM wiki — `/wiki`
 
-The wiki tab is a filterable card grid over a deterministic, bounded
-dashboard sample:
+The wiki tab requires full wiki markdown content from
+`ctx-init --graph --graph-install-mode full` or local/private wiki entities.
+The default runtime graph install powers recommendations and graph stats but
+does not expand every entity page. When entity pages exist, the wiki tab is a
+filterable card grid over a deterministic, bounded dashboard sample:
 up to 500 pages per dashboard-supported entity type under
 `~/.claude/skill-wiki/entities/{skills,agents,mcp-servers,harnesses}/`.
 MCP server pages use the sharded layout
