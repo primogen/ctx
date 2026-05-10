@@ -259,6 +259,30 @@ def test_no_test_policy_exempts_release_metadata_with_generated_stats() -> None:
     assert result.passed is True
 
 
+def test_no_test_policy_exempts_release_metadata_with_docs_version_line() -> None:
+    files = [
+        "CHANGELOG.md",
+        "docs/index.md",
+        "pyproject.toml",
+        "src/__init__.py",
+        "src/ctx/__init__.py",
+    ]
+    diffs = {
+        "CHANGELOG.md": "+## [1.0.3] - 2026-05-11\n",
+        "docs/index.md": (
+            "-    **v1.0.2** - MIT, CI-matrixed.\n"
+            "+    **v1.0.3** - MIT, CI-matrixed.\n"
+        ),
+        "pyproject.toml": '-version = "1.0.2"\n+version = "1.0.3"\n',
+        "src/__init__.py": '-__version__ = "1.0.2"\n+__version__ = "1.0.3"\n',
+        "src/ctx/__init__.py": '-__version__ = "1.0.2"\n+__version__ = "1.0.3"\n',
+    }
+
+    assert is_release_metadata_only(files, diffs)
+    result = evaluate_policy(files, (), diffs)
+    assert result.passed is True
+
+
 def test_no_test_policy_rejects_release_metadata_with_arbitrary_readme_change() -> None:
     files = ["CHANGELOG.md", "README.md", "pyproject.toml", "src/ctx/__init__.py"]
     diffs = {
@@ -266,6 +290,20 @@ def test_no_test_policy_rejects_release_metadata_with_arbitrary_readme_change() 
         "README.md": "+New feature prose.\n",
         "pyproject.toml": '-version = "0.7.16"\n+version = "0.7.17"\n',
         "src/ctx/__init__.py": '-__version__ = "0.7.16"\n+__version__ = "0.7.17"\n',
+    }
+
+    assert not is_release_metadata_only(files, diffs)
+    result = evaluate_policy(files, (), diffs)
+    assert result.passed is False
+
+
+def test_no_test_policy_rejects_readme_version_prose_change() -> None:
+    files = ["CHANGELOG.md", "README.md", "pyproject.toml", "src/ctx/__init__.py"]
+    diffs = {
+        "CHANGELOG.md": "+## [1.0.3] - 2026-05-11\n",
+        "README.md": "-**v1.0.2** install notes.\n+**v1.0.3** install notes.\n",
+        "pyproject.toml": '-version = "1.0.2"\n+version = "1.0.3"\n',
+        "src/ctx/__init__.py": '-__version__ = "1.0.2"\n+__version__ = "1.0.3"\n',
     }
 
     assert not is_release_metadata_only(files, diffs)

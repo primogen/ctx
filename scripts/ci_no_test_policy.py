@@ -26,6 +26,7 @@ INIT_VERSION_LINE_RE = re.compile(
 TEST_COUNT_STATS_RE = re.compile(
     r".*(Tests-\d+_collected|[\d,]+ tests collected).*"
 )
+RELEASE_DOCS_LINE_RE = re.compile(r"\*\*v\d+\.\d+\.\d+(?:[-+._a-zA-Z0-9]*)?\*\*.*")
 
 
 @dataclass(frozen=True)
@@ -71,7 +72,10 @@ def is_release_metadata_only(
             for line in diffs_by_file.get(path, "").splitlines():
                 if not line.startswith(("+", "-")) or line.startswith(("+++", "---")):
                     continue
-                if not TEST_COUNT_STATS_RE.fullmatch(line[1:].strip()):
+                text = line[1:].strip()
+                if not TEST_COUNT_STATS_RE.fullmatch(text) and not (
+                    path == "docs/index.md" and RELEASE_DOCS_LINE_RE.fullmatch(text)
+                ):
                     return False
             continue
         expected = VERSION_LINE_RE if path == "pyproject.toml" else INIT_VERSION_LINE_RE
