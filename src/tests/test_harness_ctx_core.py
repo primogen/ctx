@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from ctx.adapters.generic.ctx_core_tools import (
     CtxCoreToolbox,
     _clamp_int,
     _excerpt,
+    _file_signature,
     _query_to_tags,
     make_tool_executor,
 )
@@ -174,6 +176,27 @@ def test_graph_cache_reloads_when_graph_json_changes(tmp_path: Path) -> None:
 
     assert first["results"][0]["name"] == "old-target"
     assert second["results"][0]["name"] == "new-target"
+
+
+def test_graph_file_signature_detects_same_size_rewrite(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "graph.json"
+    fixed_time_ns = 1_700_000_000_000_000_000
+
+    graph_path.write_text('{"target":"old-target"}', encoding="utf-8")
+    os.utime(graph_path, ns=(fixed_time_ns, fixed_time_ns))
+    first = _file_signature(graph_path)
+
+    graph_path.write_text('{"target":"new-target"}', encoding="utf-8")
+    os.utime(graph_path, ns=(fixed_time_ns, fixed_time_ns))
+    second = _file_signature(graph_path)
+
+    assert graph_path.stat().st_size == len('{"target":"new-target"}')
+    assert first is not None
+    assert second is not None
+    assert first[:2] == second[:2]
+    assert first != second
 
 
 def test_wiki_page_cache_reloads_when_entity_page_changes(tmp_path: Path) -> None:
