@@ -7,6 +7,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.1] - 2026-05-10
+
+### Added
+
+- Shipped `graph/wiki-graph-runtime.tar.gz` as the default graph install
+  artifact for `ctx-init --graph`; full markdown wiki expansion remains
+  available with `--graph-install-mode full`.
+
+### Fixed
+
+- Made graph install validation bounded instead of parsing the full
+  851 MB `graph.json` on first install.
+- Wired the runtime graph artifact through release upload, graph validation,
+  CI classification, Hugging Face sync, and dashboard artifact status.
+
 ## [1.0.0] - 2026-05-10
 
 ### Added
@@ -1442,6 +1457,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.1]: https://github.com/stevesolun/ctx/releases/tag/v1.0.1
 [1.0.0]: https://github.com/stevesolun/ctx/releases/tag/v1.0.0
 [0.5.1]: https://github.com/stevesolun/ctx/releases/tag/v0.5.1
 [0.5.0]: https://github.com/stevesolun/ctx/releases/tag/v0.5.0

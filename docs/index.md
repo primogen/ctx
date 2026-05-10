@@ -187,14 +187,14 @@ ones are flagged. New ones self-ingest.
 
     ---
 
-    **v1.0.0** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
+    **v1.0.1** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
     3,707 tests collected. Ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
     skills, agents, and MCP servers, plus harness wiki/graph browsing),
     `ctx-dedup-check` (pre-ship near-duplicate gate), and
-    `ctx-tag-backfill` (catalog hygiene), plus the ~336 MiB pre-built
-    wiki tarball with **102,696 nodes / 2,900,834 edges / 52 Louvain
-    communities**.
+    `ctx-tag-backfill` (catalog hygiene), plus a fast runtime graph artifact
+    and the full ~336 MiB wiki tarball with **102,696 nodes / 2,900,834
+    edges / 52 Louvain communities**.
 
     [:octicons-arrow-right-24: CHANGELOG](https://github.com/stevesolun/ctx/blob/main/CHANGELOG.md) ·
     [Repository](https://github.com/stevesolun/ctx)
