@@ -1001,6 +1001,32 @@ def test_render_wiki_entity_with_real_page(fake_claude: Path) -> None:
     assert "python-patterns" in html_out
     assert "Python patterns" in html_out or "Body text" in html_out
     assert "use_count" in html_out  # frontmatter table
+    assert "class='card wiki-body'" in html_out
+
+
+def test_render_wiki_entity_renders_markdown_and_wikilinks(fake_claude: Path) -> None:
+    skills_dir = fake_claude / "skill-wiki" / "entities" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "markdown-page.md").write_text(
+        "---\n"
+        "type: skill\n"
+        "tags: [python, testing]\n"
+        "---\n"
+        "# Markdown Page\n\n"
+        "Use `pytest` with [[entities/skills/find-skills]].\n\n"
+        "- first item\n"
+        "- [[entities/agents/reviewer|reviewer agent]]\n",
+        encoding="utf-8",
+    )
+
+    html_out = cm._render_wiki_entity("markdown-page", entity_type="skill")
+
+    assert "<h1>Markdown Page</h1>" not in html_out
+    assert "<code>pytest</code>" in html_out
+    assert "href='/wiki/find-skills?type=skill'" in html_out
+    assert "href='/wiki/reviewer?type=agent'" in html_out
+    assert "<li>first item</li>" in html_out
+    assert "<pre style=" not in html_out
 
 
 def test_render_wiki_entity_missing_slug(fake_claude: Path) -> None:

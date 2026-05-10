@@ -63,6 +63,7 @@ from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
@@ -260,6 +261,132 @@ def _frontmatter_tags(value: Any, *, limit: int | None = 6) -> list[str]:
         if limit is not None and len(out) >= limit:
             break
     return out
+
+
+_WIKI_INLINE_RE = re.compile(r"(`[^`\n]+`|\[\[[^\]\n]+\]\])")
+
+
+def _wiki_link_href(target: str) -> tuple[str, str]:
+    """Return dashboard href + display label for an Obsidian-style wikilink."""
+    normalized = target.strip().replace("\\", "/").removesuffix(".md")
+    parts = [part for part in normalized.split("/") if part]
+    entity_type = ""
+    if len(parts) >= 3 and parts[0] == "entities":
+        entity_type = {
+            "skills": "skill",
+            "agents": "agent",
+            "mcp-servers": "mcp-server",
+            "harnesses": "harness",
+        }.get(parts[1], "")
+    slug = parts[-1] if parts else normalized
+    if not _is_safe_slug(slug):
+        return "#", slug or target
+    suffix = f"?type={quote(entity_type)}" if entity_type else ""
+    return f"/wiki/{quote(slug)}{suffix}", slug
+
+
+def _render_wiki_inline(text: str) -> str:
+    """Render a small safe inline Markdown subset used by wiki pages."""
+    out: list[str] = []
+    last = 0
+    for match in _WIKI_INLINE_RE.finditer(text):
+        out.append(html.escape(text[last:match.start()]))
+        token = match.group(0)
+        if token.startswith("`"):
+            out.append(f"<code>{html.escape(token[1:-1])}</code>")
+        else:
+            inner = token[2:-2]
+            target, _, label = inner.partition("|")
+            href, fallback_label = _wiki_link_href(target)
+            link_text = label.strip() or fallback_label
+            out.append(
+                f"<a href='{html.escape(href)}'>{html.escape(link_text)}</a>",
+            )
+        last = match.end()
+    out.append(html.escape(text[last:]))
+    return "".join(out)
+
+
+def _render_wiki_markdown(markdown_text: str) -> str:
+    """Render a conservative Markdown subset without adding dependencies."""
+    lines = markdown_text.splitlines()
+    out: list[str] = []
+    paragraph: list[str] = []
+    list_items: list[str] = []
+    code_lines: list[str] = []
+    in_code = False
+
+    def flush_paragraph() -> None:
+        if paragraph:
+            out.append(f"<p>{_render_wiki_inline(' '.join(paragraph))}</p>")
+            paragraph.clear()
+
+    def flush_list() -> None:
+        if list_items:
+            out.append("<ul>" + "".join(f"<li>{item}</li>" for item in list_items) + "</ul>")
+            list_items.clear()
+
+    def flush_code() -> None:
+        if code_lines:
+            out.append("<pre><code>" + html.escape("\n".join(code_lines)) + "</code></pre>")
+            code_lines.clear()
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_code:
+                flush_code()
+                in_code = False
+            else:
+                flush_paragraph()
+                flush_list()
+                in_code = True
+            continue
+        if in_code:
+            code_lines.append(line)
+            continue
+        if not stripped:
+            flush_paragraph()
+            flush_list()
+            continue
+        heading = re.match(r"^(#{1,4})\s+(.+)$", stripped)
+        if heading:
+            flush_paragraph()
+            flush_list()
+            level = min(len(heading.group(1)), 4)
+            out.append(f"<h{level}>{_render_wiki_inline(heading.group(2))}</h{level}>")
+            continue
+        bullet = re.match(r"^\s*[-*]\s+(.+)$", line)
+        if bullet:
+            flush_paragraph()
+            list_items.append(_render_wiki_inline(bullet.group(1).strip()))
+            continue
+        flush_list()
+        paragraph.append(stripped)
+
+    flush_code()
+    flush_paragraph()
+    flush_list()
+    return "".join(out) if out else "<p class='muted'>No body.</p>"
+
+
+def _slugish(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+
+
+def _strip_duplicate_wiki_heading(markdown_text: str, slug: str) -> str:
+    """Drop the first H1 if it only repeats the page slug."""
+    lines = markdown_text.splitlines()
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+        match = re.match(r"^#\s+(.+?)\s*$", line.strip())
+        if match and _slugish(match.group(1)) == _slugish(slug):
+            del lines[idx]
+            while idx < len(lines) and not lines[idx].strip():
+                del lines[idx]
+        break
+    return "\n".join(lines)
 
 
 def _save_manifest(manifest: dict) -> None:
@@ -931,6 +1058,19 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 .nav { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
 .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem 1.25rem;
         margin-bottom: 1rem; }
+.wiki-entity-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+                    gap: 1rem; align-items: start; }
+.wiki-body { overflow-wrap: anywhere; }
+.wiki-body h1, .wiki-body h2, .wiki-body h3 { margin-top: 0.9rem; }
+.wiki-body h1:first-child, .wiki-body h2:first-child, .wiki-body h3:first-child { margin-top: 0; }
+.wiki-body ul, .wiki-body ol { padding-left: 1.35rem; }
+.wiki-body li { margin: 0.2rem 0; }
+.wiki-body pre { white-space: pre-wrap; }
+.frontmatter-table { table-layout: fixed; font-size: 0.85rem; }
+.frontmatter-table td:last-child code { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 860px) {
+    .wiki-entity-grid { grid-template-columns: 1fr; }
+}
 @media (prefers-color-scheme: dark) {
     body { background: #0f172a; color: #e2e8f0; }
     th { background: rgba(255,255,255,0.05); }
@@ -1798,7 +1938,9 @@ def _render_wiki_entity(slug: str, entity_type: str | None = None) -> str:
             "</div></div>"
         )
 
-    body_preview, body_truncated = _truncate_text(md_body, 12000)
+    display_body = _strip_duplicate_wiki_heading(md_body, slug)
+    body_preview, body_truncated = _truncate_text(display_body, 12000)
+    body_html = _render_wiki_markdown(body_preview)
     body_truncated_html = (
         "<p class='muted'>Body preview truncated at 12,000 characters.</p>"
         if body_truncated
@@ -1807,12 +1949,11 @@ def _render_wiki_entity(slug: str, entity_type: str | None = None) -> str:
     body = (
         f"<h1>{html.escape(slug)}</h1>"
         + sidecar_html
-        + "<div style='display:grid; grid-template-columns:1fr 280px; gap:1rem;'>"
-        f"<div class='card'><pre style='white-space:pre-wrap; font-family:\"SF Mono\", Consolas, monospace; "
-        f"font-size:0.88rem;'>{html.escape(body_preview)}</pre>"
+        + "<div class='wiki-entity-grid'>"
+        f"<div class='card wiki-body'>{body_html}"
         f"{body_truncated_html}</div>"
         f"<div class='card'><strong>Frontmatter</strong>"
-        "<table style='font-size:0.85rem;'>"
+        "<table class='frontmatter-table'>"
         "<tr><th>Field</th><th>Value</th></tr>"
         + (fm_rows or "<tr><td class='muted' colspan='2'>none</td></tr>")
         + "</table></div>"
