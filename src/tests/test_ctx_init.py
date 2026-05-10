@@ -309,7 +309,12 @@ def test_main_with_graph_flag_installs_prebuilt_graph(
     archive = _write_graph_archive(tmp_path)
     monkeypatch.setattr(ci, "_claude_dir", lambda: claude)
     monkeypatch.setattr(ci, "seed_toolboxes", lambda force=False: 0)
-    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda: archive, raising=False)
+    monkeypatch.setattr(
+        ci,
+        "_find_local_graph_archive",
+        lambda _install_mode="runtime": archive,
+        raising=False,
+    )
     monkeypatch.setattr(
         ci,
         "_download_graph_archive",
@@ -335,6 +340,9 @@ def test_main_with_graph_flag_installs_prebuilt_graph(
     graph_json = claude / "skill-wiki" / "graphify-out" / "graph.json"
     graph_payload = json.loads(graph_json.read_text(encoding="utf-8"))
     assert graph_payload["graph"]["export_id"] == "test-export"
+    assert not (
+        claude / "skill-wiki" / "entities" / "skills" / "current.md"
+    ).exists()
     assert not any("ctx.core.wiki.wiki_graphify" in c for c in calls)
     assert not any(c == "wiki_graphify" for call in calls for c in call)
 
@@ -355,7 +363,11 @@ def test_graph_install_rejects_incomplete_archive(
         tf.add(graph_out / "graph.json", arcname="graphify-out/graph.json")
 
     claude = tmp_path / "home"
-    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda: archive)
+    monkeypatch.setattr(
+        ci,
+        "_find_local_graph_archive",
+        lambda _install_mode="runtime": archive,
+    )
 
     assert ci.build_graph(claude) == 1
     assert not (claude / "skill-wiki" / "graphify-out" / "graph.json").exists()
@@ -421,9 +433,20 @@ def test_graph_install_force_prunes_stale_generated_files(
     stale = claude / "skill-wiki" / "entities" / "skills" / "stale.md"
     stale.parent.mkdir(parents=True)
     stale.write_text("# Stale\n", encoding="utf-8")
-    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda: archive)
+    monkeypatch.setattr(ci, "_claude_dir", lambda: claude)
+    monkeypatch.setattr(ci, "seed_toolboxes", lambda force=False: 0)
+    monkeypatch.setattr(
+        ci,
+        "_find_local_graph_archive",
+        lambda _install_mode="runtime": archive,
+    )
 
-    assert ci.build_graph(claude, force=True) == 0
+    assert ci.main([
+        "--graph",
+        "--graph-install-mode", "full",
+        "--force",
+        "--model-mode", "skip",
+    ]) == 0
     assert not stale.exists()
     assert (claude / "skill-wiki" / "entities" / "skills" / "current.md").is_file()
 
@@ -440,7 +463,11 @@ def test_graph_install_rejects_path_traversal_archive(
         tf.addfile(info, io.BytesIO(payload))
 
     claude = tmp_path / "home"
-    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda: archive)
+    monkeypatch.setattr(
+        ci,
+        "_find_local_graph_archive",
+        lambda _install_mode="runtime": archive,
+    )
 
     assert ci.build_graph(claude) == 1
     assert not (tmp_path / "evil.txt").exists()

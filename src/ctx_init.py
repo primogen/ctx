@@ -212,9 +212,14 @@ def _resolve_ctx_src_dir() -> Path:
 
 
 _GRAPH_ARCHIVE_NAME = "wiki-graph.tar.gz"
+_GRAPH_RUNTIME_ARCHIVE_NAME = "wiki-graph-runtime.tar.gz"
+_GRAPH_ARCHIVE_NAMES = {
+    "runtime": _GRAPH_RUNTIME_ARCHIVE_NAME,
+    "full": _GRAPH_ARCHIVE_NAME,
+}
 _GRAPH_RELEASE_URL = (
     "https://github.com/stevesolun/ctx/releases/download/"
-    "v{version}/wiki-graph.tar.gz"
+    "v{version}/{archive_name}"
 )
 _GRAPH_REQUIRED_FILES = frozenset({
     "index.md",
@@ -232,8 +237,24 @@ _GRAPH_MANAGED_PATHS = (
     "concepts",
     "external-catalogs",
     "index.md",
+    "catalog.md",
+    "converted-index.md",
+    "log.md",
+    "SCHEMA.md",
+    "versions-catalog.md",
+    ".obsidian",
 )
 _GRAPH_JSON_OUTLINE_BYTES = 1024 * 1024
+_GRAPH_INSTALL_MODES = ("runtime", "full")
+_GRAPH_RUNTIME_PREFIXES = ("graphify-out/", "external-catalogs/")
+_GRAPH_RUNTIME_ROOT_FILES = frozenset({
+    "catalog.md",
+    "converted-index.md",
+    "index.md",
+    "log.md",
+    "SCHEMA.md",
+    "versions-catalog.md",
+})
 
 
 def build_graph(
@@ -241,27 +262,35 @@ def build_graph(
     *,
     force: bool = False,
     graph_url: str | None = None,
+    install_mode: str = "runtime",
 ) -> int:
     """Install the pre-built knowledge graph into ``~/.claude/skill-wiki``."""
+    if install_mode not in _GRAPH_INSTALL_MODES:
+        raise ValueError(f"unknown graph install mode: {install_mode}")
     claude_dir = claude or _claude_dir()
     wiki_dir = claude_dir / "skill-wiki"
     graph_json = wiki_dir / "graphify-out" / "graph.json"
-    if not force and _graph_install_complete(wiki_dir):
+    install_complete = (
+        _graph_full_install_complete(wiki_dir)
+        if install_mode == "full"
+        else _graph_install_complete(wiki_dir)
+    )
+    if not force and install_complete:
         print(f"Graph already installed at {graph_json}; use --force to refresh.")
         return 0
 
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
-    archive = _find_local_graph_archive()
+    archive = _find_local_graph_archive(install_mode)
     try:
         if archive is None:
             temp_dir = tempfile.TemporaryDirectory(prefix="ctx-graph-download-")
-            archive = Path(temp_dir.name) / _GRAPH_ARCHIVE_NAME
-            url = graph_url or _release_graph_url()
+            archive = Path(temp_dir.name) / _graph_archive_name(install_mode)
+            url = graph_url or _release_graph_url(install_mode)
             print(f"Downloading pre-built graph from {url}")
             _download_graph_archive(archive, url=url)
         else:
             print(f"Installing pre-built graph from {archive}")
-        _extract_graph_archive(archive, wiki_dir)
+        _extract_graph_archive(archive, wiki_dir, install_mode=install_mode)
     except Exception as exc:
         print(
             f"  [error] graph install failed: {type(exc).__name__}: {exc}",
@@ -280,20 +309,32 @@ def build_graph(
     return 0
 
 
-def _find_local_graph_archive() -> Path | None:
+def _find_local_graph_archive(install_mode: str = "runtime") -> Path | None:
     module_path = Path(__file__).resolve()
-    candidates = (
-        module_path.parent.parent / "graph" / _GRAPH_ARCHIVE_NAME,
-        Path.cwd() / "graph" / _GRAPH_ARCHIVE_NAME,
-    )
+    archive_names = [_graph_archive_name(install_mode)]
+    if install_mode == "runtime":
+        archive_names.append(_GRAPH_ARCHIVE_NAME)
+    graph_dirs = (module_path.parent.parent / "graph", Path.cwd() / "graph")
+    candidates = [
+        graph_dir / archive_name
+        for archive_name in archive_names
+        for graph_dir in graph_dirs
+    ]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
     return None
 
 
-def _release_graph_url() -> str:
-    return _GRAPH_RELEASE_URL.format(version=_package_version())
+def _release_graph_url(install_mode: str = "runtime") -> str:
+    return _GRAPH_RELEASE_URL.format(
+        version=_package_version(),
+        archive_name=_graph_archive_name(install_mode),
+    )
+
+
+def _graph_archive_name(install_mode: str) -> str:
+    return _GRAPH_ARCHIVE_NAMES.get(install_mode, _GRAPH_RUNTIME_ARCHIVE_NAME)
 
 
 def _package_version() -> str:
@@ -314,25 +355,46 @@ def _download_graph_archive(destination: Path, *, url: str) -> None:
             shutil.copyfileobj(response, fh)
 
 
-def _extract_graph_archive(archive: Path, target_dir: Path) -> None:
+def _extract_graph_archive(
+    archive: Path,
+    target_dir: Path,
+    *,
+    install_mode: str,
+) -> None:
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=f".{target_dir.name}-stage-",
         dir=target_dir.parent,
     ) as staging_name:
         staging_dir = Path(staging_name)
-        _extract_graph_archive_to_dir(archive, staging_dir)
+        _extract_graph_archive_to_dir(
+            archive,
+            staging_dir,
+            install_mode=install_mode,
+        )
         _validate_graph_install_tree(staging_dir)
         _promote_graph_tree(staging_dir, target_dir)
 
 
-def _extract_graph_archive_to_dir(archive: Path, target_dir: Path) -> None:
+def _extract_graph_archive_to_dir(
+    archive: Path,
+    target_dir: Path,
+    *,
+    install_mode: str,
+) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     target_root = target_dir.resolve()
+    extracted_required: set[str] = set()
     with tarfile.open(archive, "r:gz") as tf:
-        members = tf.getmembers()
-        for member in members:
+        for member in tf:
             _validate_graph_tar_member(member)
+            safe_name = _safe_graph_member_name(member.name)
+            if not _should_extract_graph_member(
+                safe_name,
+                member,
+                install_mode=install_mode,
+            ):
+                continue
             destination = _graph_member_destination(target_dir, target_root, member)
             if member.isdir():
                 destination.mkdir(parents=True, exist_ok=True)
@@ -344,6 +406,13 @@ def _extract_graph_archive_to_dir(archive: Path, target_dir: Path) -> None:
             _ensure_path_under_root(destination.parent, target_root)
             with source, destination.open("wb") as fh:
                 shutil.copyfileobj(source, fh)
+            if safe_name in _GRAPH_REQUIRED_FILES:
+                extracted_required.add(safe_name)
+                if (
+                    install_mode == "runtime"
+                    and _GRAPH_REQUIRED_FILES <= extracted_required
+                ):
+                    break
 
 
 def _graph_install_complete(wiki_dir: Path) -> bool:
@@ -352,6 +421,13 @@ def _graph_install_complete(wiki_dir: Path) -> bool:
     except (OSError, ValueError, json.JSONDecodeError):
         return False
     return True
+
+
+def _graph_full_install_complete(wiki_dir: Path) -> bool:
+    if not _graph_install_complete(wiki_dir):
+        return False
+    entities = wiki_dir / "entities"
+    return entities.is_dir() and any(entities.iterdir())
 
 
 def _validate_graph_install_tree(wiki_dir: Path) -> None:
@@ -441,6 +517,28 @@ def _graph_member_destination(
     destination = target_dir.joinpath(*PurePosixPath(member.name.replace("\\", "/")).parts)
     _ensure_path_under_root(destination, target_root)
     return destination
+
+
+def _safe_graph_member_name(name: str) -> str:
+    path = PurePosixPath(name.replace("\\", "/"))
+    return path.as_posix()
+
+
+def _should_extract_graph_member(
+    safe_name: str,
+    member: tarfile.TarInfo,
+    *,
+    install_mode: str,
+) -> bool:
+    if install_mode == "full":
+        return True
+    if member.isdir():
+        return False
+    return (
+        safe_name in _GRAPH_RUNTIME_ROOT_FILES
+        or safe_name in _GRAPH_REQUIRED_FILES
+        or any(safe_name.startswith(prefix) for prefix in _GRAPH_RUNTIME_PREFIXES)
+    )
 
 
 def _ensure_path_under_root(path: Path, root: Path) -> None:
@@ -1442,6 +1540,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Override the pre-built wiki-graph.tar.gz download URL",
     )
     parser.add_argument(
+        "--graph-install-mode",
+        choices=_GRAPH_INSTALL_MODES,
+        default="runtime",
+        help=(
+            "Graph install shape: runtime extracts graph/catalog artifacts "
+            "needed for recommendations; full expands every wiki markdown file."
+        ),
+    )
+    parser.add_argument(
         "--knowledge-mode",
         choices=("shipped", "local", "enriched", "skip"),
         help=(
@@ -1570,9 +1677,19 @@ def main(argv: list[str] | None = None) -> int:
         print("  [skip] hook injection (pass --hooks to enable)")
 
     if args.graph:
-        rc = build_graph(claude, force=args.force, graph_url=args.graph_url)
+        rc = build_graph(
+            claude,
+            force=args.force,
+            graph_url=args.graph_url,
+            install_mode=args.graph_install_mode,
+        )
         if rc == 0:
             print("  [ok] knowledge graph installed")
+            if args.graph_install_mode == "runtime":
+                print(
+                    "  [info] runtime graph install only; pass "
+                    "--graph-install-mode full to expand the full wiki"
+                )
         else:
             print(f"  [warn] graph install returned {rc}", file=sys.stderr)
             if final_rc == 0:
