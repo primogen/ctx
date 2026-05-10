@@ -1,49 +1,51 @@
 # Skill router
 
-The skill router decides which skills, plugins, and MCP servers load into
-a session based on the active repository. The full router spec lives in
-[`docs/SKILL.md`](https://github.com/stevesolun/ctx/blob/main/docs/SKILL.md);
-this page summarizes the parts most relevant to the docs site.
+The skill router decides which skills, agents, and MCP servers are useful for
+the active repository and current development task. Harnesses are recommended in
+the custom-model onboarding flow; after a harness is attached, the same capped
+skills/agents/MCP recommendation layer can be used by that host.
 
 ## Problem
 
-Every skill, plugin, and MCP server loaded into context costs tokens and
-attention. Most projects need 3–8 skills out of 30+. Loading all of them:
+Every loaded skill, agent, and MCP server costs tokens, attention, and tool
+surface area. Most sessions need a small top-scored bundle from the 91K+ skills,
+460+ agents, and 10K+ MCP servers in the shipped graph, not the whole catalog.
+Loading too much:
 
-- wastes the context window on irrelevant instructions,
-- causes skill misfires (wrong skill triggers for a task),
+- wastes context on irrelevant instructions,
+- causes the wrong helper to trigger for a task,
 - slows response time, and
-- creates conflicting instructions between skills.
+- creates conflicting instructions between helpers.
 
 ## Architecture
 
-```
-skill-router/
-├── SKILL.md                    # Orchestration logic
-├── references/
-│   ├── stack-signatures.md     # File/config → stack id
-│   ├── skill-stack-matrix.md   # Which skills serve which stacks
-│   └── marketplace-registry.md # Known marketplaces
-└── scripts/
-    ├── scan_repo.py            # Scanner → stack profile JSON
-    ├── resolve_skills.py       # Stack → skill set
-    └── skill_loader.py         # Load/unload skills into session
+```text
+ctx/
+|-- src/scan_repo.py                         # Repo scanner -> stack profile
+|-- src/ctx/core/resolve/resolve_skills.py   # Profile -> load/unload manifest
+|-- src/ctx/core/resolve/recommendations.py  # Shared recommendation engine
+|-- src/ctx/adapters/                        # Claude Code hooks + generic tools
+`-- graph/wiki-graph-runtime.tar.gz          # Shipped graph/wiki runtime
 ```
 
 ## Flow
 
-1. Repo opens (or Claude detects a `cd`).
-2. `scan_repo.py` produces a stack profile.
-3. `resolve_skills.py` maps the profile to a skill set using the
-   [skill-stack matrix](../skill-stack-matrix.md).
-4. `skill_loader.py` loads selected skills, unloads anything not in the
-   set, and records the choice in the LLM Wiki catalog.
+1. `ctx-scan-repo --recommend` scans the repository and produces stack signals.
+2. The shared resolver scores graph/wiki entities by tags, categories, semantic
+   edges, usage, quality, and configured gates.
+3. The resolver returns a capped manifest: what to load, what to unload, and why.
+4. The user confirms load/unload changes unless they configured automatic mode.
+5. Usage and quality signals are recorded so future recommendations improve.
 
-## Reference pages
+The same recommender is used by the CLI, MCP/library tools, Claude Code hooks,
+and attached harness hosts. Entry points should differ only in transport and
+confirmation UX, not in ranking logic.
 
-- [Stack signatures](../stack-signatures.md) — the file/config patterns
-  the scanner uses to identify stacks.
-- [Skill-stack matrix](../skill-stack-matrix.md) — the mapping from stack
-  identifiers to skill sets.
-- [Marketplace registry](../marketplace-registry.md) — known skill
-  marketplaces and query patterns.
+## Reference Pages
+
+- [Stack signatures](../stack-signatures.md) - file/config patterns used to
+  identify stack signals.
+- [Skill-stack matrix](../skill-stack-matrix.md) - stack-to-capability mapping
+  used as scanner evidence.
+- [External catalog registry](../marketplace-registry.md) - Skills.sh, GitHub,
+  MCP, harness, and local catalog sources plus update rules.

@@ -1,7 +1,8 @@
 # Skill-Stack Matrix
 
 > Maps stack identifiers to the skills that serve them.
-> Used by resolve_skills.py to determine what to load.
+> Used as resolver evidence; final ranking still goes through the shared
+> recommendation engine and graph/wiki scores.
 
 ## Table of Contents
 1. [Matrix Format](#matrix-format)
@@ -15,7 +16,7 @@
 
 Each entry:
 - **Stack IDs**: which detected stacks trigger this skill
-- **Skill**: skill name (matches directory name in /mnt/skills/)
+- **Skill**: skill/entity slug in the graph/wiki catalog
 - **Priority Base**: starting priority before signal boosts
 - **Required**: must-load if stack detected, vs nice-to-have
 - **Companions**: skills that should co-load
@@ -27,10 +28,10 @@ Each entry:
 
 | Skill | Stack IDs | Priority | Required | Path Pattern |
 |-------|-----------|----------|----------|--------------|
-| docx | (any -- triggered by user request) | 2 | no | /mnt/skills/public/docx/ |
-| pdf | (any -- triggered by user request) | 2 | no | /mnt/skills/public/pdf/ |
-| pptx | (any -- triggered by user request) | 2 | no | /mnt/skills/public/pptx/ |
-| xlsx | (any -- triggered by user request) | 2 | no | /mnt/skills/public/xlsx/ |
+| docx | (any -- triggered by user request) | 2 | no | graph/wiki or local skill path |
+| pdf | (any -- triggered by user request) | 2 | no | graph/wiki or local skill path |
+| pptx | (any -- triggered by user request) | 2 | no | graph/wiki or local skill path |
+| xlsx | (any -- triggered by user request) | 2 | no | graph/wiki or local skill path |
 
 > Note: document skills are demand-loaded, not stack-loaded. They activate on user
 > request ("make a presentation") not on repo content. The router keeps them in a
