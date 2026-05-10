@@ -687,7 +687,8 @@ repo_url: https://github.com/earthtojake/text-to-cad
     assert results[0]["name"] == "text-to-cad"
     assert results[0]["fit_score"] >= 0.85
     assert "openai" in results[0]["fit_signals"]
-    assert "gpt-5" in results[0]["fit_signals"]
+    assert "gpt-5" not in results[0]["fit_signals"]
+    assert "gpt-5" not in results[0]["missing_signals"]
     assert "openscad" in results[0]["fit_signals"]
 
 
