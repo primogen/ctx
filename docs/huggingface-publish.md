@@ -9,6 +9,7 @@ tarball and catalog artifacts, not local review reports or ignored caches.
 
 - Tracked source, docs, tests, and packaging files.
 - `graph/wiki-graph.tar.gz`.
+- `graph/wiki-graph-runtime.tar.gz`.
 - `graph/skills-sh-catalog.json.gz`.
 - Tracked graph visualizations under `graph/`.
 
@@ -20,8 +21,9 @@ by git.
 
 Use the repository sync script. It exports only tracked files, adds the
 Hugging Face repo-card frontmatter to the uploaded `README.md`, and refuses to
-publish if `graph/wiki-graph.tar.gz` or `graph/skills-sh-catalog.json.gz` is
-missing, too small, or still a Git LFS pointer.
+publish if `graph/wiki-graph.tar.gz`, `graph/wiki-graph-runtime.tar.gz`, or
+`graph/skills-sh-catalog.json.gz` is missing, too small, or still a Git LFS
+pointer.
 
 The script prefers Hugging Face's resumable large-folder uploader when the
 remote already has no stale paths. If the remote contains files that are not in
@@ -34,7 +36,7 @@ current process, and clear it after the upload.
 ```powershell
 python -m pip install --upgrade huggingface_hub
 git lfs install
-git lfs pull --include="graph/wiki-graph.tar.gz,graph/skills-sh-catalog.json.gz"
+git lfs pull --include="graph/wiki-graph.tar.gz,graph/wiki-graph-runtime.tar.gz,graph/skills-sh-catalog.json.gz"
 
 $secureToken = Read-Host "HF write token" -AsSecureString
 $tokenPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
