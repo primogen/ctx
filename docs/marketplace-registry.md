@@ -1,157 +1,130 @@
-# Marketplace Registry
+# External Catalog Registry
 
-> Known skill/plugin marketplaces and how to interact with them.
-> The router queries these when it detects a stack gap (needed skill not installed).
+ctx keeps external catalogs separate from install state. A catalog entry can be
+searched and recommended without being installed, and duplicate/update paths must
+show what would change before replacing an existing entity.
 
-## Registered Marketplaces
+## Registered Sources
 
-### 1. Local Skills Directory
+### Shipped Graph And LLM-Wiki
 
 ```yaml
-name: local
-type: filesystem
-path: /mnt/skills/
-scan_method: directory listing
-refresh: always current
-priority: 1  # check first
+name: ctx-shipped-graph
+type: compressed-runtime
+paths:
+  graph: graph/wiki-graph-runtime.tar.gz
+  catalog: graph/skills-sh-catalog.json.gz
+refresh: release-time
+priority: 1
 ```
 
-List all installed skills:
-```bash
-find /mnt/skills/ -name "SKILL.md" -maxdepth 3
-```
+The shipped runtime is the first source for recommendations. It contains the
+first-class skills, agents, MCP servers, harnesses, graph edges, quality scores,
+usage fields, and wiki pages that ctx can use offline.
 
-### 2. User Skills Directory
+### User Local Assets
 
 ```yaml
 name: user-local
 type: filesystem
-path: /mnt/skills/user/
-scan_method: directory listing
+paths:
+  skills: ~/.claude/skills
+  agents: ~/.claude/agents
+  mcp: project/user MCP config files
+  harnesses: ~/.ctx/harnesses
 refresh: always current
 priority: 2
 ```
 
-User-uploaded or custom skills. Same scan as local but separate namespace.
+Local assets override catalog-only suggestions when names collide, but updates
+still require an explicit review if replacement content is proposed.
 
-### 3. Example Skills
+### Skills.sh Catalog
 
 ```yaml
-name: examples
-type: filesystem
-path: /mnt/skills/examples/
-scan_method: directory listing
-refresh: always current
+name: skills-sh
+type: remote-catalog
+url: https://skills.sh
+shipped_entries: 89463
+local_catalog: graph/skills-sh-catalog.json.gz
+hydrated_wiki: external-catalogs/skills-sh/catalog.json
+refresh: on-demand
 priority: 3
 ```
 
-Bundled example skills that may not be active but can be copied to user skills.
+Skills.sh entries are stored as first-class skill entities in the graph/wiki.
+Hydrated `SKILL.md` bodies pass through the micro-skill gate before they are
+packed into the shipped runtime.
 
-### 4. GitHub Skill Repos
+### GitHub Entity Repositories
 
 ```yaml
-name: github
+name: github-entity-repos
 type: git
-base_url: https://github.com
-search_method: topic search "claude-skill" OR "hermes-skill"
-install_method: git clone + copy SKILL.md to /mnt/skills/user/
+entrypoints:
+  skills: ctx-skill-add
+  agents: ctx-agent-add
+  mcp: ctx-mcp-add
+  harnesses: ctx-harness-add
+refresh: on-demand
+priority: 4
+```
+
+GitHub stars, forks, releases, and update timestamps can be stored as source
+metadata for a candidate entity. The ctx repository's own star count is not
+hard-coded in docs because it changes continuously; read it from GitHub when
+needed.
+
+### MCP And Harness Catalogs
+
+```yaml
+name: mcp-and-harness-catalogs
+type: curated-external
+entrypoints:
+  mcp: ctx-mcp-fetch, ctx-mcp-add
+  harnesses: ctx-harness-add, ctx-harness-install
 refresh: on-demand
 priority: 5
 ```
 
-Search pattern:
-```bash
-# Via GitHub API (if available)
-curl -s "https://api.github.com/search/repositories?q=topic:claude-skill&sort=stars"
+MCP servers and harnesses are cataloged as entities with install guidance,
+permission notes, compatibility tags, and quality/security review status.
 
-# Via web search fallback
-web_search "claude skill github site:github.com"
-```
+## Query Protocol
 
-### 5. npm Registry (for JS/TS skills packaged as npm)
+When a user asks for help or the scanner detects a stack/task gap:
 
-```yaml
-name: npm
-type: package-registry
-base_url: https://registry.npmjs.org
-search_method: keyword search "claude-skill"
-install_method: npm install -g <package>
-refresh: on-demand
-priority: 6
-```
+1. Search the local graph/wiki first.
+2. Search Skills.sh via the shipped catalog and, when needed, the `find-skills`
+   helper for fresher remote results.
+3. Search local user assets and configured entity repositories.
+4. Deduplicate by slug, source URL, canonical name, tags, and semantic overlap.
+5. Score candidates with the shared recommendation engine.
+6. Present at most the configured cap with reasons, quality/usage notes, and
+   install/update commands.
+7. If an existing entity would be replaced, show the update review: benefits,
+   drawbacks, changed files, security posture, and rollback path.
 
-### 6. PyPI (for Python skills packaged as pip)
+## Update Rules
 
-```yaml
-name: pypi
-type: package-registry
-base_url: https://pypi.org
-search_method: keyword search "claude-skill" OR "hermes-skill"
-install_method: pip install <package>
-refresh: on-demand
-priority: 6
-```
+Entity updates are intentionally explicit:
 
----
-
-## Marketplace Query Protocol
-
-When the resolver identifies a gap (stack detected, no skill available):
-
-```
-1. Check local -> user-local -> examples (instant, filesystem)
-2. If not found, check wiki for cached marketplace data
-3. If cache is stale or empty:
-   a. Query GitHub topics
-   b. Query npm/pypi if relevant language
-   c. Cache results in raw/marketplace-dumps/
-   d. Create new entity pages for discovered skills, or emit an update review
-      for existing pages
-4. Present findings to user with install commands
-```
-
-## Caching
-
-Marketplace results are cached in the wiki at:
-```
-raw/marketplace-dumps/<marketplace-name>-YYYY-MM.md
-```
-
-Each dump is a markdown table:
-
-```markdown
-# GitHub Marketplace Dump -- 2026-04
-
-| Name | URL | Stars | Description | Stacks | Last Updated |
-|------|-----|-------|-------------|--------|--------------|
-| ... | ... | ... | ... | ... | ... |
-```
-
-Refresh policy: controlled by `refresh_interval_days` on each marketplace's
-entity page. Default 7 days. User can override per marketplace.
-
-## Installing from Marketplace
-
-The install flow:
-1. Router suggests: "The `terraform` skill is available on GitHub. Install it?"
-2. User confirms
-3. Router executes:
-   ```bash
-   # GitHub example
-   git clone https://github.com/user/terraform-skill.git /tmp/terraform-skill
-   cp -r /tmp/terraform-skill /mnt/skills/user/terraform/
-   rm -rf /tmp/terraform-skill
-   ```
-4. Create the entity page in the wiki; if one already exists, show the
-   benefits/risks update review and require `--update-existing` before
-   replacing it
-5. Add to current manifest and load
-6. Log the install
+- `ctx-skill-add`, `ctx-agent-add`, `ctx-mcp-add`, and `ctx-harness-add` create
+  new entities when no duplicate exists.
+- If a duplicate exists, the command emits an update review and refuses to
+  replace content unless the user passes the update flag.
+- New or updated skills go through the micro-skill line-count gate from config.
+- Security/cyber checks run before catalog content is promoted.
+- Graph/wiki artifacts are rebuilt, validated, packed, and atomically promoted.
 
 ## Security Notes
 
-- Never auto-install without user confirmation
-- Always show the source URL before installing
-- For git repos: check for SKILL.md at root, reject if missing
-- Never execute arbitrary scripts from marketplace skills without user review
-- Warn if a skill requires network access or system-level permissions
+- Never auto-install without user confirmation.
+- Always show the source URL, entity type, install command, and permissions.
+- Reject missing `SKILL.md` bodies for skill imports unless the source is only a
+  catalog pointer.
+- Never execute repository scripts during cataloging without explicit user
+  approval.
+- Warn on network, filesystem, shell, credential, or system-level permissions.
+- Preserve last-good graph/wiki artifacts so a failed refresh cannot ship a
+  corrupt runtime.
