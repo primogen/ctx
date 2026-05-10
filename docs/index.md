@@ -25,10 +25,12 @@ memory that gets smarter every session.
     model harness runs, `pip install "claude-ctx[dev]"` for the
     pytest/mypy/ruff toolchain. After install the `ctx-scan-repo`,
     `ctx-skill-quality`, `ctx-skill-health`, and `ctx-toolbox` console
-    scripts are on PATH. `ctx-init --graph` installs the pre-built wiki
-    graph that powers recommendations; source checkouts use
-    `graph/wiki-graph.tar.gz`, while pip installs download the matching
-    GitHub release asset.
+    scripts are on PATH. `ctx-init --graph` installs the fast pre-built
+    runtime graph that powers recommendations; source checkouts use
+    `graph/wiki-graph-runtime.tar.gz`, while pip installs download the
+    matching GitHub release asset. Use
+    `ctx-init --graph --graph-install-mode full` when you want the full
+    markdown LLM-wiki expanded locally.
 
     Custom-model users can run
     `ctx-init --model-mode custom --model <provider/model> --goal "<task>"`

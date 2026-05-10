@@ -32,7 +32,8 @@ Current shipped snapshot:
 ```bash
 pip install claude-ctx
 ctx-init                    # terminal wizard: hooks, graph, model, harness goal
-ctx-init --graph --hooks --model-mode skip  # non-interactive graph + Claude Code hooks
+ctx-init --graph --hooks --model-mode skip  # fast runtime graph + Claude Code hooks
+ctx-init --graph --graph-install-mode full  # expand the full markdown wiki locally
 ctx-init --wizard           # force the same wizard from scripts/tests
 ctx-init --model-mode custom --model openai/gpt-5.5 --goal "build a CAD agent"
 ```
@@ -41,16 +42,24 @@ Optional extras: `pip install "claude-ctx[embeddings]"` for the semantic backend
 
 ### Pre-built knowledge graph
 
-Graph-backed recommendations need the pre-built wiki graph. Source checkouts
-use `graph/wiki-graph.tar.gz`; pip installs download the matching GitHub
-release asset:
+Graph-backed recommendations need the pre-built graph. By default, `ctx-init
+--graph` installs the fast runtime artifact: `graph/wiki-graph-runtime.tar.gz`
+in source checkouts, or the matching GitHub release asset from pip installs.
+It contains `graphify-out/*` plus the external Skills.sh catalog needed for
+recommendations:
 
 ```bash
 ctx-init --graph
 ```
 
-A pre-built knowledge graph of 102,696 nodes and 2.9M edges ships as a
-tarball. The same tarball includes `external-catalogs/skills-sh/catalog.json`,
+The full LLM-wiki artifact remains available for local browsing, Obsidian, and
+expanded markdown pages:
+
+```bash
+ctx-init --graph --graph-install-mode full
+```
+
+The full `wiki-graph.tar.gz` includes `external-catalogs/skills-sh/catalog.json`,
 89,463 body-backed Skills.sh skill pages under `entities/skills/skills-sh-*.md`,
 89,463 hydrated installable Skills.sh `SKILL.md` files under
 `converted/skills-sh-*/`, and 13 cataloged harness pages under
