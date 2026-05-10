@@ -46,7 +46,8 @@ shipped tarball.
 Use `ctx-init --graph` to install the fast runtime graph. Source checkouts use
 `graph/wiki-graph-runtime.tar.gz`; pip installs download the matching GitHub
 release asset for the installed package version. This installs
-`graphify-out/*` and the external Skills.sh catalog used by recommendations:
+`graphify-out/*`, the external Skills.sh catalog used by recommendations, and
+the harness catalog pages used by `ctx-harness-install`:
 
 ```bash
 ctx-init --graph

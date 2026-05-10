@@ -46,7 +46,8 @@ Graph-backed recommendations need the pre-built graph. By default, `ctx-init
 --graph` installs the fast runtime artifact: `graph/wiki-graph-runtime.tar.gz`
 in source checkouts, or the matching GitHub release asset from pip installs.
 It contains `graphify-out/*` plus the external Skills.sh catalog needed for
-recommendations:
+recommendations and the 13 cataloged harness pages needed by
+`ctx-harness-install`:
 
 ```bash
 ctx-init --graph

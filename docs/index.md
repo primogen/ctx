@@ -26,7 +26,7 @@ memory that gets smarter every session.
     pytest/mypy/ruff toolchain. After install the `ctx-scan-repo`,
     `ctx-skill-quality`, `ctx-skill-health`, and `ctx-toolbox` console
     scripts are on PATH. `ctx-init --graph` installs the fast pre-built
-    runtime graph that powers recommendations; source checkouts use
+    runtime graph that powers recommendations and harness dry-runs; source checkouts use
     `graph/wiki-graph-runtime.tar.gz`, while pip installs download the
     matching GitHub release asset. Use
     `ctx-init --graph --graph-install-mode full` when you want the full
