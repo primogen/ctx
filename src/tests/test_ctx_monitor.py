@@ -1008,7 +1008,7 @@ def test_render_wiki_entity_missing_slug(fake_claude: Path) -> None:
     assert "No wiki page" in out
 
 
-def test_render_graph_uses_builtin_list_mount(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_render_graph_uses_builtin_svg_mount(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cm,
         "_graph_stats",
@@ -1017,7 +1017,10 @@ def test_render_graph_uses_builtin_list_mount(monkeypatch: pytest.MonkeyPatch) -
     html_out = cm._render_graph("python-patterns")
     assert "id='cy'" in html_out
     assert "https://unpkg.com" not in html_out
-    assert "Enter a slug to load graph list view" in html_out
+    assert "data-testid=\"graph-renderer\"" in html_out
+    assert "data-testid=\"graph-svg\"" in html_out
+    assert "Graph renderer unavailable" not in html_out
+    assert "Enter a slug to render the graph" in html_out
     # Initial slug must be embedded as JSON literal so the JS picks it up.
     assert "\"python-patterns\"" in html_out
 
