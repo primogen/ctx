@@ -26,11 +26,16 @@ The runtime recommendation paths use this graph in two ways:
 | `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, external catalogs, and Obsidian metadata |
 | `skills-sh-catalog.json.gz` | Compressed Skills.sh catalog for the 89,463 body-backed entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
-| `viz-overview.html` / `.png` | Plotly overview of the graph |
+| `viz-overview.html` | Plotly overview of the graph |
 | `viz-python.html` | Python-focused graph view |
-| `viz-security.html` / `.png` | Security-focused graph view |
+| `viz-security.html` | Security-focused graph view |
 | `viz-ai-agents.html` | AI-agent-focused graph view |
 | `sample-top60.html` | Interactive top-degree sample |
+
+Preview HTML files are generated from the shipped `graphify-out/graph.json`
+and embed the graph export ID in `<meta name="ctx-graph-export-id">`. Static
+PNG snapshots are intentionally not shipped because they can drift from the
+current tarball without an executable freshness check.
 
 ## What Is Inside `wiki-graph.tar.gz`
 
