@@ -32,6 +32,7 @@ DOCS_PATTERNS = (
 GRAPH_ARTIFACT_PATTERNS = (
     "graph/communities.json",
     "graph/skills-sh-catalog.json.gz",
+    "graph/wiki-graph-runtime.tar.gz",
     "graph/wiki-graph.tar.gz",
     "graph/*.html",
 )

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 DEFAULT_REPO_ID = "Stevesolun/ctx"
 DEFAULT_REPO_TYPE = "dataset"
@@ -34,6 +35,7 @@ tags:
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 HYDRATED_ARTIFACT_MIN_BYTES = {
     Path("graph/wiki-graph.tar.gz"): 100_000_000,
+    Path("graph/wiki-graph-runtime.tar.gz"): 10_000_000,
     Path("graph/skills-sh-catalog.json.gz"): 1_000_000,
 }
 
@@ -162,7 +164,7 @@ def _repo_commit_url(*, repo_id: str, repo_type: str, sha: str) -> str:
 
 def _remote_has_no_stale_paths(
     *,
-    api: object,
+    api: Any,
     export_dir: Path,
     repo_id: str,
     repo_type: str,
@@ -176,7 +178,7 @@ def _remote_has_no_stale_paths(
 
 def _upload_export(
     *,
-    api: object,
+    api: Any,
     export_dir: Path,
     repo_id: str,
     repo_type: str,
