@@ -106,7 +106,7 @@ def _wait_for_browser_state(page: Any, expression: str, *, timeout: float = 5.0)
     raise AssertionError(f"timed out waiting for browser state: {expression}")
 
 
-def test_graph_page_uses_builtin_list_renderer(
+def test_graph_page_uses_builtin_svg_renderer(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
     page: Any,
@@ -126,9 +126,11 @@ def test_graph_page_uses_builtin_list_renderer(
     harness = _start_monitor(monkeypatch, fake_load=False)
     try:
         page.goto(f"{harness.base_url}/graph?slug=python-patterns&type=skill")
-        page.wait_for_selector("[data-testid='graph-fallback']", timeout=5000)
+        page.wait_for_selector("[data-testid='graph-renderer']", timeout=5000)
         assert "4 nodes" in page.locator("#msg").inner_text()
+        assert page.locator("[data-testid='graph-svg-node']").count() == 4
         assert page.locator("[data-testid='graph-fallback-node']").count() == 4
+        assert "Graph renderer unavailable" not in page.locator("#cy").inner_text()
 
         page.fill("#tag-filter", "review")
         _wait_for_browser_state(

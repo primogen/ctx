@@ -846,7 +846,8 @@ class TestRenderGraphSidebar:
 
         assert "document.querySelectorAll('[data-testid=\"graph-fallback-node\"]')" in html
         assert "n.style.display = hidden ? 'none' : 'flex'" in html
-        assert "e.toggleClass('hidden-by-filter', srcHidden || tgtHidden)" in html
+        assert "document.querySelectorAll('[data-svg-edge-source]')" in html
+        assert "e.style.display = hidden ? 'none' : ''" in html
 
     def test_tap_handler_strips_mcp_server_prefix(self, monkeypatch):
         """Clicking an MCP node must route to /wiki/<slug> — the
