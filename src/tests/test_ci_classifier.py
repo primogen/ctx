@@ -148,12 +148,14 @@ def test_ci_workflows_default_to_read_only_token_permissions() -> None:
         assert "\npermissions:\n  contents: read\n" in workflow
 
 
-def test_graph_artifact_job_fails_closed_without_lfs_hydration() -> None:
+def test_graph_artifact_job_uses_release_asset_fallback_for_lfs_budget() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
 
     assert "Resolve graph LFS artifacts" in workflow
-    assert "graph/wiki-graph.tar.gz,graph/skills-sh-catalog.json.gz" in workflow
-    assert "Validate graph artifact pointer when LFS unavailable" not in workflow
+    assert "Git LFS download failed; trying matching prior release asset." in workflow
+    assert "sha256:{expected_oid} size:{expected_size}" in workflow
+    assert "Hydrated graph/wiki-graph.tar.gz from" in workflow
+    assert "python src/validate_graph_artifacts.py" in workflow
     assert "validating pointer metadata only" not in workflow
 
 
