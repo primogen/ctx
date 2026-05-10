@@ -246,7 +246,7 @@ _GRAPH_MANAGED_PATHS = (
 )
 _GRAPH_JSON_OUTLINE_BYTES = 1024 * 1024
 _GRAPH_INSTALL_MODES = ("runtime", "full")
-_GRAPH_RUNTIME_PREFIXES = ("graphify-out/", "external-catalogs/")
+_GRAPH_RUNTIME_PREFIXES = ("graphify-out/", "external-catalogs/", "entities/harnesses/")
 _GRAPH_RUNTIME_ROOT_FILES = frozenset({
     "catalog.md",
     "converted-index.md",

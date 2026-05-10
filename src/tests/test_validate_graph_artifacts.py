@@ -11,6 +11,7 @@ import pytest
 import yaml  # type: ignore[import-untyped]
 
 from validate_graph_artifacts import (
+    DEFAULT_HARNESSES,
     GraphArtifactError,
     _safe_tar_name,
     _scan_graph_json,
@@ -100,6 +101,8 @@ def _write_runtime_archive(
                 }),
             )
         _add_text(tf, "external-catalogs/skills-sh/catalog.json", "{}")
+        for slug in sorted(DEFAULT_HARNESSES):
+            _add_text(tf, f"entities/harnesses/{slug}.md", f"# {slug}\n")
 
 
 def _write_archive(

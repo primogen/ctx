@@ -251,7 +251,11 @@ def validate_graph_artifacts(
     for path in (tarball, runtime_tarball, catalog_path, communities_path):
         _require_real_file(path)
 
-    _validate_runtime_graph_archive(runtime_tarball)
+    expected_harnesses = DEFAULT_HARNESSES if expected_harnesses is None else expected_harnesses
+    _validate_runtime_graph_archive(
+        runtime_tarball,
+        expected_harnesses=expected_harnesses,
+    )
     catalog = _load_gzip_json(catalog_path)
     _load_json(communities_path)
     skills = _catalog_skills(catalog)
@@ -280,7 +284,6 @@ def validate_graph_artifacts(
     graph_nodes = graph_edges = graph_semantic_edges = skills_sh_nodes = 0
     harness_nodes = 0
     skill_pages = agent_pages = mcp_pages = harness_pages = skills_sh_converted = 0
-    expected_harnesses = DEFAULT_HARNESSES if expected_harnesses is None else expected_harnesses
     export_ids: dict[str, str] = {}
     manifest: dict[str, Any] | None = None
 
@@ -443,7 +446,11 @@ def validate_graph_artifacts(
     return stats
 
 
-def _validate_runtime_graph_archive(tarball: Path) -> None:
+def _validate_runtime_graph_archive(
+    tarball: Path,
+    *,
+    expected_harnesses: set[str],
+) -> None:
     names: set[str] = set()
     export_ids: dict[str, str] = {}
     manifest: dict[str, Any] | None = None
@@ -489,6 +496,15 @@ def _validate_runtime_graph_archive(tarball: Path) -> None:
     if missing_required:
         raise GraphArtifactError(
             f"runtime graph archive is missing: {missing_required}",
+        )
+    missing_harnesses = sorted(
+        f"entities/harnesses/{slug}.md"
+        for slug in expected_harnesses
+        if f"entities/harnesses/{slug}.md" not in names
+    )
+    if missing_harnesses:
+        raise GraphArtifactError(
+            f"runtime graph archive is missing harness pages: {missing_harnesses}",
         )
     manifest_export_id = _validate_graph_export_manifest(manifest, names)
     _record_export_id(
