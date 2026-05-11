@@ -7,6 +7,28 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.4] - 2026-05-11
+
+### Added
+
+- Added a dashboard Harness Setup page for users bringing their own API or
+  local LLM. It interviews model, intent, runtime, access, verification, and
+  privacy constraints, then emits real `ctx-harness-install --recommend`
+  commands with the no-fit custom harness PRD path.
+
+### Changed
+
+- Polished the ctx monitor with a more instrumented dashboard visual system,
+  interactive graph/wiki subgraph controls, draggable navigation, and a
+  dashboard Config page for important ctx settings.
+
+### Fixed
+
+- Avoided full sidecar-tree scans while rendering Harness Setup, preserving
+  fast dashboard load times on large catalogs.
+- Kept graph edge filtering compatible with the existing dashboard sidebar
+  selectors while using the newer 3D graph renderer.
+
 ## [1.0.3] - 2026-05-11
 
 ### Fixed

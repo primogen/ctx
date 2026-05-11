@@ -17,6 +17,8 @@ Routes:
     /wiki/<slug>?type=<entity>  One wiki entity page (frontmatter + body)
     /graph                      Built-in graph explorer + popular seeds
     /graph?slug=<slug>&type=... Focus graph view on a specific entity
+    /harness                    Manual harness setup for user-owned LLMs
+    /config                     Editable ctx config with defaults fallback
     /status                     Durable queue + graph/wiki artifact state
     /kpi                        Grade / lifecycle / category KPIs
     /runtime                    Generic harness validation/escalation ledger
@@ -28,6 +30,7 @@ Routes:
     /api/runtime.json           Generic harness validation/escalation summary
     /api/skill/<slug>.json      Sidecar passthrough
     /api/graph/<slug>.json      Dashboard-shaped neighborhood; accepts type
+    /api/config.json            Effective/default/user config
     /api/kpi.json               DashboardSummary passthrough
 
 Design notes:
@@ -63,7 +66,7 @@ from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
@@ -124,6 +127,10 @@ def _sidecar_dir() -> Path:
 
 def _wiki_dir() -> Path:
     return _claude_dir() / "skill-wiki"
+
+
+def _user_config_path() -> Path:
+    return _claude_dir() / "skill-system-config.json"
 
 
 def _load_dashboard_graph() -> Any:
@@ -423,6 +430,219 @@ def _graph_type_from_node_id(node_id: str, fallback: str = "skill") -> str:
     }.get(prefix, fallback)
 
 
+def _subgraph_sidecar(slug: str, entity_type: str) -> dict[str, Any] | None:
+    sidecar = _load_sidecar(slug, entity_type=entity_type)
+    return sidecar if isinstance(sidecar, dict) else None
+
+
+def _subgraph_quality_cell(sidecar: dict[str, Any] | None) -> str:
+    if sidecar is None:
+        return "<span class='muted'>no sidecar</span>"
+    grade = html.escape(str(sidecar.get("grade", "F")))
+    score = float(sidecar.get("raw_score", sidecar.get("score", 0.0)) or 0.0)
+    floor = str(sidecar.get("hard_floor") or "").strip()
+    floor_html = (
+        f" <span class='muted'>floor {html.escape(floor)}</span>"
+        if floor
+        else ""
+    )
+    return (
+        f"<span class='pill grade-{grade}'>{grade}</span> "
+        f"<code>{score:.3f}</code>{floor_html}"
+    )
+
+
+def _subgraph_node_title(
+    label: str,
+    entity_type: str,
+    sidecar: dict[str, Any] | None,
+) -> str:
+    if sidecar is None:
+        return f"{label} ({entity_type}) · no sidecar"
+    grade = str(sidecar.get("grade", "F"))
+    score = float(sidecar.get("raw_score", sidecar.get("score", 0.0)) or 0.0)
+    floor = str(sidecar.get("hard_floor") or "").strip()
+    floor_text = f" · floor {floor}" if floor else ""
+    return f"{label} ({entity_type}) · grade {grade} · score {score:.3f}{floor_text}"
+
+
+def _subgraph_node_fill(entity_type: str) -> str:
+    return {
+        "agent": "#f59e0b",
+        "mcp-server": "#ef4444",
+        "harness": "#22c55e",
+        "skill": "#6366f1",
+    }.get(entity_type, "#64748b")
+
+
+def _subgraph_grade_stroke(sidecar: dict[str, Any] | None) -> str:
+    grade = str((sidecar or {}).get("grade") or "")
+    return {
+        "A": "#059669",
+        "B": "#2563eb",
+        "C": "#d97706",
+        "D": "#ea580c",
+        "F": "#dc2626",
+    }.get(grade, "#ffffff")
+
+
+def _render_entity_subgraph_svg(
+    node_by_id: dict[str, dict[str, Any]],
+    edges: list[dict],
+    center: str,
+    sidecar_by_id: dict[str, dict[str, Any] | None],
+) -> str:
+    """Render an embedded, interactive 3D graph for wiki entity pages."""
+    width = 980
+    height = 380
+    node_payload: list[dict[str, Any]] = []
+    for node_id, node in sorted(
+        node_by_id.items(),
+        key=lambda item: (
+            0 if item[0] == center else 1,
+            str(item[1].get("label") or item[0]),
+        ),
+    ):
+        node = node_by_id[node_id]
+        node_type = _graph_type_from_node_id(
+            node_id, str(node.get("type") or "skill"),
+        )
+        node_slug = _graph_slug_from_node_id(node_id)
+        label = str(node.get("label") or node_slug)
+        sidecar = sidecar_by_id.get(node_id)
+        node_payload.append({
+            "id": node_id,
+            "slug": node_slug,
+            "label": label,
+            "type": node_type,
+            "href": _entity_wiki_href(node_slug, node_type),
+            "title": _subgraph_node_title(label, node_type, sidecar),
+            "fill": _subgraph_node_fill(node_type),
+            "stroke": _subgraph_grade_stroke(sidecar),
+            "is_center": node_id == center,
+        })
+
+    edge_payload: list[dict[str, Any]] = []
+    for edge in edges:
+        data = edge.get("data", {})
+        source = str(data.get("source", ""))
+        target = str(data.get("target", ""))
+        if source not in node_by_id or target not in node_by_id:
+            continue
+        shared = ", ".join(str(tag) for tag in data.get("shared_tags", [])[:6]) or "none"
+        weight = float(data.get("weight", 0.0) or 0.0)
+        edge_payload.append({
+            "source": source,
+            "target": target,
+            "weight": weight,
+            "title": (
+                f"{_graph_slug_from_node_id(source)} ↔ "
+                f"{_graph_slug_from_node_id(target)} · weight {weight:.3f} "
+                f"· shared {shared}"
+            ),
+        })
+
+    nodes_json = json.dumps(node_payload)
+    edges_json = json.dumps(edge_payload)
+
+    return (
+        "<div data-testid='entity-subgraph-graph' "
+        "style='border:1px solid #e5e7eb; border-radius:8px; "
+        "background:#f8fafc; margin:1rem 0; overflow:hidden;'>"
+        "<div style='display:flex; align-items:center; gap:0.5rem; "
+        "padding:0.45rem 0.6rem; border-bottom:1px solid #e5e7eb; background:#fff;'>"
+        "<button id='entity-subgraph-zoom-in' type='button'>zoom in</button>"
+        "<button id='entity-subgraph-zoom-out' type='button'>zoom out</button>"
+        "<span class='muted'>drag to rotate · wheel to zoom · hover nodes or edges</span>"
+        "</div>"
+        f"<svg data-testid='entity-subgraph-3d' viewBox='0 0 {width} {height}' "
+        "width='100%' height='380' role='img' aria-label='Embedded 3D entity subgraph' "
+        "style='display:block; background:#f8fafc; touch-action:none;'></svg>"
+        "<div style='display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; "
+        "padding:0.45rem 0.6rem; border-top:1px solid #e5e7eb; background:#fff;'>"
+        "<div data-testid='entity-subgraph-node-detail' class='muted'>"
+        "Hover a node for sidecar grade/score/floor.</div>"
+        "<div data-testid='entity-subgraph-edge-detail' class='muted'>"
+        "Hover an edge for weight and shared signals.</div></div>"
+        "<script>\n"
+        "(function () {\n"
+        f"  const nodes = {nodes_json};\n"
+        f"  const edges = {edges_json};\n"
+        f"  const width = {width};\n"
+        f"  const height = {height};\n"
+        "  const svg = document.querySelector('[data-testid=\"entity-subgraph-3d\"]');\n"
+        "  const nodeDetail = document.querySelector('[data-testid=\"entity-subgraph-node-detail\"]');\n"
+        "  const edgeDetail = document.querySelector('[data-testid=\"entity-subgraph-edge-detail\"]');\n"
+        "  if (!svg) return;\n"
+        "  const points = new Map();\n"
+        "  const center = nodes.find(n => n.is_center) || nodes[0];\n"
+        "  if (!center) return;\n"
+        "  points.set(center.id, {x: 0, y: 0, z: 0});\n"
+        "  nodes.filter(n => n.id !== center.id).forEach((n, idx) => {\n"
+        "    const i = idx + 1;\n"
+        "    const phi = Math.acos(1 - 2 * i / Math.max(2, nodes.length));\n"
+        "    const theta = Math.PI * (3 - Math.sqrt(5)) * i;\n"
+        "    const radius = 250;\n"
+        "    points.set(n.id, {x: radius * Math.cos(theta) * Math.sin(phi), y: radius * Math.sin(theta) * Math.sin(phi), z: radius * Math.cos(phi)});\n"
+        "  });\n"
+        "  let yaw = -0.4;\n"
+        "  let pitch = 0.55;\n"
+        "  let zoom = 1;\n"
+        "  function escapeHtml(s) { return String(s).replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[ch])); }\n"
+        "  function project(p) {\n"
+        "    const cyaw = Math.cos(yaw), syaw = Math.sin(yaw);\n"
+        "    const cp = Math.cos(pitch), sp = Math.sin(pitch);\n"
+        "    const x1 = p.x * cyaw - p.z * syaw;\n"
+        "    const z1 = p.x * syaw + p.z * cyaw;\n"
+        "    const y1 = p.y * cp - z1 * sp;\n"
+        "    const z2 = p.y * sp + z1 * cp;\n"
+        "    const scale = zoom * 620 / (760 + z2);\n"
+        "    return {x: width / 2 + x1 * scale, y: height / 2 + y1 * scale, z: z2, scale};\n"
+        "  }\n"
+        "  function attachHover() {\n"
+        "    svg.querySelectorAll('[data-node-detail]').forEach(n => n.addEventListener('mouseenter', () => { nodeDetail.textContent = n.dataset.nodeDetail || ''; }));\n"
+        "    svg.querySelectorAll('[data-edge-detail]').forEach(e => e.addEventListener('mouseenter', () => { edgeDetail.textContent = e.dataset.edgeDetail || ''; }));\n"
+        "  }\n"
+        "  function draw() {\n"
+        "    const projected = new Map();\n"
+        "    points.forEach((p, id) => projected.set(id, project(p)));\n"
+        "    const edgeLines = edges.map(e => {\n"
+        "      const s = projected.get(e.source);\n"
+        "      const t = projected.get(e.target);\n"
+        "      if (!s || !t) return '';\n"
+        "      const w = Math.max(1, Math.min(4, 1 + Math.sqrt(Math.max(0, Number(e.weight || 1)))));\n"
+        "      return '<line x1=\"' + s.x.toFixed(1) + '\" y1=\"' + s.y.toFixed(1) + '\" x2=\"' + t.x.toFixed(1) + '\" y2=\"' + t.y.toFixed(1) + '\" stroke=\"#64748b\" stroke-opacity=\"0.55\" stroke-width=\"' + w.toFixed(2) + '\" />';\n"
+        "    }).join('');\n"
+        "    const nodeEls = nodes.slice().sort((a, b) => (projected.get(a.id)?.z || 0) - (projected.get(b.id)?.z || 0)).map(n => {\n"
+        "      const p = projected.get(n.id) || {x: width / 2, y: height / 2, z: 0, scale: 1};\n"
+        "      const r = Math.max(7, (n.is_center ? 18 : 12) * Math.max(0.7, p.scale));\n"
+        "      return '<a href=\"' + escapeHtml(n.href) + '\"><g data-testid=\"entity-subgraph-node\" data-node-detail=\"' + escapeHtml(n.title) + '\"><title>' + escapeHtml(n.title) + '</title><circle cx=\"' + p.x.toFixed(1) + '\" cy=\"' + p.y.toFixed(1) + '\" r=\"' + r + '\" fill=\"' + escapeHtml(n.fill) + '\" stroke=\"' + escapeHtml(n.stroke) + '\" stroke-width=\"3\" /><text x=\"' + p.x.toFixed(1) + '\" y=\"' + (p.y + r + 14).toFixed(1) + '\" text-anchor=\"middle\" font-size=\"11\" fill=\"#111827\" style=\"pointer-events:none;\">' + escapeHtml(String(n.label).slice(0, 28)) + '</text></g></a>';\n"
+        "    }).join('');\n"
+        "    const edgeHits = edges.map(e => {\n"
+        "      const s = projected.get(e.source);\n"
+        "      const t = projected.get(e.target);\n"
+        "      if (!s || !t) return '';\n"
+        "      const hx1 = s.x + (t.x - s.x) * 0.18, hy1 = s.y + (t.y - s.y) * 0.18;\n"
+        "      const hx2 = s.x + (t.x - s.x) * 0.82, hy2 = s.y + (t.y - s.y) * 0.82;\n"
+        "      return '<line data-testid=\"entity-subgraph-edge\" data-edge-detail=\"' + escapeHtml(e.title) + '\" x1=\"' + hx1.toFixed(1) + '\" y1=\"' + hy1.toFixed(1) + '\" x2=\"' + hx2.toFixed(1) + '\" y2=\"' + hy2.toFixed(1) + '\" stroke=\"transparent\" stroke-width=\"12\" style=\"pointer-events:stroke;\"><title>' + escapeHtml(e.title) + '</title></line>';\n"
+        "    }).join('');\n"
+        "    svg.innerHTML = '<rect width=\"100%\" height=\"100%\" fill=\"#f8fafc\" />' + edgeLines + nodeEls + edgeHits;\n"
+        "    attachHover();\n"
+        "  }\n"
+        "  document.getElementById('entity-subgraph-zoom-in')?.addEventListener('click', () => { zoom = Math.min(2.5, zoom * 1.18); draw(); });\n"
+        "  document.getElementById('entity-subgraph-zoom-out')?.addEventListener('click', () => { zoom = Math.max(0.35, zoom / 1.18); draw(); });\n"
+        "  let dragging = false, lastX = 0, lastY = 0;\n"
+        "  svg.addEventListener('pointerdown', ev => { dragging = true; lastX = ev.clientX; lastY = ev.clientY; svg.setPointerCapture(ev.pointerId); });\n"
+        "  svg.addEventListener('pointerup', ev => { dragging = false; try { svg.releasePointerCapture(ev.pointerId); } catch (_) {} });\n"
+        "  svg.addEventListener('pointermove', ev => { if (!dragging) return; yaw += (ev.clientX - lastX) * 0.01; pitch += (ev.clientY - lastY) * 0.01; pitch = Math.max(-1.35, Math.min(1.35, pitch)); lastX = ev.clientX; lastY = ev.clientY; draw(); });\n"
+        "  svg.addEventListener('wheel', ev => { ev.preventDefault(); zoom = Math.max(0.35, Math.min(2.5, zoom * (ev.deltaY < 0 ? 1.08 : 0.92))); draw(); }, {passive:false});\n"
+        "  draw();\n"
+        "})();\n"
+        "</script>"
+        "</div>"
+    )
+
+
 def _render_entity_subgraph(slug: str, entity_type: str | None = None) -> str:
     """Render a compact 1-hop subgraph table for wiki entity pages."""
     graph = _graph_neighborhood(slug, hops=1, limit=32, entity_type=entity_type)
@@ -439,6 +659,13 @@ def _render_entity_subgraph(slug: str, entity_type: str | None = None) -> str:
         str(node.get("data", {}).get("id", "")): node.get("data", {})
         for node in nodes
     }
+    sidecar_by_id = {
+        node_id: _subgraph_sidecar(
+            _graph_slug_from_node_id(node_id),
+            _graph_type_from_node_id(node_id, str(node.get("type") or "skill")),
+        )
+        for node_id, node in node_by_id.items()
+    }
     rows: list[str] = []
     for edge in edges:
         data = edge.get("data", {})
@@ -452,28 +679,29 @@ def _render_entity_subgraph(slug: str, entity_type: str | None = None) -> str:
         other_slug = other_id.split(":", 1)[-1]
         shared = ", ".join(str(tag) for tag in data.get("shared_tags", [])[:6])
         shared_html = html.escape(shared) if shared else "<span class='muted'>none</span>"
+        quality_html = _subgraph_quality_cell(sidecar_by_id.get(other_id))
         rows.append(
             "<tr>"
             f"<td><a href='{html.escape(_entity_wiki_href(other_slug, other_type))}'>"
             f"{html.escape(str(other.get('label') or other_slug))}</a></td>"
             f"<td><span class='pill entity-type-{html.escape(other_type)}'>"
             f"{html.escape(other_type)}</span></td>"
+            f"<td>{quality_html}</td>"
             f"<td><code>{float(data.get('weight', 0.0)):.3f}</code></td>"
             f"<td>{shared_html}</td>"
             "</tr>"
         )
     table = (
-        "<table><tr><th>Entity</th><th>Type</th><th>Weight</th><th>Shared signals</th></tr>"
-        + ("".join(rows) if rows else "<tr><td colspan='4' class='muted'>No neighbors under the current limit.</td></tr>")
+        "<table><tr><th>Entity</th><th>Type</th><th>Quality sidecar</th>"
+        "<th>Weight</th><th>Shared signals</th></tr>"
+        + ("".join(rows) if rows else "<tr><td colspan='5' class='muted'>No neighbors under the current limit.</td></tr>")
         + "</table>"
     )
-    graph_type = entity_type if entity_type in _DASHBOARD_ENTITY_TYPES else _graph_type_from_node_id(center)
     return (
         "<div class='card'>"
         "<h2>Subgraph</h2>"
         f"<p class='muted'>{len(nodes)} nodes and {len(edges)} edges in the 1-hop neighborhood.</p>"
-        f"<p><a href='/graph?slug={html.escape(slug)}&amp;type={html.escape(graph_type)}'>"
-        "Open interactive graph view</a></p>"
+        + _render_entity_subgraph_svg(node_by_id, edges, center, sidecar_by_id)
         + table
         + "</div>"
     )
@@ -1186,17 +1414,60 @@ def _session_detail(session_id: str) -> dict:
 
 
 _CSS = """
-:root { color-scheme: light dark; }
+:root {
+    color-scheme: light dark;
+    --bg: #f5f7fb;
+    --surface: #ffffff;
+    --surface-2: #f8fafc;
+    --surface-3: #eef2f7;
+    --text: #0f172a;
+    --muted-text: #64748b;
+    --border: #d8e1ee;
+    --accent: #2563eb;
+    --accent-strong: #1d4ed8;
+    --accent-soft: #dbeafe;
+    --ok: #059669;
+    --warning: #d97706;
+    --danger: #dc2626;
+    --radius: 8px;
+    --shadow: 0 12px 34px rgba(15, 23, 42, 0.08);
+}
+* { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-       max-width: 1100px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-h1 { margin-top: 0; }
-a { color: #2563eb; text-decoration: none; }
+       max-width: 1180px; margin: 0 auto; padding: 1.25rem 1rem 2.5rem;
+       line-height: 1.5; background: var(--bg); color: var(--text); }
+h1 { margin-top: 0; letter-spacing: 0; }
+h2, h3 { letter-spacing: 0; }
+a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd;
+th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid var(--border);
          font-size: 0.92rem; }
-th { background: rgba(0,0,0,0.04); font-weight: 600; }
+th { background: var(--surface-3); font-weight: 600; }
 tr:hover { background: rgba(0,0,0,0.02); }
+button, input, select, textarea {
+    font: inherit;
+    color: inherit;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+}
+button {
+    cursor: pointer;
+    padding: 0.38rem 0.7rem;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 650;
+}
+button:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+button.secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
+button.secondary:hover { background: var(--surface-3); }
+input, select, textarea { padding: 0.42rem 0.55rem; }
+input:focus, select:focus, textarea:focus, button:focus {
+    outline: 2px solid var(--accent-soft);
+    outline-offset: 2px;
+}
 .pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
         font-size: 0.8rem; font-weight: 600; background: #e5e7eb; color: #111; }
 .entity-type-skill { background: #e0e7ff; color: #312e81; }
@@ -1208,15 +1479,26 @@ tr:hover { background: rgba(0,0,0,0.02); }
 .grade-C { background: #fef3c7; color: #78350f; }
 .grade-D { background: #fed7aa; color: #7c2d12; }
 .grade-F { background: #fee2e2; color: #7f1d1d; }
-code, pre { background: rgba(0,0,0,0.06); padding: 0 0.3rem; border-radius: 3px;
+code, pre { background: rgba(15,23,42,0.06); padding: 0 0.3rem; border-radius: 3px;
             font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.85rem; }
 pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
-.muted { color: #6b7280; font-size: 0.85rem; }
+.muted { color: var(--muted-text); font-size: 0.85rem; }
 .error { color: #991b1b; background: #fee2e2; border: 1px solid #fecaca;
          border-radius: 6px; padding: 0.5rem 0.65rem; }
-.nav { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
-.card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem 1.25rem;
-        margin-bottom: 1rem; }
+.nav { display: flex; gap: 0.35rem; margin: 0 0 1.4rem; align-items: center; flex-wrap: wrap;
+       position: sticky; top: 0; z-index: 10; padding: 0.55rem 0.45rem;
+       border: 1px solid var(--border); border-radius: var(--radius);
+       background: rgba(255,255,255,0.92); box-shadow: var(--shadow); backdrop-filter: blur(10px); }
+.nav a[draggable="true"] { cursor: grab; border-radius: 6px; padding: 0.28rem 0.48rem;
+                           font-weight: 620; color: #334155; }
+.nav a[draggable="true"]:hover { background: var(--surface-3); text-decoration: none; }
+.nav a.nav-dragging { opacity: 0.45; cursor: grabbing; }
+.nav a.nav-drag-over { outline: 2px solid #93c5fd; background: rgba(147,197,253,0.18); }
+.nav-reset { border: 1px solid #d1d5db; border-radius: 4px; background: transparent;
+             color: #6b7280; cursor: pointer; padding: 0.1rem 0.35rem; font-size: 0.78rem; }
+.card { border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem;
+        margin-bottom: 1rem; background: var(--surface); box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .wiki-entity-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
                     gap: 1rem; align-items: start; }
 .wiki-body { overflow-wrap: anywhere; }
@@ -1234,14 +1516,53 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 .entity-tab-panel[hidden] { display: none; }
 .quality-signal-table { table-layout: fixed; }
 .quality-signal-table td:last-child code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wizard-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+                 gap: 1rem; align-items: start; }
+.wizard-step { border-left: 3px solid var(--accent); padding-left: 0.8rem; margin-bottom: 1rem; }
+.wizard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+.wizard-grid label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.9rem; }
+.wizard-grid .wide { grid-column: 1 / -1; }
+.setup-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem;
+                align-items: end; margin-bottom: 1rem; }
+.setup-kicker { text-transform: uppercase; letter-spacing: 0; font-size: 0.74rem;
+                font-weight: 750; color: var(--muted-text); }
+.setup-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.55rem;
+              margin: 0.8rem 0 1rem; }
+.setup-flow-step { border: 1px solid var(--border); border-radius: var(--radius);
+                   background: var(--surface); padding: 0.7rem; min-height: 4.4rem; }
+.setup-flow-step strong { display: block; font-size: 0.88rem; margin-bottom: 0.2rem; }
+.command-box { background: #0f172a; color: #e2e8f0; border-radius: var(--radius);
+               padding: 0.85rem; white-space: pre-wrap; overflow-x: auto; min-height: 8rem; }
+.harness-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.8rem;
+                background: var(--surface); display: flex; flex-direction: column; gap: 0.35rem; }
+.harness-card[data-fit-hidden="true"] { display: none; }
+.harness-card.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.harness-card button { align-self: flex-start; }
 @media (max-width: 860px) {
     .wiki-entity-grid { grid-template-columns: 1fr; }
+    .wizard-layout, .wizard-grid, .setup-header, .setup-flow { grid-template-columns: 1fr; }
 }
 @media (prefers-color-scheme: dark) {
-    body { background: #0f172a; color: #e2e8f0; }
+    :root {
+        --bg: #0b1120;
+        --surface: #111827;
+        --surface-2: #0f172a;
+        --surface-3: #1f2937;
+        --text: #e5e7eb;
+        --muted-text: #94a3b8;
+        --border: #334155;
+        --accent: #60a5fa;
+        --accent-strong: #93c5fd;
+        --accent-soft: rgba(96,165,250,0.28);
+        --shadow: 0 12px 34px rgba(0,0,0,0.28);
+    }
+    body { background: var(--bg); color: var(--text); }
     th { background: rgba(255,255,255,0.05); }
     tr:hover { background: rgba(255,255,255,0.03); }
-    .card { border-color: #334155; }
+    .nav { background: rgba(17,24,39,0.92); }
+    .nav a[draggable="true"] { color: #e5e7eb; }
+    .nav a[draggable="true"]:hover { background: #1f2937; }
+    .card { border-color: var(--border); }
     .entity-tab-button { background: #0f172a; border-color: #334155; }
     .entity-tab-button.active { background: #e2e8f0; color: #0f172a; }
     code, pre { background: rgba(255,255,255,0.06); }
@@ -1253,29 +1574,202 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 
 def _layout(title: str, body: str) -> str:
     """Wrap body HTML in the standard page chrome."""
+    nav_items = (
+        ("home", "Home", "/"),
+        ("loaded", "Loaded", "/loaded"),
+        ("skills", "Skills", "/skills"),
+        ("wiki", "Wiki", "/wiki"),
+        ("graph", "Graph", "/graph"),
+        ("harness", "Harness Setup", "/harness"),
+        ("config", "Config", "/config"),
+        ("status", "Status", "/status"),
+        ("kpi", "KPIs", "/kpi"),
+        ("runtime", "Runtime", "/runtime"),
+        ("sessions", "Sessions", "/sessions"),
+        ("logs", "Logs", "/logs"),
+        ("events", "Live", "/events"),
+    )
+    nav_html = "".join(
+        f"<a href='{html.escape(href)}' data-nav-key='{html.escape(key)}' "
+        "draggable='true' title='Drag to reorder dashboard tabs'>"
+        f"{html.escape(label)}</a>"
+        for key, label, href in nav_items
+    )
+    nav_keys_json = json.dumps([key for key, _label, _href in nav_items])
+    nav_script = (
+        "<script>\n"
+        "(function () {\n"
+        "  const nav = document.getElementById('dashboard-nav');\n"
+        "  if (!nav) return;\n"
+        "  const storageKey = nav.dataset.navStorageKey;\n"
+        f"  const defaultKeys = {nav_keys_json};\n"
+        "  const reset = document.getElementById('nav-reset');\n"
+        "  function links() { return Array.from(nav.querySelectorAll('a[data-nav-key]')); }\n"
+        "  function linkFor(key) { return nav.querySelector('a[data-nav-key=\"' + CSS.escape(key) + '\"]'); }\n"
+        "  function applyOrder(order) {\n"
+        "    const valid = Array.isArray(order) ? order.filter(key => defaultKeys.includes(key)) : [];\n"
+        "    const merged = valid.concat(defaultKeys.filter(key => !valid.includes(key)));\n"
+        "    merged.forEach(key => { const link = linkFor(key); if (link) nav.appendChild(link); });\n"
+        "    if (reset) nav.appendChild(reset);\n"
+        "  }\n"
+        "  function saveOrder() {\n"
+        "    try { localStorage.setItem(storageKey, JSON.stringify(links().map(a => a.dataset.navKey))); } catch (_) {}\n"
+        "  }\n"
+        "  function clearDragState() {\n"
+        "    links().forEach(item => item.classList.remove('nav-drag-over', 'nav-dragging'));\n"
+        "  }\n"
+        "  function insertionTarget(clientX, clientY) {\n"
+        "    const candidates = links().filter(link => link !== dragged);\n"
+        "    if (!candidates.length) return reset;\n"
+        "    const sameRow = candidates.filter(link => {\n"
+        "      const rect = link.getBoundingClientRect();\n"
+        "      return clientY >= rect.top - 8 && clientY <= rect.bottom + 8;\n"
+        "    });\n"
+        "    const pool = sameRow.length ? sameRow : candidates;\n"
+        "    for (const link of pool) {\n"
+        "      const rect = link.getBoundingClientRect();\n"
+        "      if (clientX < rect.left + rect.width / 2) return link;\n"
+        "    }\n"
+        "    return reset;\n"
+        "  }\n"
+        "  function resetOrder() {\n"
+        "    try { localStorage.removeItem(storageKey); } catch (_) {}\n"
+        "    applyOrder(defaultKeys);\n"
+        "  }\n"
+        "  try { applyOrder(JSON.parse(localStorage.getItem(storageKey) || '[]')); } catch (_) { applyOrder(defaultKeys); }\n"
+        "  let dragged = null;\n"
+        "  links().forEach(link => {\n"
+        "    link.addEventListener('dragstart', event => {\n"
+        "      dragged = link;\n"
+        "      link.classList.add('nav-dragging');\n"
+        "      if (event.dataTransfer) {\n"
+        "        event.dataTransfer.effectAllowed = 'move';\n"
+        "        event.dataTransfer.setData('text/plain', link.dataset.navKey || '');\n"
+        "      }\n"
+        "    });\n"
+        "    link.addEventListener('dragend', () => {\n"
+        "      clearDragState();\n"
+        "      if (reset) nav.appendChild(reset);\n"
+        "      saveOrder();\n"
+        "      dragged = null;\n"
+        "    });\n"
+        "  });\n"
+        "  nav.addEventListener('dragover', event => {\n"
+        "    if (!dragged) return;\n"
+        "    event.preventDefault();\n"
+        "    const target = insertionTarget(event.clientX, event.clientY);\n"
+        "    links().forEach(item => item.classList.remove('nav-drag-over'));\n"
+        "    if (target && target !== dragged) {\n"
+        "      if (target.dataset && target.dataset.navKey) target.classList.add('nav-drag-over');\n"
+        "      nav.insertBefore(dragged, target);\n"
+        "      if (reset) nav.appendChild(reset);\n"
+        "    }\n"
+        "  });\n"
+        "  nav.addEventListener('drop', event => {\n"
+        "    if (!dragged) return;\n"
+        "    event.preventDefault();\n"
+        "    clearDragState();\n"
+        "    if (reset) nav.appendChild(reset);\n"
+        "    saveOrder();\n"
+        "  });\n"
+        "  if (reset) reset.addEventListener('click', resetOrder);\n"
+        "})();\n"
+        "</script>"
+    )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<title>{html.escape(title)} — ctx monitor</title>"
         f"<style>{_CSS}</style></head><body>"
-        "<div class='nav'>"
-        "<a href='/'>Home</a>"
-        "<a href='/loaded'>Loaded</a>"
-        "<a href='/skills'>Skills</a>"
-        "<a href='/wiki'>Wiki</a>"
-        "<a href='/graph'>Graph</a>"
-        "<a href='/status'>Status</a>"
-        "<a href='/kpi'>KPIs</a>"
-        "<a href='/runtime'>Runtime</a>"
-        "<a href='/sessions'>Sessions</a>"
-        "<a href='/logs'>Logs</a>"
-        "<a href='/events'>Live</a>"
+        "<div class='nav' id='dashboard-nav' "
+        "data-nav-storage-key='ctx-monitor-nav-order' "
+        "aria-label='Dashboard navigation'>"
+        + nav_html
+        + "<button type='button' id='nav-reset' class='nav-reset' "
+          "title='Reset dashboard tab order'>reset</button>"
         "</div>"
+        + nav_script
         + body
         + "</body></html>"
     )
 
 
 # ─── Graph neighborhood (for /graph) ────────────────────────────────────────
+
+
+def _graph_slug_from_node_id(node_id: str) -> str:
+    return node_id.split(":", 1)[-1] if ":" in node_id else node_id
+
+
+def _resolve_graph_center(
+    G: Any,
+    slug: str,
+    entity_type: str | None,
+) -> tuple[str | None, dict[str, str] | None, list[str]]:
+    """Resolve exact and fuzzy graph focus queries to one graph node id."""
+    raw_query = str(slug or "").strip()
+    if not raw_query or "/" in raw_query or "\\" in raw_query or ".." in raw_query:
+        return None, None, []
+    normalized_query = _slugish(raw_query)
+    if not normalized_query or not _is_safe_slug(normalized_query):
+        return None, None, []
+
+    entity_types = (
+        (entity_type,)
+        if entity_type is not None
+        else _DASHBOARD_ENTITY_TYPES
+    )
+    for current_type in entity_types:
+        for candidate_slug in (raw_query, normalized_query):
+            candidate = f"{current_type}:{candidate_slug}"
+            if candidate in G:
+                return candidate, None, [candidate_slug]
+
+    matches: list[tuple[tuple[int, int, int], str, str]] = []
+    query_tokens = set(normalized_query.split("-"))
+    for node_id in G.nodes:
+        node_type = _graph_type_from_node_id(str(node_id))
+        if node_type not in entity_types:
+            continue
+        data = G.nodes.get(node_id, {})
+        node_slug = _graph_slug_from_node_id(str(node_id))
+        label = str(data.get("label") or node_slug)
+        haystacks = {_slugish(node_slug), _slugish(label)}
+        tags = data.get("tags", [])
+        if isinstance(tags, list):
+            haystacks.update(_slugish(str(tag)) for tag in tags[:12])
+        rank = None
+        if normalized_query in haystacks:
+            rank = 0
+        elif any(h.startswith(normalized_query) for h in haystacks):
+            rank = 1
+        elif any(normalized_query in h for h in haystacks):
+            rank = 2
+        elif query_tokens and all(
+            any(token in h for h in haystacks) for token in query_tokens
+        ):
+            rank = 3
+        if rank is None:
+            continue
+        try:
+            degree = int(G.degree[node_id])
+        except Exception:  # noqa: BLE001
+            degree = 0
+        matches.append(((rank, len(node_slug), -degree), str(node_id), node_slug))
+
+    matches.sort(key=lambda item: item[0])
+    suggestions = []
+    for _, _node_id, suggestion in matches[:8]:
+        if suggestion not in suggestions:
+            suggestions.append(suggestion)
+    if not matches:
+        return None, None, suggestions
+    center = matches[0][1]
+    resolved_slug = _graph_slug_from_node_id(center)
+    return (
+        center,
+        {"query": raw_query, "slug": resolved_slug, "id": center},
+        suggestions,
+    )
 
 
 def _graph_neighborhood(
@@ -1290,7 +1784,7 @@ def _graph_neighborhood(
     schema is handled centrally. Returns an empty shape if the graph
     hasn't been built or the slug isn't a node.
     """
-    if not _is_safe_slug(slug):
+    if "/" in slug or "\\" in slug or ".." in slug:
         return {"nodes": [], "edges": [], "center": None}
     try:
         G = _load_dashboard_graph()
@@ -1303,16 +1797,9 @@ def _graph_neighborhood(
     normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
     if entity_type is not None and normalized_entity_type is None:
         return {"nodes": [], "edges": [], "center": None}
-    entity_types = (
-        (normalized_entity_type,)
-        if normalized_entity_type is not None
-        else _DASHBOARD_ENTITY_TYPES
+    center, resolved, suggestions = _resolve_graph_center(
+        G, slug, normalized_entity_type,
     )
-    for current_type in entity_types:
-        candidate = f"{current_type}:{slug}"
-        if candidate in G:
-            center = candidate
-            break
     if center is None:
         return {"nodes": [], "edges": [], "center": None}
 
@@ -1342,6 +1829,9 @@ def _graph_neighborhood(
                 "type": ntype,
                 "depth": depth,
                 "tags": tags[:6],
+                "description": data.get("description", ""),
+                "quality_score": data.get("quality_score"),
+                "usage_score": data.get("usage_score"),
                 "filter_tokens": [nid, label, nid.split(":", 1)[-1], *tags],
             },
         }
@@ -1377,6 +1867,11 @@ def _graph_neighborhood(
                             "target": other,
                             "weight": edata.get("weight", 1),
                             "shared_tags": shared_tags,
+                            "reasons": edata.get("reasons", []),
+                            "semantic": edata.get("semantic"),
+                            "tag_sim": edata.get("tag_sim"),
+                            "slug_token_sim": edata.get("slug_token_sim"),
+                            "source_overlap": edata.get("source_overlap"),
                         },
                     })
                 if other not in seen:
@@ -1392,6 +1887,8 @@ def _graph_neighborhood(
         "nodes": list(nodes_out.values()),
         "edges": edges_out,
         "center": center,
+        "resolved": resolved,
+        "suggestions": suggestions,
     }
 
 
@@ -1794,6 +2291,288 @@ def _top_degree_seeds(limit: int = 18, *, allow_load: bool = True) -> list[dict]
     return out
 
 
+def _read_default_config_raw() -> dict[str, Any]:
+    try:
+        from ctx_config import _read_default_config  # type: ignore
+
+        raw = _read_default_config()
+        return raw if isinstance(raw, dict) else {}
+    except Exception:  # noqa: BLE001
+        path = Path(__file__).with_name("config.json")
+        if not path.exists():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+
+def _read_user_config_raw() -> dict[str, Any]:
+    path = _user_config_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _deep_merge_config(base: dict[str, Any], override: dict[str, Any]) -> None:
+    for key, value in override.items():
+        if isinstance(base.get(key), dict) and isinstance(value, dict):
+            _deep_merge_config(base[key], value)
+        else:
+            base[key] = value
+
+
+def _config_value(raw: dict[str, Any], path: str, default: Any = None) -> Any:
+    current: Any = raw
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return default
+        current = current[part]
+    return current
+
+
+def _set_config_value(raw: dict[str, Any], path: str, value: Any) -> None:
+    current = raw
+    parts = path.split(".")
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[parts[-1]] = value
+
+
+def _delete_config_value(raw: dict[str, Any], path: str) -> None:
+    current = raw
+    parts = path.split(".")
+    parents: list[tuple[dict[str, Any], str]] = []
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            return
+        parents.append((current, part))
+        current = child
+    current.pop(parts[-1], None)
+    for parent, key in reversed(parents):
+        child = parent.get(key)
+        if isinstance(child, dict) and not child:
+            parent.pop(key, None)
+
+
+def _config_field_specs() -> tuple[dict[str, Any], ...]:
+    return (
+        {"group": "Knowledge", "path": "knowledge.mode", "type": "choice", "choices": ("shipped", "local", "enriched"), "required": True, "label": "Knowledge source mode", "help": "shipped uses ctx's packaged graph/wiki, local stays private, enriched starts from shipped knowledge and adds your own.", "example": "enriched"},
+        {"group": "Recommendation", "path": "resolver.recommendation_top_k", "type": "int", "min": 1, "max": 5, "required": True, "label": "Max mixed recommendations", "help": "Hard cap for the combined skills/agents/MCP recommendation bundle.", "example": 5},
+        {"group": "Recommendation", "path": "resolver.recommendation_min_normalized_score", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Minimum recommendation score", "help": "Drops weak skill/agent/MCP matches instead of recommending at all cost.", "example": 0.30},
+        {"group": "Recommendation", "path": "resolver.max_skills", "type": "int", "min": 1, "max": 50, "label": "Resolver hard skill ceiling", "help": "Maximum load candidates considered by a resolver call.", "example": 15},
+        {"group": "Harness", "path": "harness.recommendation_min_fit_score", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Minimum harness fit score", "help": "Custom/API/local model users only see harnesses at or above this fit floor.", "example": 0.85},
+        {"group": "Harness", "path": "harness.recommendation_min_normalized_score", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "label": "Harness normalized score floor", "help": "Compatibility display floor for older configs.", "example": 0.85},
+        {"group": "Micro-skills", "path": "skill_transformer.line_threshold", "type": "int", "min": 1, "max": 2000, "required": True, "label": "Micro-skill line threshold", "help": "Any SKILL.md above this many lines triggers the micro-skills conversion gate.", "example": 180},
+        {"group": "Micro-skills", "path": "skill_transformer.max_stage_lines", "type": "int", "min": 1, "max": 300, "label": "Max staged reference lines", "help": "Target maximum lines for each generated reference stage.", "example": 40},
+        {"group": "Micro-skills", "path": "skill_transformer.stage_count", "type": "int", "min": 1, "max": 20, "label": "Stage count", "help": "Target number of staged references for long skills.", "example": 5},
+        {"group": "Graph", "path": "graph.min_edge_weight", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Minimum final edge weight", "help": "Edges below this blended score are dropped from graph.json during rebuild.", "example": 0.03},
+        {"group": "Graph", "path": "graph.edge_weights.semantic", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Semantic edge weight", "help": "Semantic portion of the blended edge score. Semantic/tags/slug tokens should sum to 1.", "example": 0.70},
+        {"group": "Graph", "path": "graph.edge_weights.tags", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Tag edge weight", "help": "Tag-overlap portion of the blended edge score.", "example": 0.15},
+        {"group": "Graph", "path": "graph.edge_weights.slug_tokens", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Slug-token edge weight", "help": "Slug-token overlap portion of the blended edge score.", "example": 0.15},
+        {"group": "Graph", "path": "graph.semantic.top_k", "type": "int", "min": 1, "max": 200, "label": "Semantic neighbors per entity", "help": "Maximum nearest semantic neighbors retained per entity during graph build.", "example": 20},
+        {"group": "Graph", "path": "graph.semantic.build_floor", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "label": "Semantic build floor", "help": "Low inclusion bar used when graph embeddings are rebuilt.", "example": 0.50},
+        {"group": "Graph", "path": "graph.semantic.min_cosine", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Semantic display floor", "help": "Read-time semantic filter. Raising this is stricter without forcing a rebuild.", "example": 0.80},
+        {"group": "Graph", "path": "graph.tag_edges.dense_tag_threshold", "type": "int", "min": 1, "max": 10000, "label": "Dense tag cutoff", "help": "Tags shared by more than this many entities do not create broad noisy cliques.", "example": 500},
+        {"group": "Graph", "path": "graph.token_edges.dense_token_threshold", "type": "int", "min": 1, "max": 10000, "label": "Dense slug-token cutoff", "help": "Slug words shared by too many entities are ignored as edge creators.", "example": 30},
+        {"group": "Intake", "path": "intake.enabled", "type": "bool", "required": True, "label": "Intake quality gate", "help": "Runs duplicate/near-duplicate and body-quality checks when entities are added or updated.", "example": True},
+        {"group": "Intake", "path": "intake.dup_threshold", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "label": "Duplicate threshold", "help": "Similarity at or above this is treated as a duplicate.", "example": 0.93},
+        {"group": "Intake", "path": "intake.near_dup_threshold", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "label": "Near-duplicate threshold", "help": "Similarity at or above this asks the user to update/merge instead of blindly adding.", "example": 0.80},
+        {"group": "Paths", "path": "paths.wiki_dir", "type": "str", "required": True, "label": "Wiki directory", "help": "Runtime llm-wiki directory used by dashboard, graph, and recommendation flows.", "example": "~/.claude/skill-wiki"},
+        {"group": "Paths", "path": "paths.skills_dir", "type": "str", "required": True, "label": "Skills directory", "help": "Installed local skills directory.", "example": "~/.claude/skills"},
+        {"group": "Paths", "path": "paths.agents_dir", "type": "str", "required": True, "label": "Agents directory", "help": "Installed local agents directory.", "example": "~/.claude/agents"},
+    )
+
+
+_CONFIG_REMOVE = object()
+
+
+def _coerce_config_value(spec: dict[str, Any], raw_value: Any) -> Any:
+    if raw_value is None or (isinstance(raw_value, str) and raw_value.strip() == ""):
+        return _CONFIG_REMOVE
+    kind = spec.get("type", "str")
+    if kind == "bool":
+        if isinstance(raw_value, bool):
+            return raw_value
+        text = str(raw_value).strip().lower()
+        if text in {"true", "1", "yes", "on"}:
+            return True
+        if text in {"false", "0", "no", "off"}:
+            return False
+        raise ValueError(f"{spec['path']} must be true or false")
+    if kind == "int":
+        if isinstance(raw_value, bool):
+            raise ValueError(f"{spec['path']} must be an integer")
+        value: int | float = 0
+        value = int(raw_value)
+    elif kind == "float":
+        if isinstance(raw_value, bool):
+            raise ValueError(f"{spec['path']} must be a number")
+        value = float(raw_value)
+    elif kind == "choice":
+        choice_value = str(raw_value).strip()
+        if choice_value not in spec.get("choices", ()):
+            raise ValueError(f"{spec['path']} must be one of {spec.get('choices')}")
+        return choice_value
+    else:
+        text_value = str(raw_value).strip()
+        return text_value if text_value else _CONFIG_REMOVE
+    if "min" in spec and value < spec["min"]:
+        raise ValueError(f"{spec['path']} must be >= {spec['min']}")
+    if "max" in spec and value > spec["max"]:
+        raise ValueError(f"{spec['path']} must be <= {spec['max']}")
+    return value
+
+
+def _effective_config_payload() -> dict[str, Any]:
+    defaults = _read_default_config_raw()
+    user = _read_user_config_raw()
+    effective = json.loads(json.dumps(defaults))
+    _deep_merge_config(effective, user)
+    return {
+        "defaults": defaults,
+        "user": user,
+        "effective": effective,
+        "path": str(_user_config_path()),
+    }
+
+
+def _save_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
+    specs = {spec["path"]: spec for spec in _config_field_specs()}
+    unknown = sorted(set(updates) - set(specs))
+    if unknown:
+        return {"ok": False, "detail": f"unknown config keys: {', '.join(unknown)}"}
+    user_config = _read_user_config_raw()
+    try:
+        for path, raw_value in updates.items():
+            value = _coerce_config_value(specs[path], raw_value)
+            if value is _CONFIG_REMOVE:
+                _delete_config_value(user_config, path)
+            else:
+                _set_config_value(user_config, path, value)
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "detail": str(exc)}
+    config_path = _user_config_path()
+    with file_lock(config_path):
+        _atomic_write_text(
+            config_path,
+            json.dumps(user_config, indent=2, sort_keys=True) + "\n",
+        )
+    return {"ok": True, "detail": f"saved {len(updates)} config keys"}
+
+
+def _render_config() -> str:
+    payload = _effective_config_payload()
+    effective = payload["effective"]
+    user = payload["user"]
+    rows_by_group: dict[str, list[str]] = defaultdict(list)
+    for spec in _config_field_specs():
+        path = spec["path"]
+        value = _config_value(effective, path, "")
+        default = _config_value(payload["defaults"], path, "")
+        user_value = _config_value(user, path, _CONFIG_REMOVE)
+        is_override = user_value is not _CONFIG_REMOVE
+        required = bool(spec.get("required"))
+        req_html = " <span class='pill grade-A'>Required</span>" if required else ""
+        help_text = html.escape(str(spec.get("help", "")))
+        default_html = html.escape(json.dumps(default) if not isinstance(default, str) else default)
+        example_value = spec.get("example")
+        example_html = html.escape(json.dumps(example_value) if not isinstance(example_value, str) else str(example_value))
+        common_attrs = (
+            f"name='{html.escape(path)}' data-config-path='{html.escape(path)}' "
+            f"data-default='{default_html}' {'required' if required else ''}"
+        )
+        if spec.get("type") == "choice":
+            options = "".join(
+                f"<option value='{html.escape(str(choice))}' {'selected' if str(value) == str(choice) else ''}>"
+                f"{html.escape(str(choice))}</option>"
+                for choice in spec.get("choices", ())
+            )
+            control = f"<select {common_attrs}>{options}</select>"
+        elif spec.get("type") == "bool":
+            control = (
+                f"<select {common_attrs}>"
+                f"<option value='true' {'selected' if bool(value) else ''}>true</option>"
+                f"<option value='false' {'selected' if not bool(value) else ''}>false</option>"
+                "</select>"
+            )
+        elif spec.get("type") in {"int", "float"}:
+            step = spec.get("step", 1 if spec.get("type") == "int" else 0.01)
+            control = (
+                f"<input type='number' {common_attrs} "
+                f"min='{html.escape(str(spec.get('min', '')))}' "
+                f"max='{html.escape(str(spec.get('max', '')))}' "
+                f"step='{html.escape(str(step))}' "
+                f"value='{html.escape(str(value))}' placeholder='{default_html}'>"
+            )
+        else:
+            control = (
+                f"<input type='text' {common_attrs} "
+                f"value='{html.escape(str(value))}' placeholder='{default_html}'>"
+            )
+        override_html = (
+            "<span class='pill grade-B'>override</span>"
+            if is_override
+            else "<span class='muted'>default</span>"
+        )
+        rows_by_group[str(spec["group"])].append(
+            "<div class='card' style='margin:0 0 0.75rem 0;'>"
+            f"<label><strong>{html.escape(str(spec['label']))}</strong>{req_html}<br>"
+            f"<code>{html.escape(path)}</code></label>"
+            f"<div style='margin-top:0.45rem;'>{control}</div>"
+            f"<p class='muted' style='margin-bottom:0;'>{help_text}<br>"
+            f"Default: <code>{default_html}</code> · Example: <code>{example_html}</code> · "
+            f"{override_html}</p>"
+            "</div>"
+        )
+    group_html = "".join(
+        "<section style='margin-bottom:1rem;'>"
+        f"<h2>{html.escape(group)}</h2>"
+        + "".join(rows)
+        + "</section>"
+        for group, rows in rows_by_group.items()
+    )
+    token = _MONITOR_TOKEN or ""
+    body = (
+        "<h1>Config</h1>"
+        "<p class='muted'>Edit ctx runtime defaults from the dashboard. Blank values remove your override and fall back to the shipped default. Important fields are marked Required.</p>"
+        f"<p class='muted'>User config: <code>{html.escape(payload['path'])}</code></p>"
+        "<form id='config-form'>"
+        + group_html
+        + "<div class='card' style='position:sticky; bottom:0; background:rgba(255,255,255,0.96);'>"
+        "<button type='submit'>save config</button> "
+        "<button type='button' id='config-reset'>reset form to effective values</button> "
+        "<span id='config-msg' class='muted'></span>"
+        "</div></form>"
+        "<script>\n"
+        f"const CTX_MONITOR_TOKEN = {json.dumps(token)};\n"
+        "const form = document.getElementById('config-form');\n"
+        "const msg = document.getElementById('config-msg');\n"
+        "form.addEventListener('submit', async (ev) => {\n"
+        "  ev.preventDefault();\n"
+        "  const updates = {};\n"
+        "  form.querySelectorAll('[data-config-path]').forEach(el => { updates[el.dataset.configPath] = el.value; });\n"
+        "  msg.textContent = 'saving...';\n"
+        "  const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json', 'X-CTX-Monitor-Token':CTX_MONITOR_TOKEN}, body: JSON.stringify({updates})});\n"
+        "  let body = {}; try { body = await r.json(); } catch (_) {}\n"
+        "  msg.textContent = r.ok && body.ok ? body.detail : ('failed: ' + (body.detail || r.statusText));\n"
+        "});\n"
+        "document.getElementById('config-reset').addEventListener('click', () => location.reload());\n"
+        "</script>"
+    )
+    return _layout("Config", body)
+
+
 def _render_graph(focus: str | None = None, focus_type: str | None = None) -> str:
     """Interactive graph view backed by a dependency-free SVG renderer."""
     focus_slug = focus or ""
@@ -1927,74 +2706,112 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "    + '<div class=\"muted\" style=\"margin-bottom:0.5rem;\">Showing list view.</div>'\n"
         "    + rows + '</div>';\n"
         "}\n"
-        "function renderSvgGraph(g) {\n"
+        "function nodeDetail(d) {\n"
+        "  const tags = Array.from(d.tags || []).join(', ') || 'none';\n"
+        "  const quality = d.quality_score == null ? 'unknown' : Number(d.quality_score).toFixed(3);\n"
+        "  const desc = d.description ? ' · ' + d.description : '';\n"
+        "  return (d.label || nodeSlug(d.id)) + ' · ' + (d.type || 'entity') + desc + ' · tags: ' + tags + ' · quality: ' + quality;\n"
+        "}\n"
+        "function edgeDetail(d) {\n"
+        "  const tags = Array.from(d.shared_tags || []).join(', ') || 'none';\n"
+        "  const reasons = Array.from(d.reasons || []).join(', ') || 'graph score';\n"
+        "  const weight = Number(d.weight || 0).toFixed(3);\n"
+        "  return nodeSlug(d.source) + ' ↔ ' + nodeSlug(d.target) + ' · weight ' + weight + ' · shared: ' + tags + ' · reasons: ' + reasons;\n"
+        "}\n"
+        "function renderGraph3d(g) {\n"
         "  const nodes = g.nodes || [];\n"
         "  const edges = g.edges || [];\n"
         "  if (!nodes.length) { renderFallback(g); return; }\n"
         "  const width = Math.max(640, Math.floor(cyMount.clientWidth || 800));\n"
         "  const height = Math.max(420, Math.floor(cyMount.clientHeight || 520));\n"
-        "  const cx = width / 2;\n"
-        "  const cy0 = height / 2;\n"
         "  const center = nodes.find(n => (n.data || {}).depth === 0) || nodes[0];\n"
         "  const centerId = (center.data || {}).id;\n"
-        "  const maxDepth = Math.max(1, ...nodes.map(n => Number((n.data || {}).depth || 0)));\n"
-        "  const byDepth = new Map();\n"
-        "  nodes.forEach(n => {\n"
+        "  const points = new Map([[centerId, {x: 0, y: 0, z: 0}]]);\n"
+        "  const others = nodes.filter(n => (n.data || {}).id !== centerId);\n"
+        "  others.forEach((n, idx) => {\n"
         "    const d = n.data || {};\n"
-        "    if (d.id === centerId) return;\n"
-        "    const depth = Number(d.depth || 1);\n"
-        "    if (!byDepth.has(depth)) byDepth.set(depth, []);\n"
-        "    byDepth.get(depth).push(n);\n"
+        "    const i = idx + 1;\n"
+        "    const phi = Math.acos(1 - 2 * i / Math.max(2, others.length + 1));\n"
+        "    const theta = Math.PI * (3 - Math.sqrt(5)) * i;\n"
+        "    const depth = Math.max(1, Number(d.depth || 1));\n"
+        "    const radius = 180 + depth * 90;\n"
+        "    points.set(d.id, {x: radius * Math.cos(theta) * Math.sin(phi), y: radius * Math.sin(theta) * Math.sin(phi), z: radius * Math.cos(phi)});\n"
         "  });\n"
-        "  const pos = new Map([[centerId, {x: cx, y: cy0}]]);\n"
-        "  Array.from(byDepth.entries()).forEach(([depth, group]) => {\n"
-        "    const radius = Math.min(width, height) * (0.18 + 0.28 * (depth / maxDepth));\n"
-        "    group.forEach((n, idx) => {\n"
-        "      const angle = -Math.PI / 2 + (2 * Math.PI * idx / Math.max(1, group.length));\n"
-        "      pos.set((n.data || {}).id, {x: cx + radius * Math.cos(angle), y: cy0 + radius * Math.sin(angle)});\n"
-        "    });\n"
-        "  });\n"
-        "  const edgeHtml = edges.map(e => {\n"
-        "    const d = e.data || {};\n"
-        "    const s = pos.get(d.source);\n"
-        "    const t = pos.get(d.target);\n"
-        "    if (!s || !t) return '';\n"
-        "    const w = Math.max(1, Math.min(4, 1 + Math.sqrt(Math.max(0, Number(d.weight || 1)))));\n"
-        "    return '<line data-svg-edge-source=\"' + escapeHtml(d.source || '') + '\" '\n"
-        "      + 'data-svg-edge-target=\"' + escapeHtml(d.target || '') + '\" '\n"
-        "      + 'x1=\"' + s.x.toFixed(1) + '\" y1=\"' + s.y.toFixed(1) + '\" '\n"
-        "      + 'x2=\"' + t.x.toFixed(1) + '\" y2=\"' + t.y.toFixed(1) + '\" '\n"
-        "      + 'stroke=\"#94a3b8\" stroke-opacity=\"0.55\" stroke-width=\"' + w.toFixed(2) + '\" />';\n"
-        "  }).join('');\n"
-        "  const nodeHtml = nodes.map(n => {\n"
-        "    const d = n.data || {};\n"
-        "    const p = pos.get(d.id) || {x: cx, y: cy0};\n"
-        "    const tags = Array.from(d.filter_tokens || d.tags || []).join(' ');\n"
-        "    const label = d.label || nodeSlug(d.id);\n"
-        "    const isCenter = d.id === centerId;\n"
-        "    const r = isCenter ? 18 : 13;\n"
-        "    return '<a href=\"' + escapeHtml(wikiHref(d)) + '\"><g data-testid=\"graph-svg-node\" '\n"
-        "      + 'id=\"' + escapeHtml(nodeDomId(d.id)) + '\" data-svg-node-id=\"' + escapeHtml(d.id || '') + '\" '\n"
-        "      + 'data-type=\"' + escapeHtml(d.type || '') + '\" data-depth=\"' + escapeHtml(d.depth || 0) + '\" '\n"
-        "      + 'data-tags=\"' + escapeHtml(tags.toLowerCase()) + '\">'\n"
-        "      + '<title>' + escapeHtml(label + ' (' + (d.type || 'entity') + ')') + '</title>'\n"
-        "      + '<circle cx=\"' + p.x.toFixed(1) + '\" cy=\"' + p.y.toFixed(1) + '\" r=\"' + r + '\" '\n"
-        "      + 'fill=\"' + nodeColor(d.type) + '\" stroke=\"#fff\" stroke-width=\"2\" />'\n"
-        "      + '<text x=\"' + p.x.toFixed(1) + '\" y=\"' + (p.y + r + 14).toFixed(1) + '\" '\n"
-        "      + 'text-anchor=\"middle\" font-size=\"11\" fill=\"#111827\">' + escapeHtml(label).slice(0, 28) + '</text>'\n"
-        "      + '</g></a>';\n"
-        "  }).join('');\n"
         "  renderFallback(g);\n"
         "  const list = cyMount.querySelector('[data-testid=\"graph-fallback\"]');\n"
         "  const heading = list ? list.querySelector('.muted') : null;\n"
         "  if (heading) heading.remove();\n"
         "  const rows = list ? list.innerHTML : '';\n"
-        "  cyMount.innerHTML = '<div data-testid=\"graph-renderer\" style=\"height:100%; display:flex; flex-direction:column;\">'\n"
-        "    + '<svg data-testid=\"graph-svg\" viewBox=\"0 0 ' + width + ' ' + height + '\" '\n"
-        "    + 'style=\"display:block; width:100%; flex:1 1 auto; min-height:0; background:#fafafa;\">'\n"
-        "    + '<rect width=\"100%\" height=\"100%\" fill=\"#fafafa\" />' + edgeHtml + nodeHtml + '</svg>'\n"
-        "    + '<div data-testid=\"graph-list\" style=\"max-height:32%; overflow:auto; border-top:1px solid #e5e7eb;\">' + rows + '</div>'\n"
-        "    + '</div>';\n"
+        "  cyMount.innerHTML = '<div data-testid=\"graph-renderer\" style=\"height:100%; display:grid; grid-template-rows:auto minmax(0,1fr) auto 30%;\">'\n"
+        "    + '<div style=\"display:flex; align-items:center; gap:0.5rem; padding:0.45rem 0.6rem; border-bottom:1px solid #e5e7eb; background:#fff;\">'\n"
+        "    + '<button id=\"graph-zoom-in\" type=\"button\">zoom in</button><button id=\"graph-zoom-out\" type=\"button\">zoom out</button>'\n"
+        "    + '<span class=\"muted\">drag to rotate · wheel to zoom · hover nodes or edges</span></div>'\n"
+        "    + '<svg data-testid=\"graph-3d\" viewBox=\"0 0 ' + width + ' ' + height + '\" style=\"display:block; width:100%; height:100%; min-height:0; background:#f8fafc; touch-action:none;\"></svg>'\n"
+        "    + '<div style=\"display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; padding:0.45rem 0.6rem; border-top:1px solid #e5e7eb; background:#fff;\">'\n"
+        "    + '<div data-testid=\"graph-node-detail\" class=\"muted\">Hover a node for entity highlights.</div>'\n"
+        "    + '<div data-testid=\"graph-edge-detail\" class=\"muted\">Hover an edge for relationship signals.</div></div>'\n"
+        "    + '<div data-testid=\"graph-list\" style=\"overflow:auto; border-top:1px solid #e5e7eb;\">' + rows + '</div></div>';\n"
+        "  const svg = cyMount.querySelector('[data-testid=\"graph-3d\"]');\n"
+        "  const nodeDetailBox = cyMount.querySelector('[data-testid=\"graph-node-detail\"]');\n"
+        "  const edgeDetailBox = cyMount.querySelector('[data-testid=\"graph-edge-detail\"]');\n"
+        "  let yaw = -0.4;\n"
+        "  let pitch = 0.55;\n"
+        "  let zoom = 1;\n"
+        "  function project(p) {\n"
+        "    const cyaw = Math.cos(yaw), syaw = Math.sin(yaw);\n"
+        "    const cp = Math.cos(pitch), sp = Math.sin(pitch);\n"
+        "    const x1 = p.x * cyaw - p.z * syaw;\n"
+        "    const z1 = p.x * syaw + p.z * cyaw;\n"
+        "    const y1 = p.y * cp - z1 * sp;\n"
+        "    const z2 = p.y * sp + z1 * cp;\n"
+        "    const scale = zoom * 600 / (720 + z2);\n"
+        "    return {x: width / 2 + x1 * scale, y: height / 2 + y1 * scale, z: z2, scale};\n"
+        "  }\n"
+        "  function attach3dHoverHandlers() {\n"
+        "    svg.querySelectorAll('[data-node-detail]').forEach(n => n.addEventListener('mouseenter', () => { nodeDetailBox.textContent = n.dataset.nodeDetail || ''; }));\n"
+        "    svg.querySelectorAll('[data-edge-detail]').forEach(e => e.addEventListener('mouseenter', () => { edgeDetailBox.textContent = e.dataset.edgeDetail || ''; }));\n"
+        "  }\n"
+        "  function drawGraph3d() {\n"
+        "    const projected = new Map();\n"
+        "    points.forEach((p, id) => projected.set(id, project(p)));\n"
+        "    const edgeHtml = edges.map(e => {\n"
+        "      const d = e.data || {};\n"
+        "      const s = projected.get(d.source);\n"
+        "      const t = projected.get(d.target);\n"
+        "      if (!s || !t) return '';\n"
+        "      const w = Math.max(1, Math.min(4, 1 + Math.sqrt(Math.max(0, Number(d.weight || 1)))));\n"
+        "      return '<line data-testid=\"graph-svg-edge\" data-3d-edge-source=\"' + escapeHtml(d.source || '') + '\" data-3d-edge-target=\"' + escapeHtml(d.target || '') + '\" data-svg-edge-source=\"' + escapeHtml(d.source || '') + '\" data-svg-edge-target=\"' + escapeHtml(d.target || '') + '\" x1=\"' + s.x.toFixed(1) + '\" y1=\"' + s.y.toFixed(1) + '\" x2=\"' + t.x.toFixed(1) + '\" y2=\"' + t.y.toFixed(1) + '\" stroke=\"#64748b\" stroke-opacity=\"' + (0.35 + Math.min(0.4, Number(d.weight || 0) / 3)).toFixed(2) + '\" stroke-width=\"' + w.toFixed(2) + '\" />';\n"
+        "    }).join('');\n"
+        "    const nodeHtml = nodes.slice().sort((a, b) => (projected.get((a.data || {}).id)?.z || 0) - (projected.get((b.data || {}).id)?.z || 0)).map(n => {\n"
+        "      const d = n.data || {};\n"
+        "      const p = projected.get(d.id) || {x: width / 2, y: height / 2, z: 0, scale: 1};\n"
+        "      const tags = Array.from(d.filter_tokens || d.tags || []).join(' ');\n"
+        "      const label = d.label || nodeSlug(d.id);\n"
+        "      const isCenter = d.id === centerId;\n"
+        "      const r = Math.max(6, (isCenter ? 18 : 11) * Math.max(0.7, p.scale));\n"
+        "      return '<a href=\"' + escapeHtml(wikiHref(d)) + '\"><g data-testid=\"graph-3d-node\" id=\"' + escapeHtml(nodeDomId(d.id)) + '\" data-3d-node-id=\"' + escapeHtml(d.id || '') + '\" data-node-detail=\"' + escapeHtml(nodeDetail(d)) + '\" data-type=\"' + escapeHtml(d.type || '') + '\" data-depth=\"' + escapeHtml(d.depth || 0) + '\" data-tags=\"' + escapeHtml(tags.toLowerCase()) + '\"><title>' + escapeHtml(nodeDetail(d)) + '</title><circle data-testid=\"graph-svg-node\" cx=\"' + p.x.toFixed(1) + '\" cy=\"' + p.y.toFixed(1) + '\" r=\"' + r + '\" fill=\"' + nodeColor(d.type) + '\" stroke=\"#fff\" stroke-width=\"2\" /><text x=\"' + p.x.toFixed(1) + '\" y=\"' + (p.y + r + 14).toFixed(1) + '\" text-anchor=\"middle\" font-size=\"11\" fill=\"#111827\" style=\"pointer-events:none;\">' + escapeHtml(label).slice(0, 28) + '</text></g></a>';\n"
+        "    }).join('');\n"
+        "    const edgeHitHtml = edges.map(e => {\n"
+        "      const d = e.data || {};\n"
+        "      const s = projected.get(d.source);\n"
+        "      const t = projected.get(d.target);\n"
+        "      if (!s || !t) return '';\n"
+        "      const hx1 = s.x + (t.x - s.x) * 0.18, hy1 = s.y + (t.y - s.y) * 0.18;\n"
+        "      const hx2 = s.x + (t.x - s.x) * 0.82, hy2 = s.y + (t.y - s.y) * 0.82;\n"
+        "      return '<line data-testid=\"graph-3d-edge\" data-3d-edge-source=\"' + escapeHtml(d.source || '') + '\" data-3d-edge-target=\"' + escapeHtml(d.target || '') + '\" data-svg-edge-source=\"' + escapeHtml(d.source || '') + '\" data-svg-edge-target=\"' + escapeHtml(d.target || '') + '\" data-edge-detail=\"' + escapeHtml(edgeDetail(d)) + '\" x1=\"' + hx1.toFixed(1) + '\" y1=\"' + hy1.toFixed(1) + '\" x2=\"' + hx2.toFixed(1) + '\" y2=\"' + hy2.toFixed(1) + '\" stroke=\"transparent\" stroke-width=\"12\" style=\"pointer-events:stroke;\"><title>' + escapeHtml(edgeDetail(d)) + '</title></line>';\n"
+        "    }).join('');\n"
+        "    svg.innerHTML = '<rect width=\"100%\" height=\"100%\" fill=\"#f8fafc\" />' + edgeHtml + nodeHtml + edgeHitHtml;\n"
+        "    attach3dHoverHandlers();\n"
+        "    applyFilters();\n"
+        "  }\n"
+        "  document.getElementById('graph-zoom-in').addEventListener('click', () => { zoom = Math.min(2.5, zoom * 1.18); drawGraph3d(); });\n"
+        "  document.getElementById('graph-zoom-out').addEventListener('click', () => { zoom = Math.max(0.35, zoom / 1.18); drawGraph3d(); });\n"
+        "  let dragging = false, lastX = 0, lastY = 0;\n"
+        "  svg.addEventListener('pointerdown', ev => { dragging = true; lastX = ev.clientX; lastY = ev.clientY; svg.setPointerCapture(ev.pointerId); });\n"
+        "  svg.addEventListener('pointerup', ev => { dragging = false; try { svg.releasePointerCapture(ev.pointerId); } catch (_) {} });\n"
+        "  svg.addEventListener('pointermove', ev => { if (!dragging) return; yaw += (ev.clientX - lastX) * 0.01; pitch += (ev.clientY - lastY) * 0.01; pitch = Math.max(-1.35, Math.min(1.35, pitch)); lastX = ev.clientX; lastY = ev.clientY; drawGraph3d(); });\n"
+        "  svg.addEventListener('wheel', ev => { ev.preventDefault(); zoom = Math.max(0.35, Math.min(2.5, zoom * (ev.deltaY < 0 ? 1.08 : 0.92))); drawGraph3d(); }, {passive:false});\n"
+        "  drawGraph3d();\n"
         "}\n"
         "cyMount.innerHTML = '<div data-testid=\"graph-empty\" class=\"muted\" style=\"padding:0.75rem;\">Enter a slug to render the graph.</div>';\n"
         # ── Client-side filtering (type + tag substring) ─────────────
@@ -2021,11 +2838,14 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "      if (t in counts) counts[t]++;\n"
         "    }\n"
         "  });\n"
-        "  document.querySelectorAll('[data-svg-node-id]').forEach(n => {\n"
-        "    n.style.display = hiddenIds.has(n.dataset.svgNodeId || '') ? 'none' : '';\n"
+        "  document.querySelectorAll('[data-3d-node-id]').forEach(n => {\n"
+        "    n.style.display = hiddenIds.has(n.dataset['3dNodeId'] || '') ? 'none' : '';\n"
         "  });\n"
-        "  document.querySelectorAll('[data-svg-edge-source]').forEach(e => {\n"
-        "    const hidden = hiddenIds.has(e.dataset.svgEdgeSource || '') || hiddenIds.has(e.dataset.svgEdgeTarget || '');\n"
+        "  const edgeEls = new Set([...document.querySelectorAll('[data-3d-edge-source]'), ...document.querySelectorAll('[data-svg-edge-source]')]);\n"
+        "  edgeEls.forEach(e => {\n"
+        "    const source = e.dataset['3dEdgeSource'] || e.dataset.svgEdgeSource || '';\n"
+        "    const target = e.dataset['3dEdgeTarget'] || e.dataset.svgEdgeTarget || '';\n"
+        "    const hidden = hiddenIds.has(source) || hiddenIds.has(target);\n"
         "    e.style.display = hidden ? 'none' : '';\n"
         "  });\n"
         "  document.getElementById('graph-count-skill').textContent = counts.skill;\n"
@@ -2042,8 +2862,9 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "  if (!r.ok) { document.getElementById('msg').textContent = 'not found'; return; }\n"
         "  const g = await r.json();\n"
         "  if (!g.center) { document.getElementById('msg').textContent = 'slug not in graph'; return; }\n"
-        "  try { renderSvgGraph(g); } catch (err) { renderFallback(g); }\n"
-        "  document.getElementById('msg').textContent = g.nodes.length + ' nodes · ' + g.edges.length + ' edges';\n"
+        "  try { renderGraph3d(g); } catch (err) { renderFallback(g); }\n"
+        "  const resolved = g.resolved && g.resolved.query !== g.resolved.slug ? ' · showing ' + g.resolved.slug + ' for ' + g.resolved.query : '';\n"
+        "  document.getElementById('msg').textContent = g.nodes.length + ' nodes · ' + g.edges.length + ' edges' + resolved;\n"
         "  applyFilters();\n"
         "}\n"
         "function selectedFocusType() { return document.getElementById('focus-type').value || ''; }\n"
@@ -2340,6 +3161,270 @@ def _render_wiki_index() -> str:
         "</script>"
     )
     return _layout("Wiki", body)
+
+
+def _harness_wizard_entries(limit: int = 24) -> list[dict[str, Any]]:
+    """Return catalog harness pages for the manual dashboard wizard."""
+    harness_dir = _wiki_dir() / "entities" / "harnesses"
+    if not harness_dir.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in sorted(harness_dir.glob("*.md"), key=lambda p: p.stem.lower()):
+        if len(rows) >= limit:
+            break
+        slug = path.stem
+        if not _is_safe_slug(slug):
+            continue
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:4096]
+        except OSError:
+            continue
+        meta, _body = _parse_frontmatter(head)
+        sidecar = _harness_wizard_sidecar(slug) or {}
+        score = float(sidecar.get("raw_score", sidecar.get("score", 0.0)) or 0.0)
+        tags = _frontmatter_tags(meta.get("tags", ""), limit=None)
+        description, _truncated = _truncate_text(
+            _frontmatter_text(meta.get("description", "")),
+            260,
+        )
+        repo_url = _frontmatter_text(
+            meta.get("repo_url")
+            or meta.get("github_url")
+            or meta.get("homepage_url")
+            or ""
+        )
+        rows.append({
+            "slug": slug,
+            "title": _frontmatter_text(meta.get("title") or meta.get("name") or slug),
+            "description": description,
+            "tags": tags[:12],
+            "score": score,
+            "grade": str(sidecar.get("grade") or ""),
+            "repo_url": repo_url,
+        })
+    return sorted(rows, key=lambda row: (-float(row["score"]), str(row["slug"])))
+
+
+def _harness_wizard_sidecar(slug: str) -> dict[str, Any] | None:
+    """Load harness sidecar candidates without scanning every sidecar file."""
+    if not _is_safe_slug(slug):
+        return None
+    for path in (
+        _sidecar_dir() / f"{slug}.json",
+        _sidecar_dir() / f"{slug}-harness.json",
+    ):
+        if not path.exists():
+            continue
+        sidecar = _read_sidecar_file(path)
+        if sidecar is None:
+            continue
+        if sidecar.get("slug") == slug and _sidecar_entity_type(sidecar) == "harness":
+            return sidecar
+    return None
+
+
+def _render_harness_wizard() -> str:
+    """Manual harness interview for users who bring their own LLM."""
+    harnesses = _harness_wizard_entries()
+    provider_options = (
+        "openai", "anthropic", "google", "openrouter", "ollama",
+        "lm-studio", "local", "other",
+    )
+    provider_html = "".join(
+        f"<option value='{html.escape(provider)}'>{html.escape(provider)}</option>"
+        for provider in provider_options
+    )
+    tool_options = (
+        ("files", "Files"),
+        ("git", "Git"),
+        ("shell", "Shell"),
+        ("browser", "Browser"),
+        ("http", "HTTP/network"),
+        ("package-manager", "Package manager"),
+        ("database", "Database"),
+    )
+    tools_html = "".join(
+        "<label style='display:flex; align-items:center; gap:0.35rem;'>"
+        f"<input type='checkbox' name='tools' value='{html.escape(value)}' "
+        f"{'checked' if value in {'files', 'git', 'shell'} else ''}>"
+        f"{html.escape(label)}</label>"
+        for value, label in tool_options
+    )
+    harness_cards = "".join(
+        "<div class='harness-card' "
+        f"data-harness-slug='{html.escape(row['slug'])}' "
+        f"data-harness-text='{html.escape(' '.join([row['slug'], row['title'], row['description'], *row['tags']]).lower())}' "
+        f"data-harness-score='{float(row['score']):.3f}'>"
+        "<div style='display:flex; justify-content:space-between; gap:0.5rem; align-items:start;'>"
+        f"<strong>{html.escape(row['title'])}</strong>"
+        + (
+            f"<span class='pill grade-{html.escape(row['grade'])}'>{html.escape(row['grade'])}</span>"
+            if row["grade"]
+            else "<span class='pill entity-type-harness'>harness</span>"
+        )
+        + "</div>"
+        f"<p class='muted' style='margin:0;'>{html.escape(row['description'] or 'No description in catalog.')}</p>"
+        + (
+            "<div class='muted' style='font-size:0.78rem;'>"
+            + " ".join(f"<code>{html.escape(tag)}</code>" for tag in row["tags"][:8])
+            + "</div>"
+            if row["tags"]
+            else ""
+        )
+        + (
+            f"<a class='muted' href='{html.escape(row['repo_url'])}'>{html.escape(row['repo_url'])}</a>"
+            if row["repo_url"].startswith(("http://", "https://"))
+            else ""
+        )
+        + f"<code>ctx-harness-install {html.escape(row['slug'])} --dry-run</code>"
+        + f"<button type='button' class='secondary' data-select-harness='{html.escape(row['slug'])}'>select</button>"
+        + "</div>"
+        for row in harnesses
+    )
+    if not harness_cards:
+        harness_cards = (
+            "<p class='muted'>No harness catalog pages were found under "
+            "<code>~/.claude/skill-wiki/entities/harnesses/</code>. "
+            "Use the no-fit PRD output below to build an attachable harness.</p>"
+        )
+
+    body = (
+        "<div class='setup-header'>"
+        "<div><div class='setup-kicker'>Model -> intent -> install -> attach ctx</div>"
+        "<h1>Harness Setup</h1>"
+        "<p class='muted'>For users running their own API or local model instead of Claude Code. "
+        "Interview the model/runtime choice, generate a real ctx harness recommendation command, "
+        "then install a catalog harness or produce a no-fit PRD for a custom harness.</p></div>"
+        "<span class='pill entity-type-harness'>local/API model path</span>"
+        "</div>"
+        "<div class='setup-flow'>"
+        "<div class='setup-flow-step'><strong>1. Model</strong><span class='muted'>Provider, model slug, endpoint.</span></div>"
+        "<div class='setup-flow-step'><strong>2. Intent</strong><span class='muted'>Goal, OS, access, privacy.</span></div>"
+        "<div class='setup-flow-step'><strong>3. Install</strong><span class='muted'>Recommend, dry-run, install.</span></div>"
+        "<div class='setup-flow-step'><strong>4. Attach ctx</strong><span class='muted'>Graph/wiki recommendations flow into the harness.</span></div>"
+        "</div>"
+        "<div class='wizard-layout'>"
+        "<form id='harness-wizard-form' class='card'>"
+        "<div class='wizard-step'><strong>1. Model</strong>"
+        "<div class='wizard-grid' style='margin-top:0.65rem;'>"
+        "<label>Model provider <span class='pill grade-A'>Required</span>"
+        f"<select name='model_provider' required>{provider_html}</select></label>"
+        "<label>Model slug <span class='pill grade-A'>Required</span>"
+        "<input name='model' required placeholder='openai/gpt-5.5 or ollama/qwen3-coder'></label>"
+        "<label class='wide'>API base URL or local endpoint"
+        "<input name='endpoint' placeholder='https://api.openai.com/v1 or http://localhost:11434'></label>"
+        "</div></div>"
+        "<div class='wizard-step'><strong>2. Goal and access</strong>"
+        "<div class='wizard-grid' style='margin-top:0.65rem;'>"
+        "<label class='wide'>Development goal <span class='pill grade-A'>Required</span>"
+        "<textarea name='goal' rows='4' required placeholder='What should the agent build, fix, research, or operate?'></textarea></label>"
+        "<label>Runtime / OS"
+        "<select name='runtime'><option>windows</option><option>macos</option><option>linux</option>"
+        "<option selected>cross-platform</option></select></label>"
+        "<label>Autonomy"
+        "<select name='autonomy'><option>read-only</option><option selected>repo-write</option>"
+        "<option>deploy-capable</option></select></label>"
+        "<label class='wide'>Allowed tools"
+        f"<div style='display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:0.25rem;'>{tools_html}</div></label>"
+        "<label>Verification gates"
+        "<input name='verify' placeholder='pytest, ruff, mypy, build, smoke'></label>"
+        "<label>Privacy / network"
+        "<select name='privacy'><option selected>local repo only</option><option>network allowed</option>"
+        "<option>secrets allowed by env only</option><option>offline only</option></select></label>"
+        "<label>ctx attachment"
+        "<select name='attach_mode'><option selected>mcp</option><option>python</option><option>cli</option></select></label>"
+        "</div></div>"
+        "<div class='wizard-step'><strong>3. Recommend and install</strong>"
+        "<p class='muted'>The dashboard previews catalog matches. The command below calls the real harness recommender and keeps the no-fit path available.</p>"
+        "<button type='submit'>build recommendation command</button> "
+        "<button type='button' id='harness-reset' class='secondary'>reset</button>"
+        "</div>"
+        "</form>"
+        "<aside class='card'>"
+        "<h2 style='margin-top:0;'>Command plan</h2>"
+        "<pre class='command-box' data-testid='harness-command-output'>ctx-harness-install --recommend --goal \"...\" --model-provider openai --model openai/gpt-5.5 --top-k 5 --plan-on-no-fit</pre>"
+        "<p class='muted'>Run the dry-run first. The installer writes attach files under the harness target so the selected harness can connect to ctx graph/wiki recommendations.</p>"
+        "<div id='selected-harness-command' class='muted'>Select a harness card to see install, update, and validation commands.</div>"
+        "</aside>"
+        "</div>"
+        "<section class='card'>"
+        "<div style='display:flex; justify-content:space-between; gap:0.75rem; align-items:center; flex-wrap:wrap;'>"
+        "<div><h2 style='margin:0;'>Catalog harnesses</h2>"
+        "<p class='muted' style='margin:0.2rem 0 0;'>Cards are filtered by the interview text. If none fit, use the no-fit PRD path.</p></div>"
+        "<span id='harness-match-count' class='pill entity-type-harness'>0 matches</span>"
+        "</div>"
+        "<div id='harness-cards' style='display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:0.7rem; margin-top:0.8rem;'>"
+        + harness_cards
+        + "</div>"
+        "</section>"
+        "<section class='card'>"
+        "<h2>No-fit custom harness PRD</h2>"
+        "<p class='muted'>When no catalog harness clears the configured match score, generate a PRD for the user's strong model or engineering team. It must include orchestration, durable state, permissions, verification gates, and ctx recommendation hooks.</p>"
+        "<pre class='command-box' id='no-fit-command'>ctx-harness-install --recommend --goal \"...\" --model-provider openai --model openai/gpt-5.5 --plan-on-no-fit --plan-output custom-harness-prd.md</pre>"
+        "</section>"
+        "<script>\n"
+        "(function () {\n"
+        "  const form = document.getElementById('harness-wizard-form');\n"
+        "  const output = document.querySelector('[data-testid=\"harness-command-output\"]');\n"
+        "  const noFit = document.getElementById('no-fit-command');\n"
+        "  const selected = document.getElementById('selected-harness-command');\n"
+        "  const count = document.getElementById('harness-match-count');\n"
+        "  const cards = Array.from(document.querySelectorAll('.harness-card'));\n"
+        "  function value(name) { const el = form.elements[name]; return el ? String(el.value || '').trim() : ''; }\n"
+        "  function shellQuote(value) { return '\"' + String(value || '').replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"') + '\"'; }\n"
+        "  function checkedTools() { return Array.from(form.querySelectorAll('input[name=\"tools\"]:checked')).map(el => el.value).join(','); }\n"
+        "  function arg(flag, val) { return val ? ' ' + flag + ' ' + shellQuote(val) : ''; }\n"
+        "  function recommendCommand() {\n"
+        "    const tools = checkedTools();\n"
+        "    let cmd = 'ctx-harness-install --recommend';\n"
+        "    cmd += arg('--goal', value('goal'));\n"
+        "    cmd += arg('--model-provider', value('model_provider'));\n"
+        "    cmd += arg('--model', value('model'));\n"
+        "    cmd += arg('--harness-runtime', value('runtime'));\n"
+        "    cmd += arg('--harness-autonomy', value('autonomy'));\n"
+        "    cmd += arg('--harness-tools', tools);\n"
+        "    cmd += arg('--harness-verify', value('verify'));\n"
+        "    cmd += arg('--harness-privacy', value('privacy'));\n"
+        "    cmd += arg('--harness-attach-mode', value('attach_mode'));\n"
+        "    return cmd + ' --top-k 5 --plan-on-no-fit';\n"
+        "  }\n"
+        "  function fitCards() {\n"
+        "    const intent = [value('goal'), value('model_provider'), value('model'), value('runtime'), value('autonomy'), checkedTools(), value('verify'), value('privacy'), value('attach_mode')].join(' ').toLowerCase();\n"
+        "    const terms = intent.split(/[^a-z0-9_.-]+/).filter(Boolean);\n"
+        "    const host = document.getElementById('harness-cards');\n"
+        "    let visible = 0;\n"
+        "    cards.forEach(card => {\n"
+        "      const text = card.dataset.harnessText || '';\n"
+        "      const base = Number(card.dataset.harnessScore || 0);\n"
+        "      const hits = terms.filter(term => text.includes(term)).length;\n"
+        "      const fit = base + hits * 0.08;\n"
+        "      card.dataset.fit = fit.toFixed(3);\n"
+        "      const hide = terms.length > 0 && fit < 0.12;\n"
+        "      card.dataset.fitHidden = hide ? 'true' : 'false';\n"
+        "      if (!hide) visible++;\n"
+        "    });\n"
+        "    cards.sort((a, b) => Number(b.dataset.fit || 0) - Number(a.dataset.fit || 0)).forEach(card => host.appendChild(card));\n"
+        "    count.textContent = visible + ' matches';\n"
+        "  }\n"
+        "  function refresh() {\n"
+        "    const cmd = recommendCommand();\n"
+        "    output.textContent = cmd;\n"
+        "    noFit.textContent = cmd + ' --plan-output custom-harness-prd.md';\n"
+        "    fitCards();\n"
+        "  }\n"
+        "  form.addEventListener('submit', ev => { ev.preventDefault(); refresh(); });\n"
+        "  form.addEventListener('input', refresh);\n"
+        "  document.getElementById('harness-reset').addEventListener('click', () => { form.reset(); refresh(); });\n"
+        "  document.querySelectorAll('[data-select-harness]').forEach(btn => btn.addEventListener('click', () => {\n"
+        "    const slug = btn.dataset.selectHarness || '';\n"
+        "    cards.forEach(card => card.classList.toggle('selected', card.dataset.harnessSlug === slug));\n"
+        "    selected.innerHTML = '<pre class=\"command-box\">ctx-harness-install ' + slug + ' --dry-run\\nctx-harness-install ' + slug + '\\nctx-harness-install ' + slug + ' --update --dry-run\\nctx-scan-repo --recommend\\nctx-monitor serve</pre>';\n"
+        "  }));\n"
+        "  refresh();\n"
+        "})();\n"
+        "</script>"
+    )
+    return _layout("Harness Setup", body)
 
 
 def _kpi_summary():
@@ -3211,6 +4296,10 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_html(_render_logs())
             elif path == "/graph":
                 self._send_html(_render_graph(qs.get("slug"), qs.get("type")))
+            elif path == "/harness":
+                self._send_html(_render_harness_wizard())
+            elif path == "/config":
+                self._send_html(_render_config())
             elif path == "/status":
                 self._send_html(_render_status())
             elif path == "/wiki":
@@ -3237,15 +4326,17 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 })
             elif path == "/api/runtime.json":
                 self._send_json(_runtime_lifecycle_summary())
+            elif path == "/api/config.json":
+                self._send_json(_effective_config_payload())
             elif path.startswith("/api/skill/") and path.endswith(".json"):
-                slug = path[len("/api/skill/"): -len(".json")]
+                slug = unquote(path[len("/api/skill/"): -len(".json")])
                 sidecar = _load_sidecar(slug, entity_type=qs.get("type"))
                 if sidecar is None:
                     self._send_404(f"no sidecar for {slug}")
                 else:
                     self._send_json(sidecar)
             elif path.startswith("/api/graph/") and path.endswith(".json"):
-                slug = path[len("/api/graph/"): -len(".json")]
+                slug = unquote(path[len("/api/graph/"): -len(".json")])
                 requested_type = qs.get("type")
                 graph_entity_type = _normalize_dashboard_entity_type(requested_type)
                 if requested_type is not None and graph_entity_type is None:
@@ -3328,6 +4419,15 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_json_status(
                     200 if ok else 400, {"ok": ok, "detail": msg},
                 )
+            elif path == "/api/config":
+                updates = body.get("updates", {})
+                if not isinstance(updates, dict):
+                    self._send_json_status(
+                        400, {"ok": False, "detail": "updates must be an object"},
+                    )
+                    return
+                result = _save_config_updates(updates)
+                self._send_json_status(200 if result.get("ok") else 400, result)
             else:
                 self._send_404(path)
         except (BrokenPipeError, ConnectionAbortedError):

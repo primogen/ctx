@@ -187,10 +187,10 @@ ones are flagged. New ones self-ingest.
 
     ---
 
-    **v1.0.3** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
-    3,720 tests collected. Ships console scripts including `ctx-init`,
+    **v1.0.4** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
+    3,726 tests collected. Ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
-    skills, agents, and MCP servers, plus harness wiki/graph browsing),
+    skills, agents, and MCP servers, plus Harness Setup for user-owned LLMs),
     `ctx-dedup-check` (pre-ship near-duplicate gate), and
     `ctx-tag-backfill` (catalog hygiene), plus a fast runtime graph artifact
     and the full ~336 MiB wiki tarball with **102,696 nodes / 2,900,834
