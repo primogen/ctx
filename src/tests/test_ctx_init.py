@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import hashlib
 import io
 import json
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import networkx as nx
+import pytest
 import ctx_init as ci
 
 
@@ -301,6 +303,71 @@ def _write_graph_archive(tmp_path: Path) -> Path:
     return archive
 
 
+def _tar_text(tf: tarfile.TarFile, name: str, text: str) -> None:
+    payload = text.encode("utf-8")
+    info = tarfile.TarInfo(name)
+    info.size = len(payload)
+    tf.addfile(info, io.BytesIO(payload))
+
+
+def test_download_graph_archive_verifies_sha256(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    payload = b"graph archive bytes"
+
+    class _Response(io.BytesIO):
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        ci.urllib.request,
+        "urlopen",
+        lambda _url, timeout=120: _Response(payload),
+    )
+
+    destination = tmp_path / "wiki-graph.tar.gz"
+    ci._download_graph_archive(
+        destination,
+        url="https://example.invalid/wiki-graph.tar.gz",
+        expected_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    assert destination.read_bytes() == payload
+
+    bad_destination = tmp_path / "bad-wiki-graph.tar.gz"
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        ci._download_graph_archive(
+            bad_destination,
+            url="https://example.invalid/wiki-graph.tar.gz",
+            expected_sha256="0" * 64,
+        )
+    assert not bad_destination.exists()
+
+
+def test_custom_graph_url_requires_checksum_or_explicit_opt_out(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(ci, "_find_local_graph_archive", lambda _mode: None)
+    monkeypatch.setattr(
+        ci,
+        "_download_graph_archive",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("download should be blocked before network access")
+        ),
+    )
+
+    rc = ci.build_graph(
+        tmp_path / "home",
+        graph_url="https://example.invalid/wiki-graph.tar.gz",
+    )
+
+    assert rc == 1
+
+
 def test_main_with_graph_flag_installs_prebuilt_graph(
     tmp_path: Path,
     monkeypatch,
@@ -345,6 +412,67 @@ def test_main_with_graph_flag_installs_prebuilt_graph(
     ).exists()
     assert not any("ctx.core.wiki.wiki_graphify" in c for c in calls)
     assert not any(c == "wiki_graphify" for call in calls for c in call)
+
+
+def test_runtime_graph_install_extracts_harness_pages_after_required_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    archive = tmp_path / "ordered-runtime-wiki-graph.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        _tar_text(
+            tf,
+            "graphify-out/graph.json",
+            json.dumps({
+                "graph": {"export_id": "test-export"},
+                "nodes": [{"id": "harness:text-to-cad", "type": "harness"}],
+                "links": [],
+            }),
+        )
+        _tar_text(
+            tf,
+            "graphify-out/graph-delta.json",
+            json.dumps({"export_id": "test-export", "nodes": [], "edges": []}),
+        )
+        _tar_text(
+            tf,
+            "graphify-out/communities.json",
+            json.dumps({"export_id": "test-export", "total_communities": 0}),
+        )
+        _tar_text(tf, "graphify-out/graph-report.md", "# Graph Report\n")
+        _tar_text(
+            tf,
+            "graphify-out/graph-export-manifest.json",
+            json.dumps({
+                "version": 1,
+                "export_id": "test-export",
+                "artifacts": {
+                    "graph": "graph.json",
+                    "delta": "graph-delta.json",
+                    "communities": "communities.json",
+                    "report": "graph-report.md",
+                },
+            }),
+        )
+        _tar_text(tf, "external-catalogs/skills-sh/catalog.json", "{}")
+        _tar_text(tf, "index.md", "# Wiki\n")
+        _tar_text(tf, "entities/harnesses/text-to-cad.md", "# Text to CAD\n")
+        _tar_text(tf, "entities/skills/not-runtime.md", "# Not runtime\n")
+
+    claude = tmp_path / "home"
+    monkeypatch.setattr(
+        ci,
+        "_find_local_graph_archive",
+        lambda _install_mode="runtime": archive,
+    )
+
+    assert ci.build_graph(claude) == 0
+    assert (
+        claude / "skill-wiki" / "entities" / "harnesses" / "text-to-cad.md"
+    ).is_file()
+    assert not (
+        claude / "skill-wiki" / "entities" / "skills" / "not-runtime.md"
+    ).exists()
 
 
 def test_graph_install_rejects_incomplete_archive(

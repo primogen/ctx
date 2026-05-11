@@ -36,6 +36,7 @@ a user's config or hook settings without an explicit ``--force`` flag.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -217,6 +218,10 @@ _GRAPH_ARCHIVE_NAMES = {
     "runtime": _GRAPH_RUNTIME_ARCHIVE_NAME,
     "full": _GRAPH_ARCHIVE_NAME,
 }
+_GRAPH_ARCHIVE_SHA256 = {
+    "runtime": "06c747f2f37374a95fd2d99ed042557b3702138d7216651b4d7fb51975cbdc6f",
+    "full": "c6a6229f3ecb5decb69418d3f61773cf0728ceabab0a981f2e204f74cca7c7a7",
+}
 _GRAPH_RELEASE_URL = (
     "https://github.com/stevesolun/ctx/releases/download/"
     "v{version}/{archive_name}"
@@ -262,6 +267,8 @@ def build_graph(
     *,
     force: bool = False,
     graph_url: str | None = None,
+    graph_sha256: str | None = None,
+    allow_unverified_graph_url: bool = False,
     install_mode: str = "runtime",
 ) -> int:
     """Install the pre-built knowledge graph into ``~/.claude/skill-wiki``."""
@@ -286,8 +293,14 @@ def build_graph(
             temp_dir = tempfile.TemporaryDirectory(prefix="ctx-graph-download-")
             archive = Path(temp_dir.name) / _graph_archive_name(install_mode)
             url = graph_url or _release_graph_url(install_mode)
+            expected_sha256 = _expected_graph_archive_sha256(
+                install_mode=install_mode,
+                graph_url=graph_url,
+                graph_sha256=graph_sha256,
+                allow_unverified_graph_url=allow_unverified_graph_url,
+            )
             print(f"Downloading pre-built graph from {url}")
-            _download_graph_archive(archive, url=url)
+            _download_graph_archive(archive, url=url, expected_sha256=expected_sha256)
         else:
             print(f"Installing pre-built graph from {archive}")
         _extract_graph_archive(archive, wiki_dir, install_mode=install_mode)
@@ -337,6 +350,28 @@ def _graph_archive_name(install_mode: str) -> str:
     return _GRAPH_ARCHIVE_NAMES.get(install_mode, _GRAPH_RUNTIME_ARCHIVE_NAME)
 
 
+def _expected_graph_archive_sha256(
+    *,
+    install_mode: str,
+    graph_url: str | None,
+    graph_sha256: str | None,
+    allow_unverified_graph_url: bool,
+) -> str | None:
+    if graph_sha256:
+        normalized = graph_sha256.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+            raise ValueError("--graph-sha256 must be a 64-character SHA-256 hex digest")
+        return normalized
+    if graph_url is None or graph_url == _release_graph_url(install_mode):
+        return _GRAPH_ARCHIVE_SHA256[install_mode]
+    if allow_unverified_graph_url:
+        return None
+    raise ValueError(
+        "custom --graph-url requires --graph-sha256, or pass "
+        "--allow-unverified-graph-url to opt out explicitly"
+    )
+
+
 def _package_version() -> str:
     try:
         return package_version("claude-ctx")
@@ -348,11 +383,30 @@ def _package_version() -> str:
         return str(__version__)
 
 
-def _download_graph_archive(destination: Path, *, url: str) -> None:
+def _download_graph_archive(
+    destination: Path,
+    *,
+    url: str,
+    expected_sha256: str | None,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    hasher = hashlib.sha256()
     with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310
         with destination.open("wb") as fh:
-            shutil.copyfileobj(response, fh)
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                hasher.update(chunk)
+    if expected_sha256 is not None:
+        actual_sha256 = hasher.hexdigest()
+        if actual_sha256.lower() != expected_sha256.lower():
+            destination.unlink(missing_ok=True)
+            raise ValueError(
+                "graph archive checksum mismatch: "
+                f"expected {expected_sha256.lower()} got {actual_sha256.lower()}"
+            )
 
 
 def _extract_graph_archive(
@@ -408,11 +462,6 @@ def _extract_graph_archive_to_dir(
                 shutil.copyfileobj(source, fh)
             if safe_name in _GRAPH_REQUIRED_FILES:
                 extracted_required.add(safe_name)
-                if (
-                    install_mode == "runtime"
-                    and _GRAPH_REQUIRED_FILES <= extracted_required
-                ):
-                    break
 
 
 def _graph_install_complete(wiki_dir: Path) -> bool:
@@ -1579,6 +1628,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Override the pre-built wiki-graph.tar.gz download URL",
     )
     parser.add_argument(
+        "--graph-sha256",
+        help="Expected SHA-256 digest for a custom --graph-url archive",
+    )
+    parser.add_argument(
+        "--allow-unverified-graph-url",
+        action="store_true",
+        help=(
+            "Allow a custom --graph-url without checksum verification. "
+            "Use only for local/private trusted mirrors."
+        ),
+    )
+    parser.add_argument(
         "--graph-install-mode",
         choices=_GRAPH_INSTALL_MODES,
         default="runtime",
@@ -1720,6 +1781,8 @@ def main(argv: list[str] | None = None) -> int:
             claude,
             force=args.force,
             graph_url=args.graph_url,
+            graph_sha256=args.graph_sha256,
+            allow_unverified_graph_url=args.allow_unverified_graph_url,
             install_mode=args.graph_install_mode,
         )
         if rc == 0:
