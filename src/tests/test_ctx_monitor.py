@@ -1005,6 +1005,25 @@ def test_render_events_shows_recent_audit_backlog(fake_claude: Path) -> None:
     assert "id='stream-status'" in html_out
 
 
+def test_live_alias_renders_events_page(
+    fake_claude: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_audit(fake_claude, [
+        {"ts": "t1", "event": "skill.loaded", "subject": "python-patterns"},
+    ])
+    server, thread, port = _serve_monitor(monkeypatch)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/live", timeout=5) as response:
+            html_out = response.read().decode("utf-8")
+        assert response.status == 200
+        assert "Live events" in html_out
+        assert "python-patterns" in html_out
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_wiki_entity_path_finds_skill_page(fake_claude: Path) -> None:
     skills_dir = fake_claude / "skill-wiki" / "entities" / "skills"
     skills_dir.mkdir(parents=True)
@@ -1335,6 +1354,49 @@ def test_graph_neighborhood_sizes_nodes_by_score_usage_and_popularity(
     assert "quality 0.950" in hub["size_reason"]
     assert "usage 0.800" in hub["size_reason"]
     assert "popularity" in hub["size_reason"]
+
+
+def test_graph_neighborhood_reuses_sidecar_index_for_slug_fallback(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import networkx as nx
+
+    monkeypatch.setattr(cm, "_SIDECAR_INDEX_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_SIDECAR_INDEX_CACHE_VALUE", None)
+    sidecar_dir = fake_claude / "skill-quality"
+    for i in range(12):
+        (sidecar_dir / f"alias-{i}.json").write_text(
+            json.dumps({
+                "slug": f"node-{i}",
+                "subject_type": "skill",
+                "score": 0.5,
+                "signals": {"telemetry": {"score": 0.1}},
+            }),
+            encoding="utf-8",
+        )
+
+    G = nx.Graph()
+    G.add_node("skill:center", label="center", type="skill", tags=["x"])
+    for i in range(6):
+        G.add_node(f"skill:node-{i}", label=f"node-{i}", type="skill", tags=["x"])
+        G.add_edge("skill:center", f"skill:node-{i}", weight=1.0)
+    monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
+
+    calls = 0
+    original = cm._read_sidecar_file
+
+    def counted(path: Path):
+        nonlocal calls
+        calls += 1
+        return original(path)
+
+    monkeypatch.setattr(cm, "_read_sidecar_file", counted)
+
+    result = cm._graph_neighborhood("center", entity_type="skill")
+
+    assert result["center"] == "skill:center"
+    assert calls == 12
 
 
 def test_graph_helpers_reuse_graph_loaded_from_same_file(
@@ -1873,6 +1935,28 @@ def test_save_config_updates_casts_values_and_blank_removes_override(
     assert raw["skill_transformer"]["line_threshold"] == 240
     assert raw["intake"]["enabled"] is False
     assert raw["graph"]["edge_weights"]["semantic"] == 0.65
+
+
+def test_render_config_posts_only_dirty_fields_and_can_clear_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claude = tmp_path / ".claude"
+    monkeypatch.setattr(cm, "_claude_dir", lambda: claude)
+    config_path = claude / "skill-system-config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"resolver": {"recommendation_top_k": 4}}),
+        encoding="utf-8",
+    )
+
+    html_out = cm._render_config()
+
+    assert "Saves only changed fields" in html_out
+    assert "data-original-value='4'" in html_out
+    assert "data-config-clear='resolver.recommendation_top_k'" in html_out
+    assert "no config changes to save" in html_out
+    assert "el.dataset.originalValue" in html_out
 
 
 def test_render_graph_landing_shows_seeds_when_available(monkeypatch) -> None:
