@@ -1522,12 +1522,16 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     top nav — the user explicitly asked for them to be accessible."""
     out = cm._layout("test", "<p>body</p>")
     assert "href='/wiki'" in out
+    assert "href='/harness'" in out
     assert "href='/kpi'" in out
     assert "href='/graph'" in out
     assert "href='/config'" in out
     assert ">Wiki<" in out
+    assert ">Harness<" in out
     assert ">KPIs<" in out
     assert ">Config<" in out
+    assert "--surface" in out
+    assert "--accent" in out
 
 
 def test_layout_nav_tabs_are_draggable_and_persist_order() -> None:
@@ -1563,6 +1567,74 @@ def test_render_config_page_shows_required_defaults_and_examples(
     assert "Default: <code>180</code>" in html_out
     assert "Example:" in html_out
     assert "id='config-form'" in html_out
+
+
+def test_render_harness_wizard_guides_model_choice_and_real_commands(
+    fake_claude: Path,
+) -> None:
+    harness_dir = fake_claude / "skill-wiki" / "entities" / "harnesses"
+    harness_dir.mkdir(parents=True)
+    (harness_dir / "langgraph.md").write_text(
+        "\n".join([
+            "---",
+            "title: LangGraph harness",
+            "type: harness",
+            "description: Durable Python agent workflows with tool routing.",
+            "tags: [python, api, local, verification]",
+            "repo_url: https://github.com/langchain-ai/langgraph",
+            "---",
+            "# LangGraph harness",
+        ]),
+        encoding="utf-8",
+    )
+    _write_sidecar(fake_claude, "langgraph-harness", {
+        "slug": "langgraph",
+        "subject_type": "harness",
+        "grade": "A",
+        "raw_score": 0.93,
+        "hard_floor": "",
+    })
+
+    html_out = cm._render_harness_wizard()
+
+    assert "<h1>Harness wizard</h1>" in html_out
+    assert "id='harness-wizard-form'" in html_out
+    assert "Model provider" in html_out
+    assert "Development goal" in html_out
+    assert "data-harness-slug='langgraph'" in html_out
+    assert "ctx-harness-install --recommend" in html_out
+    assert "ctx-harness-install langgraph --dry-run" in html_out
+    assert "--plan-on-no-fit" in html_out
+    assert "ctx attachment" in html_out
+    assert "data-testid='harness-command-output'" in html_out
+
+
+def test_harness_wizard_entries_do_not_scan_full_sidecar_tree(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness_dir = fake_claude / "skill-wiki" / "entities" / "harnesses"
+    harness_dir.mkdir(parents=True)
+    (harness_dir / "langgraph.md").write_text(
+        "---\ntitle: LangGraph harness\ntype: harness\n---\n# body\n",
+        encoding="utf-8",
+    )
+    _write_sidecar(fake_claude, "langgraph-harness", {
+        "slug": "langgraph",
+        "subject_type": "harness",
+        "grade": "A",
+        "raw_score": 0.93,
+    })
+    monkeypatch.setattr(
+        cm,
+        "_sidecar_files",
+        lambda: (_ for _ in ()).throw(AssertionError("full sidecar scan")),
+    )
+
+    entries = cm._harness_wizard_entries()
+
+    assert entries[0]["slug"] == "langgraph"
+    assert entries[0]["grade"] == "A"
 
 
 def test_save_config_updates_casts_values_and_blank_removes_override(

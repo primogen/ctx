@@ -17,6 +17,7 @@ Routes:
     /wiki/<slug>?type=<entity>  One wiki entity page (frontmatter + body)
     /graph                      Built-in graph explorer + popular seeds
     /graph?slug=<slug>&type=... Focus graph view on a specific entity
+    /harness                    Manual harness selection + install wizard
     /config                     Editable ctx config with defaults fallback
     /status                     Durable queue + graph/wiki artifact state
     /kpi                        Grade / lifecycle / category KPIs
@@ -1413,17 +1414,60 @@ def _session_detail(session_id: str) -> dict:
 
 
 _CSS = """
-:root { color-scheme: light dark; }
+:root {
+    color-scheme: light dark;
+    --bg: #f5f7fb;
+    --surface: #ffffff;
+    --surface-2: #f8fafc;
+    --surface-3: #eef2f7;
+    --text: #0f172a;
+    --muted-text: #64748b;
+    --border: #d8e1ee;
+    --accent: #2563eb;
+    --accent-strong: #1d4ed8;
+    --accent-soft: #dbeafe;
+    --ok: #059669;
+    --warning: #d97706;
+    --danger: #dc2626;
+    --radius: 8px;
+    --shadow: 0 12px 34px rgba(15, 23, 42, 0.08);
+}
+* { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-       max-width: 1100px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-h1 { margin-top: 0; }
-a { color: #2563eb; text-decoration: none; }
+       max-width: 1180px; margin: 0 auto; padding: 1.25rem 1rem 2.5rem;
+       line-height: 1.5; background: var(--bg); color: var(--text); }
+h1 { margin-top: 0; letter-spacing: 0; }
+h2, h3 { letter-spacing: 0; }
+a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd;
+th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid var(--border);
          font-size: 0.92rem; }
-th { background: rgba(0,0,0,0.04); font-weight: 600; }
+th { background: var(--surface-3); font-weight: 600; }
 tr:hover { background: rgba(0,0,0,0.02); }
+button, input, select, textarea {
+    font: inherit;
+    color: inherit;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+}
+button {
+    cursor: pointer;
+    padding: 0.38rem 0.7rem;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 650;
+}
+button:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+button.secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
+button.secondary:hover { background: var(--surface-3); }
+input, select, textarea { padding: 0.42rem 0.55rem; }
+input:focus, select:focus, textarea:focus, button:focus {
+    outline: 2px solid var(--accent-soft);
+    outline-offset: 2px;
+}
 .pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
         font-size: 0.8rem; font-weight: 600; background: #e5e7eb; color: #111; }
 .entity-type-skill { background: #e0e7ff; color: #312e81; }
@@ -1435,20 +1479,26 @@ tr:hover { background: rgba(0,0,0,0.02); }
 .grade-C { background: #fef3c7; color: #78350f; }
 .grade-D { background: #fed7aa; color: #7c2d12; }
 .grade-F { background: #fee2e2; color: #7f1d1d; }
-code, pre { background: rgba(0,0,0,0.06); padding: 0 0.3rem; border-radius: 3px;
+code, pre { background: rgba(15,23,42,0.06); padding: 0 0.3rem; border-radius: 3px;
             font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.85rem; }
 pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
-.muted { color: #6b7280; font-size: 0.85rem; }
+.muted { color: var(--muted-text); font-size: 0.85rem; }
 .error { color: #991b1b; background: #fee2e2; border: 1px solid #fecaca;
          border-radius: 6px; padding: 0.5rem 0.65rem; }
-.nav { display: flex; gap: 0.75rem; margin-bottom: 1.5rem; align-items: center; flex-wrap: wrap; }
-.nav a[draggable="true"] { cursor: grab; border-radius: 4px; padding: 0.1rem 0.2rem; }
+.nav { display: flex; gap: 0.35rem; margin: 0 0 1.4rem; align-items: center; flex-wrap: wrap;
+       position: sticky; top: 0; z-index: 10; padding: 0.55rem 0.45rem;
+       border: 1px solid var(--border); border-radius: var(--radius);
+       background: rgba(255,255,255,0.92); box-shadow: var(--shadow); backdrop-filter: blur(10px); }
+.nav a[draggable="true"] { cursor: grab; border-radius: 6px; padding: 0.28rem 0.48rem;
+                           font-weight: 620; color: #334155; }
+.nav a[draggable="true"]:hover { background: var(--surface-3); text-decoration: none; }
 .nav a.nav-dragging { opacity: 0.45; cursor: grabbing; }
 .nav a.nav-drag-over { outline: 2px solid #93c5fd; background: rgba(147,197,253,0.18); }
 .nav-reset { border: 1px solid #d1d5db; border-radius: 4px; background: transparent;
              color: #6b7280; cursor: pointer; padding: 0.1rem 0.35rem; font-size: 0.78rem; }
-.card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem 1.25rem;
-        margin-bottom: 1rem; }
+.card { border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem;
+        margin-bottom: 1rem; background: var(--surface); box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .wiki-entity-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
                     gap: 1rem; align-items: start; }
 .wiki-body { overflow-wrap: anywhere; }
@@ -1466,14 +1516,44 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 .entity-tab-panel[hidden] { display: none; }
 .quality-signal-table { table-layout: fixed; }
 .quality-signal-table td:last-child code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wizard-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+                 gap: 1rem; align-items: start; }
+.wizard-step { border-left: 3px solid var(--accent); padding-left: 0.8rem; margin-bottom: 1rem; }
+.wizard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+.wizard-grid label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.9rem; }
+.wizard-grid .wide { grid-column: 1 / -1; }
+.command-box { background: #0f172a; color: #e2e8f0; border-radius: var(--radius);
+               padding: 0.85rem; white-space: pre-wrap; overflow-x: auto; min-height: 8rem; }
+.harness-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.8rem;
+                background: var(--surface); display: flex; flex-direction: column; gap: 0.35rem; }
+.harness-card[data-fit-hidden="true"] { display: none; }
+.harness-card.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.harness-card button { align-self: flex-start; }
 @media (max-width: 860px) {
     .wiki-entity-grid { grid-template-columns: 1fr; }
+    .wizard-layout, .wizard-grid { grid-template-columns: 1fr; }
 }
 @media (prefers-color-scheme: dark) {
-    body { background: #0f172a; color: #e2e8f0; }
+    :root {
+        --bg: #0b1120;
+        --surface: #111827;
+        --surface-2: #0f172a;
+        --surface-3: #1f2937;
+        --text: #e5e7eb;
+        --muted-text: #94a3b8;
+        --border: #334155;
+        --accent: #60a5fa;
+        --accent-strong: #93c5fd;
+        --accent-soft: rgba(96,165,250,0.28);
+        --shadow: 0 12px 34px rgba(0,0,0,0.28);
+    }
+    body { background: var(--bg); color: var(--text); }
     th { background: rgba(255,255,255,0.05); }
     tr:hover { background: rgba(255,255,255,0.03); }
-    .card { border-color: #334155; }
+    .nav { background: rgba(17,24,39,0.92); }
+    .nav a[draggable="true"] { color: #e5e7eb; }
+    .nav a[draggable="true"]:hover { background: #1f2937; }
+    .card { border-color: var(--border); }
     .entity-tab-button { background: #0f172a; border-color: #334155; }
     .entity-tab-button.active { background: #e2e8f0; color: #0f172a; }
     code, pre { background: rgba(255,255,255,0.06); }
@@ -1491,6 +1571,7 @@ def _layout(title: str, body: str) -> str:
         ("skills", "Skills", "/skills"),
         ("wiki", "Wiki", "/wiki"),
         ("graph", "Graph", "/graph"),
+        ("harness", "Harness", "/harness"),
         ("config", "Config", "/config"),
         ("status", "Status", "/status"),
         ("kpi", "KPIs", "/kpi"),
@@ -2690,7 +2771,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "      const t = projected.get(d.target);\n"
         "      if (!s || !t) return '';\n"
         "      const w = Math.max(1, Math.min(4, 1 + Math.sqrt(Math.max(0, Number(d.weight || 1)))));\n"
-        "      return '<line data-3d-edge-source=\"' + escapeHtml(d.source || '') + '\" data-3d-edge-target=\"' + escapeHtml(d.target || '') + '\" x1=\"' + s.x.toFixed(1) + '\" y1=\"' + s.y.toFixed(1) + '\" x2=\"' + t.x.toFixed(1) + '\" y2=\"' + t.y.toFixed(1) + '\" stroke=\"#64748b\" stroke-opacity=\"' + (0.35 + Math.min(0.4, Number(d.weight || 0) / 3)).toFixed(2) + '\" stroke-width=\"' + w.toFixed(2) + '\" />';\n"
+        "      return '<line data-3d-edge-source=\"' + escapeHtml(d.source || '') + '\" data-3d-edge-target=\"' + escapeHtml(d.target || '') + '\" data-svg-edge-source=\"' + escapeHtml(d.source || '') + '\" data-svg-edge-target=\"' + escapeHtml(d.target || '') + '\" x1=\"' + s.x.toFixed(1) + '\" y1=\"' + s.y.toFixed(1) + '\" x2=\"' + t.x.toFixed(1) + '\" y2=\"' + t.y.toFixed(1) + '\" stroke=\"#64748b\" stroke-opacity=\"' + (0.35 + Math.min(0.4, Number(d.weight || 0) / 3)).toFixed(2) + '\" stroke-width=\"' + w.toFixed(2) + '\" />';\n"
         "    }).join('');\n"
         "    const nodeHtml = nodes.slice().sort((a, b) => (projected.get((a.data || {}).id)?.z || 0) - (projected.get((b.data || {}).id)?.z || 0)).map(n => {\n"
         "      const d = n.data || {};\n"
@@ -2708,7 +2789,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "      if (!s || !t) return '';\n"
         "      const hx1 = s.x + (t.x - s.x) * 0.18, hy1 = s.y + (t.y - s.y) * 0.18;\n"
         "      const hx2 = s.x + (t.x - s.x) * 0.82, hy2 = s.y + (t.y - s.y) * 0.82;\n"
-        "      return '<line data-testid=\"graph-3d-edge\" data-3d-edge-source=\"' + escapeHtml(d.source || '') + '\" data-3d-edge-target=\"' + escapeHtml(d.target || '') + '\" data-edge-detail=\"' + escapeHtml(edgeDetail(d)) + '\" x1=\"' + hx1.toFixed(1) + '\" y1=\"' + hy1.toFixed(1) + '\" x2=\"' + hx2.toFixed(1) + '\" y2=\"' + hy2.toFixed(1) + '\" stroke=\"transparent\" stroke-width=\"12\" style=\"pointer-events:stroke;\"><title>' + escapeHtml(edgeDetail(d)) + '</title></line>';\n"
+        "      return '<line data-testid=\"graph-3d-edge\" data-3d-edge-source=\"' + escapeHtml(d.source || '') + '\" data-3d-edge-target=\"' + escapeHtml(d.target || '') + '\" data-svg-edge-source=\"' + escapeHtml(d.source || '') + '\" data-svg-edge-target=\"' + escapeHtml(d.target || '') + '\" data-edge-detail=\"' + escapeHtml(edgeDetail(d)) + '\" x1=\"' + hx1.toFixed(1) + '\" y1=\"' + hy1.toFixed(1) + '\" x2=\"' + hx2.toFixed(1) + '\" y2=\"' + hy2.toFixed(1) + '\" stroke=\"transparent\" stroke-width=\"12\" style=\"pointer-events:stroke;\"><title>' + escapeHtml(edgeDetail(d)) + '</title></line>';\n"
         "    }).join('');\n"
         "    svg.innerHTML = '<rect width=\"100%\" height=\"100%\" fill=\"#f8fafc\" />' + edgeHtml + nodeHtml + edgeHitHtml;\n"
         "    attach3dHoverHandlers();\n"
@@ -2751,8 +2832,11 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "  document.querySelectorAll('[data-3d-node-id]').forEach(n => {\n"
         "    n.style.display = hiddenIds.has(n.dataset['3dNodeId'] || '') ? 'none' : '';\n"
         "  });\n"
-        "  document.querySelectorAll('[data-3d-edge-source]').forEach(e => {\n"
-        "    const hidden = hiddenIds.has(e.dataset['3dEdgeSource'] || '') || hiddenIds.has(e.dataset['3dEdgeTarget'] || '');\n"
+        "  const edgeEls = new Set([...document.querySelectorAll('[data-3d-edge-source]'), ...document.querySelectorAll('[data-svg-edge-source]')]);\n"
+        "  edgeEls.forEach(e => {\n"
+        "    const source = e.dataset['3dEdgeSource'] || e.dataset.svgEdgeSource || '';\n"
+        "    const target = e.dataset['3dEdgeTarget'] || e.dataset.svgEdgeTarget || '';\n"
+        "    const hidden = hiddenIds.has(source) || hiddenIds.has(target);\n"
         "    e.style.display = hidden ? 'none' : '';\n"
         "  });\n"
         "  document.getElementById('graph-count-skill').textContent = counts.skill;\n"
@@ -3068,6 +3152,260 @@ def _render_wiki_index() -> str:
         "</script>"
     )
     return _layout("Wiki", body)
+
+
+def _harness_wizard_entries(limit: int = 24) -> list[dict[str, Any]]:
+    """Return catalog harness pages for the manual dashboard wizard."""
+    harness_dir = _wiki_dir() / "entities" / "harnesses"
+    if not harness_dir.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in sorted(harness_dir.glob("*.md"), key=lambda p: p.stem.lower()):
+        if len(rows) >= limit:
+            break
+        slug = path.stem
+        if not _is_safe_slug(slug):
+            continue
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:4096]
+        except OSError:
+            continue
+        meta, _body = _parse_frontmatter(head)
+        sidecar = _harness_wizard_sidecar(slug) or {}
+        score = float(sidecar.get("raw_score", sidecar.get("score", 0.0)) or 0.0)
+        tags = _frontmatter_tags(meta.get("tags", ""), limit=None)
+        description, _truncated = _truncate_text(
+            _frontmatter_text(meta.get("description", "")),
+            260,
+        )
+        repo_url = _frontmatter_text(
+            meta.get("repo_url")
+            or meta.get("github_url")
+            or meta.get("homepage_url")
+            or ""
+        )
+        rows.append({
+            "slug": slug,
+            "title": _frontmatter_text(meta.get("title") or meta.get("name") or slug),
+            "description": description,
+            "tags": tags[:12],
+            "score": score,
+            "grade": str(sidecar.get("grade") or ""),
+            "repo_url": repo_url,
+        })
+    return sorted(rows, key=lambda row: (-float(row["score"]), str(row["slug"])))
+
+
+def _harness_wizard_sidecar(slug: str) -> dict[str, Any] | None:
+    """Load harness sidecar candidates without scanning every sidecar file."""
+    if not _is_safe_slug(slug):
+        return None
+    for path in (
+        _sidecar_dir() / f"{slug}.json",
+        _sidecar_dir() / f"{slug}-harness.json",
+    ):
+        if not path.exists():
+            continue
+        sidecar = _read_sidecar_file(path)
+        if sidecar is None:
+            continue
+        if sidecar.get("slug") == slug and _sidecar_entity_type(sidecar) == "harness":
+            return sidecar
+    return None
+
+
+def _render_harness_wizard() -> str:
+    """Manual harness interview for users who bring their own LLM."""
+    harnesses = _harness_wizard_entries()
+    provider_options = (
+        "openai", "anthropic", "google", "openrouter", "ollama",
+        "lm-studio", "local", "other",
+    )
+    provider_html = "".join(
+        f"<option value='{html.escape(provider)}'>{html.escape(provider)}</option>"
+        for provider in provider_options
+    )
+    tool_options = (
+        ("files", "Files"),
+        ("git", "Git"),
+        ("shell", "Shell"),
+        ("browser", "Browser"),
+        ("http", "HTTP/network"),
+        ("package-manager", "Package manager"),
+        ("database", "Database"),
+    )
+    tools_html = "".join(
+        "<label style='display:flex; align-items:center; gap:0.35rem;'>"
+        f"<input type='checkbox' name='tools' value='{html.escape(value)}' "
+        f"{'checked' if value in {'files', 'git', 'shell'} else ''}>"
+        f"{html.escape(label)}</label>"
+        for value, label in tool_options
+    )
+    harness_cards = "".join(
+        "<div class='harness-card' "
+        f"data-harness-slug='{html.escape(row['slug'])}' "
+        f"data-harness-text='{html.escape(' '.join([row['slug'], row['title'], row['description'], *row['tags']]).lower())}' "
+        f"data-harness-score='{float(row['score']):.3f}'>"
+        "<div style='display:flex; justify-content:space-between; gap:0.5rem; align-items:start;'>"
+        f"<strong>{html.escape(row['title'])}</strong>"
+        + (
+            f"<span class='pill grade-{html.escape(row['grade'])}'>{html.escape(row['grade'])}</span>"
+            if row["grade"]
+            else "<span class='pill entity-type-harness'>harness</span>"
+        )
+        + "</div>"
+        f"<p class='muted' style='margin:0;'>{html.escape(row['description'] or 'No description in catalog.')}</p>"
+        + (
+            "<div class='muted' style='font-size:0.78rem;'>"
+            + " ".join(f"<code>{html.escape(tag)}</code>" for tag in row["tags"][:8])
+            + "</div>"
+            if row["tags"]
+            else ""
+        )
+        + (
+            f"<a class='muted' href='{html.escape(row['repo_url'])}'>{html.escape(row['repo_url'])}</a>"
+            if row["repo_url"].startswith(("http://", "https://"))
+            else ""
+        )
+        + f"<code>ctx-harness-install {html.escape(row['slug'])} --dry-run</code>"
+        + f"<button type='button' class='secondary' data-select-harness='{html.escape(row['slug'])}'>select</button>"
+        + "</div>"
+        for row in harnesses
+    )
+    if not harness_cards:
+        harness_cards = (
+            "<p class='muted'>No harness catalog pages were found under "
+            "<code>~/.claude/skill-wiki/entities/harnesses/</code>. "
+            "Use the no-fit PRD output below to build an attachable harness.</p>"
+        )
+
+    body = (
+        "<h1>Harness wizard</h1>"
+        "<p class='muted'>For users running their own API or local model instead of Claude Code. "
+        "Interview the model/runtime choice, generate a real ctx harness recommendation command, "
+        "then install a catalog harness or produce a no-fit PRD for a custom harness.</p>"
+        "<div class='wizard-layout'>"
+        "<form id='harness-wizard-form' class='card'>"
+        "<div class='wizard-step'><strong>1. Model</strong>"
+        "<div class='wizard-grid' style='margin-top:0.65rem;'>"
+        "<label>Model provider <span class='pill grade-A'>Required</span>"
+        f"<select name='model_provider' required>{provider_html}</select></label>"
+        "<label>Model slug <span class='pill grade-A'>Required</span>"
+        "<input name='model' required placeholder='openai/gpt-5.5 or ollama/qwen3-coder'></label>"
+        "<label class='wide'>API base URL or local endpoint"
+        "<input name='endpoint' placeholder='https://api.openai.com/v1 or http://localhost:11434'></label>"
+        "</div></div>"
+        "<div class='wizard-step'><strong>2. Goal and access</strong>"
+        "<div class='wizard-grid' style='margin-top:0.65rem;'>"
+        "<label class='wide'>Development goal <span class='pill grade-A'>Required</span>"
+        "<textarea name='goal' rows='4' required placeholder='What should the agent build, fix, research, or operate?'></textarea></label>"
+        "<label>Runtime / OS"
+        "<select name='runtime'><option>windows</option><option>macos</option><option>linux</option>"
+        "<option selected>cross-platform</option></select></label>"
+        "<label>Autonomy"
+        "<select name='autonomy'><option>read-only</option><option selected>repo-write</option>"
+        "<option>deploy-capable</option></select></label>"
+        "<label class='wide'>Allowed tools"
+        f"<div style='display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:0.25rem;'>{tools_html}</div></label>"
+        "<label>Verification gates"
+        "<input name='verify' placeholder='pytest, ruff, mypy, build, smoke'></label>"
+        "<label>Privacy / network"
+        "<select name='privacy'><option selected>local repo only</option><option>network allowed</option>"
+        "<option>secrets allowed by env only</option><option>offline only</option></select></label>"
+        "<label>ctx attachment"
+        "<select name='attach_mode'><option selected>mcp</option><option>python</option><option>cli</option></select></label>"
+        "</div></div>"
+        "<div class='wizard-step'><strong>3. Recommend and install</strong>"
+        "<p class='muted'>The dashboard previews catalog matches. The command below calls the real harness recommender and keeps the no-fit path available.</p>"
+        "<button type='submit'>build recommendation command</button> "
+        "<button type='button' id='harness-reset' class='secondary'>reset</button>"
+        "</div>"
+        "</form>"
+        "<aside class='card'>"
+        "<h2 style='margin-top:0;'>Command plan</h2>"
+        "<pre class='command-box' data-testid='harness-command-output'>ctx-harness-install --recommend --goal \"...\" --model-provider openai --model openai/gpt-5.5 --top-k 5 --plan-on-no-fit</pre>"
+        "<p class='muted'>Run the dry-run first. The installer writes attach files under the harness target so the selected harness can connect to ctx graph/wiki recommendations.</p>"
+        "<div id='selected-harness-command' class='muted'>Select a harness card to see install, update, and validation commands.</div>"
+        "</aside>"
+        "</div>"
+        "<section class='card'>"
+        "<div style='display:flex; justify-content:space-between; gap:0.75rem; align-items:center; flex-wrap:wrap;'>"
+        "<div><h2 style='margin:0;'>Catalog harnesses</h2>"
+        "<p class='muted' style='margin:0.2rem 0 0;'>Cards are filtered by the interview text. If none fit, use the no-fit PRD path.</p></div>"
+        "<span id='harness-match-count' class='pill entity-type-harness'>0 matches</span>"
+        "</div>"
+        "<div id='harness-cards' style='display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:0.7rem; margin-top:0.8rem;'>"
+        + harness_cards
+        + "</div>"
+        "</section>"
+        "<section class='card'>"
+        "<h2>No-fit custom harness PRD</h2>"
+        "<p class='muted'>When no catalog harness clears the configured match score, generate a PRD for the user's strong model or engineering team. It must include orchestration, durable state, permissions, verification gates, and ctx recommendation hooks.</p>"
+        "<pre class='command-box' id='no-fit-command'>ctx-harness-install --recommend --goal \"...\" --model-provider openai --model openai/gpt-5.5 --plan-on-no-fit --plan-output custom-harness-prd.md</pre>"
+        "</section>"
+        "<script>\n"
+        "(function () {\n"
+        "  const form = document.getElementById('harness-wizard-form');\n"
+        "  const output = document.querySelector('[data-testid=\"harness-command-output\"]');\n"
+        "  const noFit = document.getElementById('no-fit-command');\n"
+        "  const selected = document.getElementById('selected-harness-command');\n"
+        "  const count = document.getElementById('harness-match-count');\n"
+        "  const cards = Array.from(document.querySelectorAll('.harness-card'));\n"
+        "  function value(name) { const el = form.elements[name]; return el ? String(el.value || '').trim() : ''; }\n"
+        "  function shellQuote(value) { return '\"' + String(value || '').replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"') + '\"'; }\n"
+        "  function checkedTools() { return Array.from(form.querySelectorAll('input[name=\"tools\"]:checked')).map(el => el.value).join(','); }\n"
+        "  function arg(flag, val) { return val ? ' ' + flag + ' ' + shellQuote(val) : ''; }\n"
+        "  function recommendCommand() {\n"
+        "    const tools = checkedTools();\n"
+        "    let cmd = 'ctx-harness-install --recommend';\n"
+        "    cmd += arg('--goal', value('goal'));\n"
+        "    cmd += arg('--model-provider', value('model_provider'));\n"
+        "    cmd += arg('--model', value('model'));\n"
+        "    cmd += arg('--harness-runtime', value('runtime'));\n"
+        "    cmd += arg('--harness-autonomy', value('autonomy'));\n"
+        "    cmd += arg('--harness-tools', tools);\n"
+        "    cmd += arg('--harness-verify', value('verify'));\n"
+        "    cmd += arg('--harness-privacy', value('privacy'));\n"
+        "    cmd += arg('--harness-attach-mode', value('attach_mode'));\n"
+        "    return cmd + ' --top-k 5 --plan-on-no-fit';\n"
+        "  }\n"
+        "  function fitCards() {\n"
+        "    const intent = [value('goal'), value('model_provider'), value('model'), value('runtime'), value('autonomy'), checkedTools(), value('verify'), value('privacy'), value('attach_mode')].join(' ').toLowerCase();\n"
+        "    const terms = intent.split(/[^a-z0-9_.-]+/).filter(Boolean);\n"
+        "    const host = document.getElementById('harness-cards');\n"
+        "    let visible = 0;\n"
+        "    cards.forEach(card => {\n"
+        "      const text = card.dataset.harnessText || '';\n"
+        "      const base = Number(card.dataset.harnessScore || 0);\n"
+        "      const hits = terms.filter(term => text.includes(term)).length;\n"
+        "      const fit = base + hits * 0.08;\n"
+        "      card.dataset.fit = fit.toFixed(3);\n"
+        "      const hide = terms.length > 0 && fit < 0.12;\n"
+        "      card.dataset.fitHidden = hide ? 'true' : 'false';\n"
+        "      if (!hide) visible++;\n"
+        "    });\n"
+        "    cards.sort((a, b) => Number(b.dataset.fit || 0) - Number(a.dataset.fit || 0)).forEach(card => host.appendChild(card));\n"
+        "    count.textContent = visible + ' matches';\n"
+        "  }\n"
+        "  function refresh() {\n"
+        "    const cmd = recommendCommand();\n"
+        "    output.textContent = cmd;\n"
+        "    noFit.textContent = cmd + ' --plan-output custom-harness-prd.md';\n"
+        "    fitCards();\n"
+        "  }\n"
+        "  form.addEventListener('submit', ev => { ev.preventDefault(); refresh(); });\n"
+        "  form.addEventListener('input', refresh);\n"
+        "  document.getElementById('harness-reset').addEventListener('click', () => { form.reset(); refresh(); });\n"
+        "  document.querySelectorAll('[data-select-harness]').forEach(btn => btn.addEventListener('click', () => {\n"
+        "    const slug = btn.dataset.selectHarness || '';\n"
+        "    cards.forEach(card => card.classList.toggle('selected', card.dataset.harnessSlug === slug));\n"
+        "    selected.innerHTML = '<pre class=\"command-box\">ctx-harness-install ' + slug + ' --dry-run\\nctx-harness-install ' + slug + '\\nctx-harness-install ' + slug + ' --update --dry-run\\nctx-scan-repo --recommend\\nctx-monitor serve</pre>';\n"
+        "  }));\n"
+        "  refresh();\n"
+        "})();\n"
+        "</script>"
+    )
+    return _layout("Harness", body)
 
 
 def _kpi_summary():
@@ -3939,6 +4277,8 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_html(_render_logs())
             elif path == "/graph":
                 self._send_html(_render_graph(qs.get("slug"), qs.get("type")))
+            elif path == "/harness":
+                self._send_html(_render_harness_wizard())
             elif path == "/config":
                 self._send_html(_render_config())
             elif path == "/status":
