@@ -1837,31 +1837,64 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
                      color: inherit; cursor: pointer; padding: 0.35rem 0.7rem; }
 .entity-tab-button.active { background: #111827; color: #fff; border-color: #111827; }
 .entity-tab-panel[hidden] { display: none; }
-.docs-tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0.8rem 0 1rem; }
-.docs-tab-button { border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
-                   color: var(--text); padding: 0.38rem 0.7rem; }
+.docs-shell { display: flex; flex-direction: column; gap: 1rem; }
+.docs-hero { border: 1px solid var(--border); border-radius: 12px;
+             background: linear-gradient(135deg, #ffffff 0%, #f8fbff 62%, #eef6ff 100%);
+             box-shadow: var(--shadow); padding: 1.25rem; overflow: hidden; }
+.docs-hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1.25rem;
+                  align-items: end; }
+.docs-eyebrow { color: var(--accent); font-size: 0.78rem; font-weight: 750; margin-bottom: 0.35rem; }
+.docs-hero h1 { margin: 0; font-size: clamp(2rem, 4vw, 3.2rem); line-height: 1.04; }
+.docs-hero p { max-width: 52rem; margin: 0.65rem 0 0; color: var(--muted-text); font-size: 1rem; }
+.docs-hero-meta { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+.docs-stat { border: 1px solid rgba(37,99,235,0.18); border-radius: 999px;
+             background: rgba(37,99,235,0.08); color: #1e3a8a; padding: 0.28rem 0.65rem;
+             font-size: 0.82rem; font-weight: 700; white-space: nowrap; }
+.docs-actions { display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap;
+                margin-top: 1rem; }
+.docs-search-wrap { flex: 1 1 22rem; max-width: 38rem; }
+.docs-search-wrap input { width: 100%; padding: 0.62rem 0.75rem; border-radius: var(--radius);
+                          border-color: rgba(37,99,235,0.24); background: rgba(255,255,255,0.86); }
+.docs-public-link { font-weight: 700; white-space: nowrap; }
+.docs-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0;
+             border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+             padding: 0.45rem; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+.docs-tab-button { border: 1px solid transparent; border-radius: 999px; background: transparent;
+                   color: var(--muted-text); padding: 0.42rem 0.85rem; }
+.docs-tab-button:hover { background: var(--surface-3); color: var(--text); }
 .docs-tab-button.active { background: #111827; color: #fff; border-color: #111827; }
 .docs-tab-panel[hidden] { display: none; }
-.docs-reader { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+.docs-reader { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
                gap: 1rem; align-items: start; }
 .docs-page-list { position: sticky; top: 4.5rem; display: flex; flex-direction: column;
-                  gap: 0.35rem; }
-.docs-page-list a { padding: 0.25rem 0.4rem; border-radius: 5px; color: var(--muted-text); }
+                  gap: 0.25rem; border: 1px solid var(--border); border-radius: 12px;
+                  background: var(--surface); padding: 0.6rem; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+.docs-page-list a { padding: 0.45rem 0.55rem; border-radius: 8px; color: var(--muted-text);
+                    font-weight: 650; line-height: 1.25; }
 .docs-page-list a:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
-.docs-page { border: 1px solid var(--border); border-radius: var(--radius);
-             background: var(--surface); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
+.docs-page { border: 1px solid var(--border); border-radius: 12px;
+             background: var(--surface); padding: 1.25rem 1.45rem; margin-bottom: 1rem;
+             box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
 .docs-page-source { display: flex; justify-content: space-between; gap: 0.75rem;
-                    align-items: center; margin-bottom: 0.75rem; }
+                    align-items: center; margin-bottom: 0.85rem; color: var(--muted-text); }
+.docs-page-source code { background: var(--surface-3); color: var(--text); }
 .docs-page .admonition { border-left: 4px solid var(--accent); background: var(--surface-2);
                          border-radius: var(--radius); padding: 0.75rem 0.9rem; margin: 1rem 0; }
 .docs-page .admonition-title { font-weight: 750; margin: 0 0 0.45rem; }
 .docs-page .tabbed-set { border: 1px solid var(--border); border-radius: var(--radius);
                          padding: 0.75rem; margin: 1rem 0; }
+.docs-page p, .docs-page li { line-height: 1.65; }
+.docs-page h1 { font-size: 2rem; line-height: 1.12; }
+.docs-page h2 { font-size: 1.45rem; margin-top: 1.45rem; }
+.docs-page h3 { font-size: 1.12rem; margin-top: 1.15rem; }
 .docs-page .grid.cards > ul { list-style: none; padding-left: 0; display: grid;
                               grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-                              gap: 0.75rem; }
-.docs-page .grid.cards > ul > li { border: 1px solid var(--border); border-radius: var(--radius);
-                                   background: var(--surface-2); padding: 0.85rem 0.95rem; }
+                              gap: 0.85rem; }
+.docs-page .grid.cards > ul > li { border: 1px solid var(--border); border-radius: 12px;
+                                   background: var(--surface-2); padding: 0.95rem 1rem;
+                                   box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+.docs-page .grid.cards > ul > li:hover { border-color: rgba(37,99,235,0.32);
+                                         background: #ffffff; }
 .docs-page .grid.cards hr { border: 0; border-top: 1px solid var(--border); margin: 0.55rem 0; }
 .docs-page .headerlink { color: var(--muted-text); font-size: 0.78em; margin-left: 0.35rem; }
 .quality-signal-table { table-layout: fixed; }
@@ -1897,6 +1930,8 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 @media (max-width: 860px) {
     .wiki-entity-grid { grid-template-columns: 1fr; }
     .wizard-layout, .wizard-grid, .setup-header, .setup-flow { grid-template-columns: 1fr; }
+    .docs-hero-grid { grid-template-columns: 1fr; }
+    .docs-hero-meta { justify-content: flex-start; }
     .docs-reader { grid-template-columns: 1fr; }
     .docs-page-list { position: static; }
 }
@@ -1923,7 +1958,12 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
     .card { border-color: var(--border); }
     .entity-tab-button { background: #0f172a; border-color: #334155; }
     .entity-tab-button.active { background: #e2e8f0; color: #0f172a; }
+    .docs-hero { background: linear-gradient(135deg, #111827 0%, #0f172a 62%, #0b1120 100%); }
+    .docs-stat { border-color: rgba(96,165,250,0.28); background: rgba(96,165,250,0.12);
+                 color: #bfdbfe; }
+    .docs-search-wrap input { background: rgba(15,23,42,0.86); border-color: #334155; }
     .docs-tab-button.active { background: #e2e8f0; color: #0f172a; }
+    .docs-page .grid.cards > ul > li:hover { background: #111827; }
     code, pre { background: rgba(255,255,255,0.06); }
     .error { color: #fecaca; background: rgba(127,29,29,0.25);
              border-color: rgba(248,113,113,0.35); }
@@ -2039,6 +2079,7 @@ def _layout(title: str, body: str) -> str:
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         f"<title>{html.escape(title)} — ctx monitor</title>"
         f"<style>{_CSS}</style></head><body>"
         "<div class='nav' id='dashboard-nav' "
@@ -3867,6 +3908,7 @@ def _render_docs() -> str:
         for idx, tab in enumerate(tabs)
     )
     panels: list[str] = []
+    page_count = sum(len(list(tab["pages"])) for tab in tabs)
     for idx, tab in enumerate(tabs):
         tab_slug = str(tab["slug"])
         pages = list(tab["pages"])
@@ -3887,15 +3929,27 @@ def _render_docs() -> str:
         )
 
     body = (
+        "<div class='docs-shell'>"
+        "<section class='docs-hero'>"
+        "<div class='docs-hero-grid'>"
+        "<div>"
+        "<div class='docs-eyebrow'>Repo documentation</div>"
         "<h1>Docs</h1>"
-        "<div class='card'>"
-        "<strong>Repo documentation</strong>"
-        f"<p class='muted'>Rendered from the same docs tree and MkDocs nav used by the repo. "
-        f"Public rendered docs: <a href='{public_docs_url}'>{public_docs_url}</a></p>"
-        "<input id='docs-search' type='text' placeholder='Search current docs tab...' "
-        "style='width:100%; max-width:34rem; padding:0.45rem 0.6rem; "
-        "border:1px solid var(--border); border-radius:var(--radius);'>"
+        "<p>Read the same Markdown tree and MkDocs nav shipped with the repo. "
+        "Use tabs for sections, search within the active section, and jump to source when you need the exact file.</p>"
         "</div>"
+        "<div class='docs-hero-meta'>"
+        f"<span class='docs-stat'>{len(tabs)} sections</span>"
+        f"<span class='docs-stat'>{page_count} pages</span>"
+        "</div>"
+        "</div>"
+        "<div class='docs-actions'>"
+        "<div class='docs-search-wrap'>"
+        "<input id='docs-search' type='text' placeholder='Search current docs tab...'>"
+        "</div>"
+        f"<a class='docs-public-link' href='{public_docs_url}'>public docs -></a>"
+        "</div>"
+        "</section>"
         f"<div class='docs-tabs' role='tablist'>{tab_buttons}</div>"
         + "".join(panels)
         + "<script>\n"
@@ -3922,6 +3976,7 @@ def _render_docs() -> str:
         "if (initialDocTab && docButtons.some(button => button.dataset.docTab === initialDocTab)) activateDocTab(initialDocTab);\n"
         "applyDocsFilter();\n"
         "</script>"
+        "</div>"
     )
     return _layout("Docs", body)
 
