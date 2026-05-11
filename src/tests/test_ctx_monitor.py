@@ -102,6 +102,14 @@ def _post_json(port: int, path: str, body: dict, token: str | None = None) -> tu
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
+def _get_json(port: int, path: str) -> tuple[int, dict]:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
 def _post_raw(
     port: int,
     path: str,
@@ -1452,6 +1460,149 @@ def test_render_wiki_index_rejects_unsafe_filenames(fake_claude: Path) -> None:
     slugs = {e["slug"] for e in entries}
     assert "python-patterns" in slugs
     assert "Bad-Start" not in slugs
+
+
+def test_render_manage_includes_crud_and_upload_wizard(fake_claude: Path) -> None:
+    html_out = cm._render_manage(mutations_enabled=True)
+
+    assert "<h1>Manage catalog</h1>" in html_out
+    assert "id='manage-search'" in html_out
+    assert "id='entity-editor-form'" in html_out
+    assert "data-testid='entity-delete-button'" in html_out
+    assert "Add or update entity" in html_out
+
+
+def test_entity_search_and_detail_apis_support_edit_flow(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skills_dir = fake_claude / "skill-wiki" / "entities" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "python-patterns.md").write_text(
+        "---\n"
+        "title: Python Patterns\n"
+        "type: skill\n"
+        "description: Idiomatic Python patterns\n"
+        "tags: [python, patterns]\n"
+        "---\n"
+        "# Python Patterns\n\nUse dataclasses and context managers.\n",
+        encoding="utf-8",
+    )
+    server, thread, port = _serve_monitor(monkeypatch)
+    try:
+        status, payload = _get_json(
+            port,
+            "/api/entities/search.json?q=patterns&type=skill",
+        )
+        assert status == 200
+        assert payload["results"][0]["slug"] == "python-patterns"
+        assert payload["results"][0]["type"] == "skill"
+
+        status, detail = _get_json(
+            port,
+            "/api/entity/python-patterns.json?type=skill",
+        )
+        assert status == 200
+        assert detail["slug"] == "python-patterns"
+        assert detail["frontmatter"]["description"] == "Idiomatic Python patterns"
+        assert "Use dataclasses" in detail["body"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_entity_upsert_api_writes_wiki_page_and_queues_graph_refresh(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server, thread, port = _serve_monitor(monkeypatch)
+    try:
+        status, payload = _post_json(
+            port,
+            "/api/entity/upsert",
+            {
+                "slug": "custom-reviewer",
+                "entity_type": "agent",
+                "title": "Custom Reviewer",
+                "description": "Reviews Python changes with local policy.",
+                "tags": "python, review, policy",
+                "source_url": "https://example.com/custom-reviewer",
+                "body": "# Custom Reviewer\n\nUse this agent before merging Python changes.\n",
+            },
+            token="test-token",
+        )
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["detail"].startswith("saved agent:custom-reviewer")
+
+        entity_path = (
+            fake_claude
+            / "skill-wiki"
+            / "entities"
+            / "agents"
+            / "custom-reviewer.md"
+        )
+        text = entity_path.read_text(encoding="utf-8")
+        assert "title: Custom Reviewer" in text
+        assert "type: agent" in text
+        assert "tags: [python, review, policy]" in text
+        assert "Use this agent before merging Python changes." in text
+
+        jobs = wiki_queue.list_recent_jobs(
+            wiki_queue.queue_db_path(fake_claude / "skill-wiki"),
+            limit=10,
+        )
+        assert [job.kind for job in jobs[:2]] == [
+            wiki_queue.GRAPH_EXPORT_JOB,
+            wiki_queue.ENTITY_UPSERT_JOB,
+        ]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_entity_delete_api_removes_wiki_page_and_queues_graph_refresh(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness_dir = fake_claude / "skill-wiki" / "entities" / "harnesses"
+    harness_dir.mkdir(parents=True)
+    entity_path = harness_dir / "local-harness.md"
+    entity_path.write_text(
+        "---\ntitle: Local Harness\ntype: harness\ntags: [local, llm]\n"
+        "---\n# Local Harness\n",
+        encoding="utf-8",
+    )
+    server, thread, port = _serve_monitor(monkeypatch)
+    try:
+        status, payload = _post_json(
+            port,
+            "/api/entity/delete",
+            {"slug": "local-harness", "entity_type": "harness"},
+            token="test-token",
+        )
+        assert status == 200
+        assert payload == {
+            "ok": True,
+            "detail": "deleted harness:local-harness and queued graph refresh",
+        }
+        assert not entity_path.exists()
+
+        jobs = wiki_queue.list_recent_jobs(
+            wiki_queue.queue_db_path(fake_claude / "skill-wiki"),
+            limit=10,
+        )
+        assert [job.kind for job in jobs[:2]] == [
+            wiki_queue.GRAPH_EXPORT_JOB,
+            wiki_queue.ENTITY_UPSERT_JOB,
+        ]
+        assert jobs[1].payload["action"] == "delete"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_render_kpi_empty_state(fake_claude: Path) -> None:
