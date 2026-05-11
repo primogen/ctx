@@ -44,6 +44,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -103,6 +104,34 @@ _BANNED_INTERPRETER_ARGS: dict[str, frozenset[str]] = {
     # package-launcher pattern MCP servers are expected to use.
 }
 
+_SECRET_KEY_MARKERS: tuple[str, ...] = (
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "private_key",
+    "credential",
+    "access_key",
+    "refresh_token",
+    "client_secret",
+    "authorization",
+    "bearer",
+)
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|"
+    r"PRIVATE_KEY|CREDENTIAL|ACCESS_KEY|CLIENT_SECRET|AUTHORIZATION|BEARER)"
+    r"[A-Za-z0-9_]*)=([^\s'\";]+)",
+    re.IGNORECASE,
+)
+_TOKEN_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
+)
+
 
 def _rejects_banned_args(tokens: list[str]) -> str | None:
     """Return a human-readable reason string when *tokens* uses a
@@ -135,6 +164,91 @@ def _rejects_banned_args(tokens: list[str]) -> str | None:
                 "(use a script path instead, or --cmd-json for bespoke runtimes)"
             )
     return None
+
+
+def _secret_key_like(key: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", key.lower())
+    compact = normalized.replace("_", "")
+    return any(marker in normalized or marker in compact for marker in _SECRET_KEY_MARKERS)
+
+
+def _placeholder_secret_value(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return True
+    if stripped.startswith("$") or (stripped.startswith("${") and stripped.endswith("}")):
+        return True
+    if stripped.startswith("%") and stripped.endswith("%") and len(stripped) > 2:
+        return True
+    if stripped.startswith("<") and stripped.endswith(">"):
+        return True
+    lower = stripped.lower()
+    return lower in {"changeme", "change-me", "placeholder", "redacted", "example"}
+
+
+def _find_inline_secret(obj: object, *, path: str = "") -> str | None:
+    if isinstance(obj, dict):
+        for raw_key, value in obj.items():
+            key = str(raw_key)
+            child_path = f"{path}.{key}" if path else key
+            if _secret_key_like(key):
+                if isinstance(value, str):
+                    if not _placeholder_secret_value(value):
+                        return child_path
+                elif value is not None:
+                    return child_path
+            nested = _find_inline_secret(value, path=child_path)
+            if nested is not None:
+                return nested
+    elif isinstance(obj, list):
+        for index, value in enumerate(obj):
+            nested = _find_inline_secret(value, path=f"{path}[{index}]")
+            if nested is not None:
+                return nested
+    return None
+
+
+def _redact_output(text: str) -> str:
+    if not text:
+        return text
+    redacted = _SECRET_ASSIGNMENT_RE.sub(r"\1=[redacted]", text)
+    for pattern in _TOKEN_VALUE_PATTERNS:
+        redacted = pattern.sub("[redacted]", redacted)
+    secret_env_values = sorted(
+        (
+            value for key, value in os.environ.items()
+            if value and len(value) >= 6 and _secret_key_like(key)
+        ),
+        key=len,
+        reverse=True,
+    )
+    for value in secret_env_values:
+        redacted = redacted.replace(value, "[redacted]")
+    return redacted
+
+
+def _json_config_manifest_summary(
+    json_config: str, parsed_config: object,
+) -> dict[str, str]:
+    extra = {
+        "json_config_sha256": hashlib.sha256(
+            json_config.encode("utf-8"),
+        ).hexdigest(),
+    }
+    if isinstance(parsed_config, dict):
+        keys = sorted(str(key) for key in parsed_config)
+        extra["json_config_keys"] = ",".join(keys)[:400]
+        command = parsed_config.get("command")
+        if isinstance(command, str):
+            extra["json_config_command"] = _redact_output(command)[:200]
+        args = parsed_config.get("args")
+        if isinstance(args, list):
+            extra["json_config_args_count"] = str(len(args))
+        env = parsed_config.get("env")
+        if isinstance(env, dict):
+            env_keys = sorted(str(key) for key in env)
+            extra["json_config_env_keys"] = ",".join(env_keys)[:400]
+    return extra
 
 
 @dataclass(frozen=True)
@@ -333,16 +447,26 @@ def install_mcp(
             ),
         )
 
-    # Validate json_config IS parseable JSON before handing it to
-    # claude mcp add-json. A malformed string would otherwise surface
-    # as a confusing claude-cli error; prefer the clear local error.
+    # Validate json_config before handing it to claude mcp add-json. A
+    # malformed string would otherwise surface as a confusing claude-cli
+    # error; inline secrets would also be persisted by Claude's MCP config.
+    parsed_json_config: object | None = None
     if json_config is not None:
         try:
-            json.loads(json_config)
+            parsed_json_config = json.loads(json_config)
         except json.JSONDecodeError as exc:
             return InstallResult(
                 slug=slug, status="invalid-cmd", command=None,
                 message=f"--cmd-json is not valid JSON: {exc}",
+            )
+        inline_secret_path = _find_inline_secret(parsed_json_config)
+        if inline_secret_path is not None:
+            return InstallResult(
+                slug=slug, status="invalid-cmd", command=None,
+                message=(
+                    f"--cmd-json field {inline_secret_path!r} looks like an inline "
+                    "secret; pass an environment variable reference instead."
+                ),
             )
 
     card = render_card(fm, slug, command=effective_cmd)
@@ -402,9 +526,10 @@ def install_mcp(
         rc, stdout, stderr = _run_claude_mcp(["add", slug, "--", *tokens])
 
     if rc != 0:
+        detail = _redact_output(stderr.strip() or stdout.strip())
         return InstallResult(
             slug=slug, status="claude-cli-failed", command=effective_cmd,
-            message=f"claude mcp add failed (rc={rc}): {stderr.strip() or stdout.strip()}",
+            message=f"claude mcp add failed (rc={rc}): {detail}",
         )
 
     bump_entity_status(
@@ -416,7 +541,10 @@ def install_mcp(
     if effective_cmd:
         manifest_extra["command"] = effective_cmd
     elif json_config:
-        manifest_extra["json_config"] = json_config
+        assert parsed_json_config is not None
+        manifest_extra.update(
+            _json_config_manifest_summary(json_config, parsed_json_config),
+        )
 
     record_install(
         slug,
@@ -480,9 +608,10 @@ def uninstall_mcp(
 
     rc, stdout, stderr = _run_claude_mcp(["remove", slug])
     if rc != 0 and not force:
+        detail = _redact_output(stderr.strip() or stdout.strip())
         return UninstallResult(
             slug=slug, status="claude-cli-failed",
-            message=f"claude mcp remove failed (rc={rc}): {stderr.strip() or stdout.strip()}",
+            message=f"claude mcp remove failed (rc={rc}): {detail}",
         )
 
     # Even on non-zero (with --force) we still flip local state, since
