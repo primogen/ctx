@@ -188,7 +188,7 @@ ones are flagged. New ones self-ingest.
     ---
 
     **v1.0.4** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
-    3,745 tests collected. Ships console scripts including `ctx-init`,
+    3,747 tests collected. Ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
     skills, agents, and MCP servers, plus Harness Setup for user-owned LLMs),
     `ctx-dedup-check` (pre-ship near-duplicate gate), and
