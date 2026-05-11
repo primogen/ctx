@@ -215,6 +215,10 @@ def _write_archive(
         report_export_id=report_export_id,
         manifest_export_id=manifest_export_id,
     )
+    (graph_dir / "communities.json").write_text(
+        json.dumps({"export_id": communities_export_id, "total_communities": 1}),
+        encoding="utf-8",
+    )
 
 
 def test_validate_graph_artifacts_checks_catalog_paths_and_deep_graph_stats(
@@ -327,6 +331,26 @@ def test_validate_graph_artifacts_rejects_stale_preview_html(
             min_edges=1,
             min_skills_sh_nodes=1,
             min_semantic_edges=1,
+            expected_harnesses={"langgraph"},
+        )
+
+
+def test_validate_graph_artifacts_rejects_stale_root_communities(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    (tmp_path / "communities.json").write_text(
+        json.dumps({"export_id": "old-export", "total_communities": 1}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(GraphArtifactError, match="stale graph/communities.json"):
+        validate_graph_artifacts(
+            tmp_path,
             expected_harnesses={"langgraph"},
         )
 

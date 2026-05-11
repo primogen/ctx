@@ -61,13 +61,17 @@ SOURCE_PATTERNS = (
 SIMILARITY_PATTERNS = (
     ".github/workflows/test.yml",
     "pyproject.toml",
+    "src/corpus_cache.py",
     "src/config.json",
+    "src/cosine_ranker.py",
     "src/ctx/adapters/claude_code/hooks/context_monitor.py",
     "src/ctx/adapters/generic/ctx_core_tools.py",
+    "src/ctx_config.py",
     "src/ctx/core/graph/**",
     "src/ctx/core/resolve/**",
     "src/ctx/core/wiki/wiki_graphify.py",
     "src/embedding_backend.py",
+    "src/intake_gate.py",
     "src/tests/test_similarity_precision_recall.py",
 )
 

@@ -103,6 +103,19 @@ def test_mixed_source_docs_and_graph_artifact_requests_specific_gates() -> None:
     assert flags["source_changed"] is True
 
 
+def test_similarity_classifier_covers_ranking_and_intake_modules() -> None:
+    for path in (
+        "src/corpus_cache.py",
+        "src/cosine_ranker.py",
+        "src/ctx_config.py",
+        "src/intake_gate.py",
+    ):
+        flags = classify_paths([path])
+
+        assert flags["similarity_changed"] is True
+        assert flags["source_changed"] is True
+
+
 def test_source_change_marks_source_and_package() -> None:
     flags = classify_paths(["src/ctx/adapters/generic/loop.py"])
 
