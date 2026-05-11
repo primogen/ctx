@@ -17,6 +17,7 @@ Routes:
     /wiki/<slug>?type=<entity>  One wiki entity page (frontmatter + body)
     /graph                      Built-in graph explorer + popular seeds
     /graph?slug=<slug>&type=... Focus graph view on a specific entity
+    /config                     Editable ctx config with defaults fallback
     /status                     Durable queue + graph/wiki artifact state
     /kpi                        Grade / lifecycle / category KPIs
     /runtime                    Generic harness validation/escalation ledger
@@ -28,6 +29,7 @@ Routes:
     /api/runtime.json           Generic harness validation/escalation summary
     /api/skill/<slug>.json      Sidecar passthrough
     /api/graph/<slug>.json      Dashboard-shaped neighborhood; accepts type
+    /api/config.json            Effective/default/user config
     /api/kpi.json               DashboardSummary passthrough
 
 Design notes:
@@ -63,7 +65,7 @@ from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
@@ -124,6 +126,10 @@ def _sidecar_dir() -> Path:
 
 def _wiki_dir() -> Path:
     return _claude_dir() / "skill-wiki"
+
+
+def _user_config_path() -> Path:
+    return _claude_dir() / "skill-system-config.json"
 
 
 def _load_dashboard_graph() -> Any:
@@ -1263,6 +1269,7 @@ def _layout(title: str, body: str) -> str:
         "<a href='/skills'>Skills</a>"
         "<a href='/wiki'>Wiki</a>"
         "<a href='/graph'>Graph</a>"
+        "<a href='/config'>Config</a>"
         "<a href='/status'>Status</a>"
         "<a href='/kpi'>KPIs</a>"
         "<a href='/runtime'>Runtime</a>"
@@ -1278,6 +1285,82 @@ def _layout(title: str, body: str) -> str:
 # ─── Graph neighborhood (for /graph) ────────────────────────────────────────
 
 
+def _graph_slug_from_node_id(node_id: str) -> str:
+    return node_id.split(":", 1)[-1] if ":" in node_id else node_id
+
+
+def _resolve_graph_center(
+    G: Any,
+    slug: str,
+    entity_type: str | None,
+) -> tuple[str | None, dict[str, str] | None, list[str]]:
+    """Resolve exact and fuzzy graph focus queries to one graph node id."""
+    raw_query = str(slug or "").strip()
+    if not raw_query or "/" in raw_query or "\\" in raw_query or ".." in raw_query:
+        return None, None, []
+    normalized_query = _slugish(raw_query)
+    if not normalized_query or not _is_safe_slug(normalized_query):
+        return None, None, []
+
+    entity_types = (
+        (entity_type,)
+        if entity_type is not None
+        else _DASHBOARD_ENTITY_TYPES
+    )
+    for current_type in entity_types:
+        for candidate_slug in (raw_query, normalized_query):
+            candidate = f"{current_type}:{candidate_slug}"
+            if candidate in G:
+                return candidate, None, [candidate_slug]
+
+    matches: list[tuple[tuple[int, int, int], str, str]] = []
+    query_tokens = set(normalized_query.split("-"))
+    for node_id in G.nodes:
+        node_type = _graph_type_from_node_id(str(node_id))
+        if node_type not in entity_types:
+            continue
+        data = G.nodes.get(node_id, {})
+        node_slug = _graph_slug_from_node_id(str(node_id))
+        label = str(data.get("label") or node_slug)
+        haystacks = {_slugish(node_slug), _slugish(label)}
+        tags = data.get("tags", [])
+        if isinstance(tags, list):
+            haystacks.update(_slugish(str(tag)) for tag in tags[:12])
+        rank = None
+        if normalized_query in haystacks:
+            rank = 0
+        elif any(h.startswith(normalized_query) for h in haystacks):
+            rank = 1
+        elif any(normalized_query in h for h in haystacks):
+            rank = 2
+        elif query_tokens and all(
+            any(token in h for h in haystacks) for token in query_tokens
+        ):
+            rank = 3
+        if rank is None:
+            continue
+        try:
+            degree = int(G.degree[node_id])
+        except Exception:  # noqa: BLE001
+            degree = 0
+        matches.append(((rank, len(node_slug), -degree), str(node_id), node_slug))
+
+    matches.sort(key=lambda item: item[0])
+    suggestions = []
+    for _, _node_id, suggestion in matches[:8]:
+        if suggestion not in suggestions:
+            suggestions.append(suggestion)
+    if not matches:
+        return None, None, suggestions
+    center = matches[0][1]
+    resolved_slug = _graph_slug_from_node_id(center)
+    return (
+        center,
+        {"query": raw_query, "slug": resolved_slug, "id": center},
+        suggestions,
+    )
+
+
 def _graph_neighborhood(
     slug: str,
     hops: int = 1,
@@ -1290,7 +1373,7 @@ def _graph_neighborhood(
     schema is handled centrally. Returns an empty shape if the graph
     hasn't been built or the slug isn't a node.
     """
-    if not _is_safe_slug(slug):
+    if "/" in slug or "\\" in slug or ".." in slug:
         return {"nodes": [], "edges": [], "center": None}
     try:
         G = _load_dashboard_graph()
@@ -1303,16 +1386,9 @@ def _graph_neighborhood(
     normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
     if entity_type is not None and normalized_entity_type is None:
         return {"nodes": [], "edges": [], "center": None}
-    entity_types = (
-        (normalized_entity_type,)
-        if normalized_entity_type is not None
-        else _DASHBOARD_ENTITY_TYPES
+    center, resolved, suggestions = _resolve_graph_center(
+        G, slug, normalized_entity_type,
     )
-    for current_type in entity_types:
-        candidate = f"{current_type}:{slug}"
-        if candidate in G:
-            center = candidate
-            break
     if center is None:
         return {"nodes": [], "edges": [], "center": None}
 
@@ -1342,6 +1418,9 @@ def _graph_neighborhood(
                 "type": ntype,
                 "depth": depth,
                 "tags": tags[:6],
+                "description": data.get("description", ""),
+                "quality_score": data.get("quality_score"),
+                "usage_score": data.get("usage_score"),
                 "filter_tokens": [nid, label, nid.split(":", 1)[-1], *tags],
             },
         }
@@ -1377,6 +1456,11 @@ def _graph_neighborhood(
                             "target": other,
                             "weight": edata.get("weight", 1),
                             "shared_tags": shared_tags,
+                            "reasons": edata.get("reasons", []),
+                            "semantic": edata.get("semantic"),
+                            "tag_sim": edata.get("tag_sim"),
+                            "slug_token_sim": edata.get("slug_token_sim"),
+                            "source_overlap": edata.get("source_overlap"),
                         },
                     })
                 if other not in seen:
@@ -1392,6 +1476,8 @@ def _graph_neighborhood(
         "nodes": list(nodes_out.values()),
         "edges": edges_out,
         "center": center,
+        "resolved": resolved,
+        "suggestions": suggestions,
     }
 
 
@@ -1794,6 +1880,288 @@ def _top_degree_seeds(limit: int = 18, *, allow_load: bool = True) -> list[dict]
     return out
 
 
+def _read_default_config_raw() -> dict[str, Any]:
+    try:
+        from ctx_config import _read_default_config  # type: ignore
+
+        raw = _read_default_config()
+        return raw if isinstance(raw, dict) else {}
+    except Exception:  # noqa: BLE001
+        path = Path(__file__).with_name("config.json")
+        if not path.exists():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+
+def _read_user_config_raw() -> dict[str, Any]:
+    path = _user_config_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _deep_merge_config(base: dict[str, Any], override: dict[str, Any]) -> None:
+    for key, value in override.items():
+        if isinstance(base.get(key), dict) and isinstance(value, dict):
+            _deep_merge_config(base[key], value)
+        else:
+            base[key] = value
+
+
+def _config_value(raw: dict[str, Any], path: str, default: Any = None) -> Any:
+    current: Any = raw
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return default
+        current = current[part]
+    return current
+
+
+def _set_config_value(raw: dict[str, Any], path: str, value: Any) -> None:
+    current = raw
+    parts = path.split(".")
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[parts[-1]] = value
+
+
+def _delete_config_value(raw: dict[str, Any], path: str) -> None:
+    current = raw
+    parts = path.split(".")
+    parents: list[tuple[dict[str, Any], str]] = []
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            return
+        parents.append((current, part))
+        current = child
+    current.pop(parts[-1], None)
+    for parent, key in reversed(parents):
+        child = parent.get(key)
+        if isinstance(child, dict) and not child:
+            parent.pop(key, None)
+
+
+def _config_field_specs() -> tuple[dict[str, Any], ...]:
+    return (
+        {"group": "Knowledge", "path": "knowledge.mode", "type": "choice", "choices": ("shipped", "local", "enriched"), "required": True, "label": "Knowledge source mode", "help": "shipped uses ctx's packaged graph/wiki, local stays private, enriched starts from shipped knowledge and adds your own.", "example": "enriched"},
+        {"group": "Recommendation", "path": "resolver.recommendation_top_k", "type": "int", "min": 1, "max": 5, "required": True, "label": "Max mixed recommendations", "help": "Hard cap for the combined skills/agents/MCP recommendation bundle.", "example": 5},
+        {"group": "Recommendation", "path": "resolver.recommendation_min_normalized_score", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Minimum recommendation score", "help": "Drops weak skill/agent/MCP matches instead of recommending at all cost.", "example": 0.30},
+        {"group": "Recommendation", "path": "resolver.max_skills", "type": "int", "min": 1, "max": 50, "label": "Resolver hard skill ceiling", "help": "Maximum load candidates considered by a resolver call.", "example": 15},
+        {"group": "Harness", "path": "harness.recommendation_min_fit_score", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Minimum harness fit score", "help": "Custom/API/local model users only see harnesses at or above this fit floor.", "example": 0.85},
+        {"group": "Harness", "path": "harness.recommendation_min_normalized_score", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "label": "Harness normalized score floor", "help": "Compatibility display floor for older configs.", "example": 0.85},
+        {"group": "Micro-skills", "path": "skill_transformer.line_threshold", "type": "int", "min": 1, "max": 2000, "required": True, "label": "Micro-skill line threshold", "help": "Any SKILL.md above this many lines triggers the micro-skills conversion gate.", "example": 180},
+        {"group": "Micro-skills", "path": "skill_transformer.max_stage_lines", "type": "int", "min": 1, "max": 300, "label": "Max staged reference lines", "help": "Target maximum lines for each generated reference stage.", "example": 40},
+        {"group": "Micro-skills", "path": "skill_transformer.stage_count", "type": "int", "min": 1, "max": 20, "label": "Stage count", "help": "Target number of staged references for long skills.", "example": 5},
+        {"group": "Graph", "path": "graph.min_edge_weight", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Minimum final edge weight", "help": "Edges below this blended score are dropped from graph.json during rebuild.", "example": 0.03},
+        {"group": "Graph", "path": "graph.edge_weights.semantic", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Semantic edge weight", "help": "Semantic portion of the blended edge score. Semantic/tags/slug tokens should sum to 1.", "example": 0.70},
+        {"group": "Graph", "path": "graph.edge_weights.tags", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Tag edge weight", "help": "Tag-overlap portion of the blended edge score.", "example": 0.15},
+        {"group": "Graph", "path": "graph.edge_weights.slug_tokens", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Slug-token edge weight", "help": "Slug-token overlap portion of the blended edge score.", "example": 0.15},
+        {"group": "Graph", "path": "graph.semantic.top_k", "type": "int", "min": 1, "max": 200, "label": "Semantic neighbors per entity", "help": "Maximum nearest semantic neighbors retained per entity during graph build.", "example": 20},
+        {"group": "Graph", "path": "graph.semantic.build_floor", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "label": "Semantic build floor", "help": "Low inclusion bar used when graph embeddings are rebuilt.", "example": 0.50},
+        {"group": "Graph", "path": "graph.semantic.min_cosine", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "required": True, "label": "Semantic display floor", "help": "Read-time semantic filter. Raising this is stricter without forcing a rebuild.", "example": 0.80},
+        {"group": "Graph", "path": "graph.tag_edges.dense_tag_threshold", "type": "int", "min": 1, "max": 10000, "label": "Dense tag cutoff", "help": "Tags shared by more than this many entities do not create broad noisy cliques.", "example": 500},
+        {"group": "Graph", "path": "graph.token_edges.dense_token_threshold", "type": "int", "min": 1, "max": 10000, "label": "Dense slug-token cutoff", "help": "Slug words shared by too many entities are ignored as edge creators.", "example": 30},
+        {"group": "Intake", "path": "intake.enabled", "type": "bool", "required": True, "label": "Intake quality gate", "help": "Runs duplicate/near-duplicate and body-quality checks when entities are added or updated.", "example": True},
+        {"group": "Intake", "path": "intake.dup_threshold", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "label": "Duplicate threshold", "help": "Similarity at or above this is treated as a duplicate.", "example": 0.93},
+        {"group": "Intake", "path": "intake.near_dup_threshold", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01, "label": "Near-duplicate threshold", "help": "Similarity at or above this asks the user to update/merge instead of blindly adding.", "example": 0.80},
+        {"group": "Paths", "path": "paths.wiki_dir", "type": "str", "required": True, "label": "Wiki directory", "help": "Runtime llm-wiki directory used by dashboard, graph, and recommendation flows.", "example": "~/.claude/skill-wiki"},
+        {"group": "Paths", "path": "paths.skills_dir", "type": "str", "required": True, "label": "Skills directory", "help": "Installed local skills directory.", "example": "~/.claude/skills"},
+        {"group": "Paths", "path": "paths.agents_dir", "type": "str", "required": True, "label": "Agents directory", "help": "Installed local agents directory.", "example": "~/.claude/agents"},
+    )
+
+
+_CONFIG_REMOVE = object()
+
+
+def _coerce_config_value(spec: dict[str, Any], raw_value: Any) -> Any:
+    if raw_value is None or (isinstance(raw_value, str) and raw_value.strip() == ""):
+        return _CONFIG_REMOVE
+    kind = spec.get("type", "str")
+    if kind == "bool":
+        if isinstance(raw_value, bool):
+            return raw_value
+        text = str(raw_value).strip().lower()
+        if text in {"true", "1", "yes", "on"}:
+            return True
+        if text in {"false", "0", "no", "off"}:
+            return False
+        raise ValueError(f"{spec['path']} must be true or false")
+    if kind == "int":
+        if isinstance(raw_value, bool):
+            raise ValueError(f"{spec['path']} must be an integer")
+        value: int | float = 0
+        value = int(raw_value)
+    elif kind == "float":
+        if isinstance(raw_value, bool):
+            raise ValueError(f"{spec['path']} must be a number")
+        value = float(raw_value)
+    elif kind == "choice":
+        choice_value = str(raw_value).strip()
+        if choice_value not in spec.get("choices", ()):
+            raise ValueError(f"{spec['path']} must be one of {spec.get('choices')}")
+        return choice_value
+    else:
+        text_value = str(raw_value).strip()
+        return text_value if text_value else _CONFIG_REMOVE
+    if "min" in spec and value < spec["min"]:
+        raise ValueError(f"{spec['path']} must be >= {spec['min']}")
+    if "max" in spec and value > spec["max"]:
+        raise ValueError(f"{spec['path']} must be <= {spec['max']}")
+    return value
+
+
+def _effective_config_payload() -> dict[str, Any]:
+    defaults = _read_default_config_raw()
+    user = _read_user_config_raw()
+    effective = json.loads(json.dumps(defaults))
+    _deep_merge_config(effective, user)
+    return {
+        "defaults": defaults,
+        "user": user,
+        "effective": effective,
+        "path": str(_user_config_path()),
+    }
+
+
+def _save_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
+    specs = {spec["path"]: spec for spec in _config_field_specs()}
+    unknown = sorted(set(updates) - set(specs))
+    if unknown:
+        return {"ok": False, "detail": f"unknown config keys: {', '.join(unknown)}"}
+    user_config = _read_user_config_raw()
+    try:
+        for path, raw_value in updates.items():
+            value = _coerce_config_value(specs[path], raw_value)
+            if value is _CONFIG_REMOVE:
+                _delete_config_value(user_config, path)
+            else:
+                _set_config_value(user_config, path, value)
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "detail": str(exc)}
+    config_path = _user_config_path()
+    with file_lock(config_path):
+        _atomic_write_text(
+            config_path,
+            json.dumps(user_config, indent=2, sort_keys=True) + "\n",
+        )
+    return {"ok": True, "detail": f"saved {len(updates)} config keys"}
+
+
+def _render_config() -> str:
+    payload = _effective_config_payload()
+    effective = payload["effective"]
+    user = payload["user"]
+    rows_by_group: dict[str, list[str]] = defaultdict(list)
+    for spec in _config_field_specs():
+        path = spec["path"]
+        value = _config_value(effective, path, "")
+        default = _config_value(payload["defaults"], path, "")
+        user_value = _config_value(user, path, _CONFIG_REMOVE)
+        is_override = user_value is not _CONFIG_REMOVE
+        required = bool(spec.get("required"))
+        req_html = " <span class='pill grade-A'>Required</span>" if required else ""
+        help_text = html.escape(str(spec.get("help", "")))
+        default_html = html.escape(json.dumps(default) if not isinstance(default, str) else default)
+        example_value = spec.get("example")
+        example_html = html.escape(json.dumps(example_value) if not isinstance(example_value, str) else str(example_value))
+        common_attrs = (
+            f"name='{html.escape(path)}' data-config-path='{html.escape(path)}' "
+            f"data-default='{default_html}' {'required' if required else ''}"
+        )
+        if spec.get("type") == "choice":
+            options = "".join(
+                f"<option value='{html.escape(str(choice))}' {'selected' if str(value) == str(choice) else ''}>"
+                f"{html.escape(str(choice))}</option>"
+                for choice in spec.get("choices", ())
+            )
+            control = f"<select {common_attrs}>{options}</select>"
+        elif spec.get("type") == "bool":
+            control = (
+                f"<select {common_attrs}>"
+                f"<option value='true' {'selected' if bool(value) else ''}>true</option>"
+                f"<option value='false' {'selected' if not bool(value) else ''}>false</option>"
+                "</select>"
+            )
+        elif spec.get("type") in {"int", "float"}:
+            step = spec.get("step", 1 if spec.get("type") == "int" else 0.01)
+            control = (
+                f"<input type='number' {common_attrs} "
+                f"min='{html.escape(str(spec.get('min', '')))}' "
+                f"max='{html.escape(str(spec.get('max', '')))}' "
+                f"step='{html.escape(str(step))}' "
+                f"value='{html.escape(str(value))}' placeholder='{default_html}'>"
+            )
+        else:
+            control = (
+                f"<input type='text' {common_attrs} "
+                f"value='{html.escape(str(value))}' placeholder='{default_html}'>"
+            )
+        override_html = (
+            "<span class='pill grade-B'>override</span>"
+            if is_override
+            else "<span class='muted'>default</span>"
+        )
+        rows_by_group[str(spec["group"])].append(
+            "<div class='card' style='margin:0 0 0.75rem 0;'>"
+            f"<label><strong>{html.escape(str(spec['label']))}</strong>{req_html}<br>"
+            f"<code>{html.escape(path)}</code></label>"
+            f"<div style='margin-top:0.45rem;'>{control}</div>"
+            f"<p class='muted' style='margin-bottom:0;'>{help_text}<br>"
+            f"Default: <code>{default_html}</code> · Example: <code>{example_html}</code> · "
+            f"{override_html}</p>"
+            "</div>"
+        )
+    group_html = "".join(
+        "<section style='margin-bottom:1rem;'>"
+        f"<h2>{html.escape(group)}</h2>"
+        + "".join(rows)
+        + "</section>"
+        for group, rows in rows_by_group.items()
+    )
+    token = _MONITOR_TOKEN or ""
+    body = (
+        "<h1>Config</h1>"
+        "<p class='muted'>Edit ctx runtime defaults from the dashboard. Blank values remove your override and fall back to the shipped default. Important fields are marked Required.</p>"
+        f"<p class='muted'>User config: <code>{html.escape(payload['path'])}</code></p>"
+        "<form id='config-form'>"
+        + group_html
+        + "<div class='card' style='position:sticky; bottom:0; background:rgba(255,255,255,0.96);'>"
+        "<button type='submit'>save config</button> "
+        "<button type='button' id='config-reset'>reset form to effective values</button> "
+        "<span id='config-msg' class='muted'></span>"
+        "</div></form>"
+        "<script>\n"
+        f"const CTX_MONITOR_TOKEN = {json.dumps(token)};\n"
+        "const form = document.getElementById('config-form');\n"
+        "const msg = document.getElementById('config-msg');\n"
+        "form.addEventListener('submit', async (ev) => {\n"
+        "  ev.preventDefault();\n"
+        "  const updates = {};\n"
+        "  form.querySelectorAll('[data-config-path]').forEach(el => { updates[el.dataset.configPath] = el.value; });\n"
+        "  msg.textContent = 'saving...';\n"
+        "  const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json', 'X-CTX-Monitor-Token':CTX_MONITOR_TOKEN}, body: JSON.stringify({updates})});\n"
+        "  let body = {}; try { body = await r.json(); } catch (_) {}\n"
+        "  msg.textContent = r.ok && body.ok ? body.detail : ('failed: ' + (body.detail || r.statusText));\n"
+        "});\n"
+        "document.getElementById('config-reset').addEventListener('click', () => location.reload());\n"
+        "</script>"
+    )
+    return _layout("Config", body)
+
+
 def _render_graph(focus: str | None = None, focus_type: str | None = None) -> str:
     """Interactive graph view backed by a dependency-free SVG renderer."""
     focus_slug = focus or ""
@@ -1927,74 +2295,112 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "    + '<div class=\"muted\" style=\"margin-bottom:0.5rem;\">Showing list view.</div>'\n"
         "    + rows + '</div>';\n"
         "}\n"
-        "function renderSvgGraph(g) {\n"
+        "function nodeDetail(d) {\n"
+        "  const tags = Array.from(d.tags || []).join(', ') || 'none';\n"
+        "  const quality = d.quality_score == null ? 'unknown' : Number(d.quality_score).toFixed(3);\n"
+        "  const desc = d.description ? ' · ' + d.description : '';\n"
+        "  return (d.label || nodeSlug(d.id)) + ' · ' + (d.type || 'entity') + desc + ' · tags: ' + tags + ' · quality: ' + quality;\n"
+        "}\n"
+        "function edgeDetail(d) {\n"
+        "  const tags = Array.from(d.shared_tags || []).join(', ') || 'none';\n"
+        "  const reasons = Array.from(d.reasons || []).join(', ') || 'graph score';\n"
+        "  const weight = Number(d.weight || 0).toFixed(3);\n"
+        "  return nodeSlug(d.source) + ' ↔ ' + nodeSlug(d.target) + ' · weight ' + weight + ' · shared: ' + tags + ' · reasons: ' + reasons;\n"
+        "}\n"
+        "function renderGraph3d(g) {\n"
         "  const nodes = g.nodes || [];\n"
         "  const edges = g.edges || [];\n"
         "  if (!nodes.length) { renderFallback(g); return; }\n"
         "  const width = Math.max(640, Math.floor(cyMount.clientWidth || 800));\n"
         "  const height = Math.max(420, Math.floor(cyMount.clientHeight || 520));\n"
-        "  const cx = width / 2;\n"
-        "  const cy0 = height / 2;\n"
         "  const center = nodes.find(n => (n.data || {}).depth === 0) || nodes[0];\n"
         "  const centerId = (center.data || {}).id;\n"
-        "  const maxDepth = Math.max(1, ...nodes.map(n => Number((n.data || {}).depth || 0)));\n"
-        "  const byDepth = new Map();\n"
-        "  nodes.forEach(n => {\n"
+        "  const points = new Map([[centerId, {x: 0, y: 0, z: 0}]]);\n"
+        "  const others = nodes.filter(n => (n.data || {}).id !== centerId);\n"
+        "  others.forEach((n, idx) => {\n"
         "    const d = n.data || {};\n"
-        "    if (d.id === centerId) return;\n"
-        "    const depth = Number(d.depth || 1);\n"
-        "    if (!byDepth.has(depth)) byDepth.set(depth, []);\n"
-        "    byDepth.get(depth).push(n);\n"
+        "    const i = idx + 1;\n"
+        "    const phi = Math.acos(1 - 2 * i / Math.max(2, others.length + 1));\n"
+        "    const theta = Math.PI * (3 - Math.sqrt(5)) * i;\n"
+        "    const depth = Math.max(1, Number(d.depth || 1));\n"
+        "    const radius = 180 + depth * 90;\n"
+        "    points.set(d.id, {x: radius * Math.cos(theta) * Math.sin(phi), y: radius * Math.sin(theta) * Math.sin(phi), z: radius * Math.cos(phi)});\n"
         "  });\n"
-        "  const pos = new Map([[centerId, {x: cx, y: cy0}]]);\n"
-        "  Array.from(byDepth.entries()).forEach(([depth, group]) => {\n"
-        "    const radius = Math.min(width, height) * (0.18 + 0.28 * (depth / maxDepth));\n"
-        "    group.forEach((n, idx) => {\n"
-        "      const angle = -Math.PI / 2 + (2 * Math.PI * idx / Math.max(1, group.length));\n"
-        "      pos.set((n.data || {}).id, {x: cx + radius * Math.cos(angle), y: cy0 + radius * Math.sin(angle)});\n"
-        "    });\n"
-        "  });\n"
-        "  const edgeHtml = edges.map(e => {\n"
-        "    const d = e.data || {};\n"
-        "    const s = pos.get(d.source);\n"
-        "    const t = pos.get(d.target);\n"
-        "    if (!s || !t) return '';\n"
-        "    const w = Math.max(1, Math.min(4, 1 + Math.sqrt(Math.max(0, Number(d.weight || 1)))));\n"
-        "    return '<line data-svg-edge-source=\"' + escapeHtml(d.source || '') + '\" '\n"
-        "      + 'data-svg-edge-target=\"' + escapeHtml(d.target || '') + '\" '\n"
-        "      + 'x1=\"' + s.x.toFixed(1) + '\" y1=\"' + s.y.toFixed(1) + '\" '\n"
-        "      + 'x2=\"' + t.x.toFixed(1) + '\" y2=\"' + t.y.toFixed(1) + '\" '\n"
-        "      + 'stroke=\"#94a3b8\" stroke-opacity=\"0.55\" stroke-width=\"' + w.toFixed(2) + '\" />';\n"
-        "  }).join('');\n"
-        "  const nodeHtml = nodes.map(n => {\n"
-        "    const d = n.data || {};\n"
-        "    const p = pos.get(d.id) || {x: cx, y: cy0};\n"
-        "    const tags = Array.from(d.filter_tokens || d.tags || []).join(' ');\n"
-        "    const label = d.label || nodeSlug(d.id);\n"
-        "    const isCenter = d.id === centerId;\n"
-        "    const r = isCenter ? 18 : 13;\n"
-        "    return '<a href=\"' + escapeHtml(wikiHref(d)) + '\"><g data-testid=\"graph-svg-node\" '\n"
-        "      + 'id=\"' + escapeHtml(nodeDomId(d.id)) + '\" data-svg-node-id=\"' + escapeHtml(d.id || '') + '\" '\n"
-        "      + 'data-type=\"' + escapeHtml(d.type || '') + '\" data-depth=\"' + escapeHtml(d.depth || 0) + '\" '\n"
-        "      + 'data-tags=\"' + escapeHtml(tags.toLowerCase()) + '\">'\n"
-        "      + '<title>' + escapeHtml(label + ' (' + (d.type || 'entity') + ')') + '</title>'\n"
-        "      + '<circle cx=\"' + p.x.toFixed(1) + '\" cy=\"' + p.y.toFixed(1) + '\" r=\"' + r + '\" '\n"
-        "      + 'fill=\"' + nodeColor(d.type) + '\" stroke=\"#fff\" stroke-width=\"2\" />'\n"
-        "      + '<text x=\"' + p.x.toFixed(1) + '\" y=\"' + (p.y + r + 14).toFixed(1) + '\" '\n"
-        "      + 'text-anchor=\"middle\" font-size=\"11\" fill=\"#111827\">' + escapeHtml(label).slice(0, 28) + '</text>'\n"
-        "      + '</g></a>';\n"
-        "  }).join('');\n"
         "  renderFallback(g);\n"
         "  const list = cyMount.querySelector('[data-testid=\"graph-fallback\"]');\n"
         "  const heading = list ? list.querySelector('.muted') : null;\n"
         "  if (heading) heading.remove();\n"
         "  const rows = list ? list.innerHTML : '';\n"
-        "  cyMount.innerHTML = '<div data-testid=\"graph-renderer\" style=\"height:100%; display:flex; flex-direction:column;\">'\n"
-        "    + '<svg data-testid=\"graph-svg\" viewBox=\"0 0 ' + width + ' ' + height + '\" '\n"
-        "    + 'style=\"display:block; width:100%; flex:1 1 auto; min-height:0; background:#fafafa;\">'\n"
-        "    + '<rect width=\"100%\" height=\"100%\" fill=\"#fafafa\" />' + edgeHtml + nodeHtml + '</svg>'\n"
-        "    + '<div data-testid=\"graph-list\" style=\"max-height:32%; overflow:auto; border-top:1px solid #e5e7eb;\">' + rows + '</div>'\n"
-        "    + '</div>';\n"
+        "  cyMount.innerHTML = '<div data-testid=\"graph-renderer\" style=\"height:100%; display:grid; grid-template-rows:auto minmax(0,1fr) auto 30%;\">'\n"
+        "    + '<div style=\"display:flex; align-items:center; gap:0.5rem; padding:0.45rem 0.6rem; border-bottom:1px solid #e5e7eb; background:#fff;\">'\n"
+        "    + '<button id=\"graph-zoom-in\" type=\"button\">zoom in</button><button id=\"graph-zoom-out\" type=\"button\">zoom out</button>'\n"
+        "    + '<span class=\"muted\">drag to rotate · wheel to zoom · hover nodes or edges</span></div>'\n"
+        "    + '<svg data-testid=\"graph-3d\" viewBox=\"0 0 ' + width + ' ' + height + '\" style=\"display:block; width:100%; height:100%; min-height:0; background:#f8fafc; touch-action:none;\"></svg>'\n"
+        "    + '<div style=\"display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; padding:0.45rem 0.6rem; border-top:1px solid #e5e7eb; background:#fff;\">'\n"
+        "    + '<div data-testid=\"graph-node-detail\" class=\"muted\">Hover a node for entity highlights.</div>'\n"
+        "    + '<div data-testid=\"graph-edge-detail\" class=\"muted\">Hover an edge for relationship signals.</div></div>'\n"
+        "    + '<div data-testid=\"graph-list\" style=\"overflow:auto; border-top:1px solid #e5e7eb;\">' + rows + '</div></div>';\n"
+        "  const svg = cyMount.querySelector('[data-testid=\"graph-3d\"]');\n"
+        "  const nodeDetailBox = cyMount.querySelector('[data-testid=\"graph-node-detail\"]');\n"
+        "  const edgeDetailBox = cyMount.querySelector('[data-testid=\"graph-edge-detail\"]');\n"
+        "  let yaw = -0.4;\n"
+        "  let pitch = 0.55;\n"
+        "  let zoom = 1;\n"
+        "  function project(p) {\n"
+        "    const cyaw = Math.cos(yaw), syaw = Math.sin(yaw);\n"
+        "    const cp = Math.cos(pitch), sp = Math.sin(pitch);\n"
+        "    const x1 = p.x * cyaw - p.z * syaw;\n"
+        "    const z1 = p.x * syaw + p.z * cyaw;\n"
+        "    const y1 = p.y * cp - z1 * sp;\n"
+        "    const z2 = p.y * sp + z1 * cp;\n"
+        "    const scale = zoom * 600 / (720 + z2);\n"
+        "    return {x: width / 2 + x1 * scale, y: height / 2 + y1 * scale, z: z2, scale};\n"
+        "  }\n"
+        "  function attach3dHoverHandlers() {\n"
+        "    svg.querySelectorAll('[data-node-detail]').forEach(n => n.addEventListener('mouseenter', () => { nodeDetailBox.textContent = n.dataset.nodeDetail || ''; }));\n"
+        "    svg.querySelectorAll('[data-edge-detail]').forEach(e => e.addEventListener('mouseenter', () => { edgeDetailBox.textContent = e.dataset.edgeDetail || ''; }));\n"
+        "  }\n"
+        "  function drawGraph3d() {\n"
+        "    const projected = new Map();\n"
+        "    points.forEach((p, id) => projected.set(id, project(p)));\n"
+        "    const edgeHtml = edges.map(e => {\n"
+        "      const d = e.data || {};\n"
+        "      const s = projected.get(d.source);\n"
+        "      const t = projected.get(d.target);\n"
+        "      if (!s || !t) return '';\n"
+        "      const w = Math.max(1, Math.min(4, 1 + Math.sqrt(Math.max(0, Number(d.weight || 1)))));\n"
+        "      return '<line data-3d-edge-source=\"' + escapeHtml(d.source || '') + '\" data-3d-edge-target=\"' + escapeHtml(d.target || '') + '\" x1=\"' + s.x.toFixed(1) + '\" y1=\"' + s.y.toFixed(1) + '\" x2=\"' + t.x.toFixed(1) + '\" y2=\"' + t.y.toFixed(1) + '\" stroke=\"#64748b\" stroke-opacity=\"' + (0.35 + Math.min(0.4, Number(d.weight || 0) / 3)).toFixed(2) + '\" stroke-width=\"' + w.toFixed(2) + '\" />';\n"
+        "    }).join('');\n"
+        "    const nodeHtml = nodes.slice().sort((a, b) => (projected.get((a.data || {}).id)?.z || 0) - (projected.get((b.data || {}).id)?.z || 0)).map(n => {\n"
+        "      const d = n.data || {};\n"
+        "      const p = projected.get(d.id) || {x: width / 2, y: height / 2, z: 0, scale: 1};\n"
+        "      const tags = Array.from(d.filter_tokens || d.tags || []).join(' ');\n"
+        "      const label = d.label || nodeSlug(d.id);\n"
+        "      const isCenter = d.id === centerId;\n"
+        "      const r = Math.max(6, (isCenter ? 18 : 11) * Math.max(0.7, p.scale));\n"
+        "      return '<a href=\"' + escapeHtml(wikiHref(d)) + '\"><g data-testid=\"graph-3d-node\" id=\"' + escapeHtml(nodeDomId(d.id)) + '\" data-3d-node-id=\"' + escapeHtml(d.id || '') + '\" data-node-detail=\"' + escapeHtml(nodeDetail(d)) + '\" data-type=\"' + escapeHtml(d.type || '') + '\" data-depth=\"' + escapeHtml(d.depth || 0) + '\" data-tags=\"' + escapeHtml(tags.toLowerCase()) + '\"><title>' + escapeHtml(nodeDetail(d)) + '</title><circle cx=\"' + p.x.toFixed(1) + '\" cy=\"' + p.y.toFixed(1) + '\" r=\"' + r + '\" fill=\"' + nodeColor(d.type) + '\" stroke=\"#fff\" stroke-width=\"2\" /><text x=\"' + p.x.toFixed(1) + '\" y=\"' + (p.y + r + 14).toFixed(1) + '\" text-anchor=\"middle\" font-size=\"11\" fill=\"#111827\" style=\"pointer-events:none;\">' + escapeHtml(label).slice(0, 28) + '</text></g></a>';\n"
+        "    }).join('');\n"
+        "    const edgeHitHtml = edges.map(e => {\n"
+        "      const d = e.data || {};\n"
+        "      const s = projected.get(d.source);\n"
+        "      const t = projected.get(d.target);\n"
+        "      if (!s || !t) return '';\n"
+        "      const hx1 = s.x + (t.x - s.x) * 0.18, hy1 = s.y + (t.y - s.y) * 0.18;\n"
+        "      const hx2 = s.x + (t.x - s.x) * 0.82, hy2 = s.y + (t.y - s.y) * 0.82;\n"
+        "      return '<line data-testid=\"graph-3d-edge\" data-3d-edge-source=\"' + escapeHtml(d.source || '') + '\" data-3d-edge-target=\"' + escapeHtml(d.target || '') + '\" data-edge-detail=\"' + escapeHtml(edgeDetail(d)) + '\" x1=\"' + hx1.toFixed(1) + '\" y1=\"' + hy1.toFixed(1) + '\" x2=\"' + hx2.toFixed(1) + '\" y2=\"' + hy2.toFixed(1) + '\" stroke=\"transparent\" stroke-width=\"12\" style=\"pointer-events:stroke;\"><title>' + escapeHtml(edgeDetail(d)) + '</title></line>';\n"
+        "    }).join('');\n"
+        "    svg.innerHTML = '<rect width=\"100%\" height=\"100%\" fill=\"#f8fafc\" />' + edgeHtml + nodeHtml + edgeHitHtml;\n"
+        "    attach3dHoverHandlers();\n"
+        "    applyFilters();\n"
+        "  }\n"
+        "  document.getElementById('graph-zoom-in').addEventListener('click', () => { zoom = Math.min(2.5, zoom * 1.18); drawGraph3d(); });\n"
+        "  document.getElementById('graph-zoom-out').addEventListener('click', () => { zoom = Math.max(0.35, zoom / 1.18); drawGraph3d(); });\n"
+        "  let dragging = false, lastX = 0, lastY = 0;\n"
+        "  svg.addEventListener('pointerdown', ev => { dragging = true; lastX = ev.clientX; lastY = ev.clientY; svg.setPointerCapture(ev.pointerId); });\n"
+        "  svg.addEventListener('pointerup', ev => { dragging = false; try { svg.releasePointerCapture(ev.pointerId); } catch (_) {} });\n"
+        "  svg.addEventListener('pointermove', ev => { if (!dragging) return; yaw += (ev.clientX - lastX) * 0.01; pitch += (ev.clientY - lastY) * 0.01; pitch = Math.max(-1.35, Math.min(1.35, pitch)); lastX = ev.clientX; lastY = ev.clientY; drawGraph3d(); });\n"
+        "  svg.addEventListener('wheel', ev => { ev.preventDefault(); zoom = Math.max(0.35, Math.min(2.5, zoom * (ev.deltaY < 0 ? 1.08 : 0.92))); drawGraph3d(); }, {passive:false});\n"
+        "  drawGraph3d();\n"
         "}\n"
         "cyMount.innerHTML = '<div data-testid=\"graph-empty\" class=\"muted\" style=\"padding:0.75rem;\">Enter a slug to render the graph.</div>';\n"
         # ── Client-side filtering (type + tag substring) ─────────────
@@ -2021,11 +2427,11 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "      if (t in counts) counts[t]++;\n"
         "    }\n"
         "  });\n"
-        "  document.querySelectorAll('[data-svg-node-id]').forEach(n => {\n"
-        "    n.style.display = hiddenIds.has(n.dataset.svgNodeId || '') ? 'none' : '';\n"
+        "  document.querySelectorAll('[data-3d-node-id]').forEach(n => {\n"
+        "    n.style.display = hiddenIds.has(n.dataset['3dNodeId'] || '') ? 'none' : '';\n"
         "  });\n"
-        "  document.querySelectorAll('[data-svg-edge-source]').forEach(e => {\n"
-        "    const hidden = hiddenIds.has(e.dataset.svgEdgeSource || '') || hiddenIds.has(e.dataset.svgEdgeTarget || '');\n"
+        "  document.querySelectorAll('[data-3d-edge-source]').forEach(e => {\n"
+        "    const hidden = hiddenIds.has(e.dataset['3dEdgeSource'] || '') || hiddenIds.has(e.dataset['3dEdgeTarget'] || '');\n"
         "    e.style.display = hidden ? 'none' : '';\n"
         "  });\n"
         "  document.getElementById('graph-count-skill').textContent = counts.skill;\n"
@@ -2042,8 +2448,9 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "  if (!r.ok) { document.getElementById('msg').textContent = 'not found'; return; }\n"
         "  const g = await r.json();\n"
         "  if (!g.center) { document.getElementById('msg').textContent = 'slug not in graph'; return; }\n"
-        "  try { renderSvgGraph(g); } catch (err) { renderFallback(g); }\n"
-        "  document.getElementById('msg').textContent = g.nodes.length + ' nodes · ' + g.edges.length + ' edges';\n"
+        "  try { renderGraph3d(g); } catch (err) { renderFallback(g); }\n"
+        "  const resolved = g.resolved && g.resolved.query !== g.resolved.slug ? ' · showing ' + g.resolved.slug + ' for ' + g.resolved.query : '';\n"
+        "  document.getElementById('msg').textContent = g.nodes.length + ' nodes · ' + g.edges.length + ' edges' + resolved;\n"
         "  applyFilters();\n"
         "}\n"
         "function selectedFocusType() { return document.getElementById('focus-type').value || ''; }\n"
@@ -3211,6 +3618,8 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_html(_render_logs())
             elif path == "/graph":
                 self._send_html(_render_graph(qs.get("slug"), qs.get("type")))
+            elif path == "/config":
+                self._send_html(_render_config())
             elif path == "/status":
                 self._send_html(_render_status())
             elif path == "/wiki":
@@ -3237,15 +3646,17 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 })
             elif path == "/api/runtime.json":
                 self._send_json(_runtime_lifecycle_summary())
+            elif path == "/api/config.json":
+                self._send_json(_effective_config_payload())
             elif path.startswith("/api/skill/") and path.endswith(".json"):
-                slug = path[len("/api/skill/"): -len(".json")]
+                slug = unquote(path[len("/api/skill/"): -len(".json")])
                 sidecar = _load_sidecar(slug, entity_type=qs.get("type"))
                 if sidecar is None:
                     self._send_404(f"no sidecar for {slug}")
                 else:
                     self._send_json(sidecar)
             elif path.startswith("/api/graph/") and path.endswith(".json"):
-                slug = path[len("/api/graph/"): -len(".json")]
+                slug = unquote(path[len("/api/graph/"): -len(".json")])
                 requested_type = qs.get("type")
                 graph_entity_type = _normalize_dashboard_entity_type(requested_type)
                 if requested_type is not None and graph_entity_type is None:
@@ -3328,6 +3739,15 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_json_status(
                     200 if ok else 400, {"ok": ok, "detail": msg},
                 )
+            elif path == "/api/config":
+                updates = body.get("updates", {})
+                if not isinstance(updates, dict):
+                    self._send_json_status(
+                        400, {"ok": False, "detail": "updates must be an object"},
+                    )
+                    return
+                result = _save_config_updates(updates)
+                self._send_json_status(200 if result.get("ok") else 400, result)
             else:
                 self._send_404(path)
         except (BrokenPipeError, ConnectionAbortedError):

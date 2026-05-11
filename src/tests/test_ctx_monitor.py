@@ -1160,7 +1160,7 @@ def test_render_wiki_entity_missing_slug(fake_claude: Path) -> None:
     assert "No wiki page" in out
 
 
-def test_render_graph_uses_builtin_svg_mount(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_render_graph_uses_builtin_3d_mount(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cm,
         "_graph_stats",
@@ -1170,7 +1170,10 @@ def test_render_graph_uses_builtin_svg_mount(monkeypatch: pytest.MonkeyPatch) ->
     assert "id='cy'" in html_out
     assert "https://unpkg.com" not in html_out
     assert "data-testid=\"graph-renderer\"" in html_out
-    assert "data-testid=\"graph-svg\"" in html_out
+    assert "data-testid=\"graph-3d\"" in html_out
+    assert "button id=\"graph-zoom-in\"" in html_out
+    assert "button id=\"graph-zoom-out\"" in html_out
+    assert "data-testid=\"graph-edge-detail\"" in html_out
     assert "Graph renderer unavailable" not in html_out
     assert "Enter a slug to render the graph" in html_out
     # Initial slug must be embedded as JSON literal so the JS picks it up.
@@ -1212,6 +1215,38 @@ def test_graph_neighborhood_supports_mcp_nodes(monkeypatch) -> None:
     result = cm._graph_neighborhood("anthropic-python-sdk")
     assert result["center"] == "mcp-server:anthropic-python-sdk"
     assert result["nodes"][0]["data"]["type"] == "mcp-server"
+
+
+def test_graph_neighborhood_resolves_partial_slug(monkeypatch) -> None:
+    import networkx as nx
+
+    G = nx.Graph()
+    G.add_node(
+        "skill:brainstorming",
+        label="brainstorming",
+        type="skill",
+        tags=["creative", "planning"],
+    )
+    G.add_node(
+        "skill:multi-agent-brainstorming",
+        label="multi-agent-brainstorming",
+        type="skill",
+        tags=["creative", "agents"],
+    )
+    G.add_edge(
+        "skill:brainstorming",
+        "skill:multi-agent-brainstorming",
+        weight=0.89,
+        shared_tags=["creative"],
+    )
+    monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
+
+    result = cm._graph_neighborhood("brainstorm", entity_type="skill")
+
+    assert result["center"] == "skill:brainstorming"
+    assert result["resolved"]["query"] == "brainstorm"
+    assert result["resolved"]["slug"] == "brainstorming"
+    assert "brainstorming" in result["suggestions"]
 
 
 def test_graph_helpers_reuse_graph_loaded_from_same_file(
@@ -1463,8 +1498,60 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     assert "href='/wiki'" in out
     assert "href='/kpi'" in out
     assert "href='/graph'" in out
+    assert "href='/config'" in out
     assert ">Wiki<" in out
     assert ">KPIs<" in out
+    assert ">Config<" in out
+
+
+def test_render_config_page_shows_required_defaults_and_examples(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cm, "_claude_dir", lambda: tmp_path / ".claude")
+
+    html_out = cm._render_config()
+
+    assert "<h1>Config</h1>" in html_out
+    assert "skill_transformer.line_threshold" in html_out
+    assert "resolver.recommendation_top_k" in html_out
+    assert "graph.semantic.min_cosine" in html_out
+    assert "knowledge.mode" in html_out
+    assert "Required" in html_out
+    assert "Default: <code>180</code>" in html_out
+    assert "Example:" in html_out
+    assert "id='config-form'" in html_out
+
+
+def test_save_config_updates_casts_values_and_blank_removes_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claude = tmp_path / ".claude"
+    monkeypatch.setattr(cm, "_claude_dir", lambda: claude)
+    config_path = claude / "skill-system-config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({
+            "resolver": {"recommendation_top_k": 4},
+            "skill_transformer": {"line_threshold": 220},
+        }),
+        encoding="utf-8",
+    )
+
+    saved = cm._save_config_updates({
+        "resolver.recommendation_top_k": "",
+        "skill_transformer.line_threshold": "240",
+        "intake.enabled": "false",
+        "graph.edge_weights.semantic": "0.65",
+    })
+
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["ok"] is True
+    assert "recommendation_top_k" not in raw.get("resolver", {})
+    assert raw["skill_transformer"]["line_threshold"] == 240
+    assert raw["intake"]["enabled"] is False
+    assert raw["graph"]["edge_weights"]["semantic"] == 0.65
 
 
 def test_render_graph_landing_shows_seeds_when_available(monkeypatch) -> None:
@@ -1531,6 +1618,8 @@ def test_render_graph_landing_hides_seeds_when_graph_absent(monkeypatch) -> None
     # braces in case a downstream path still routes through it.
     monkeypatch.setitem(sys.modules, "ctx.core.graph.resolve_graph", fake)
     monkeypatch.setitem(sys.modules, "resolve_graph", fake)
+    monkeypatch.setattr(cm, "_GRAPH_CACHE_VALUE", None)
+    monkeypatch.setattr(cm, "_GRAPH_CACHE_KEY", None)
     html_out = cm._render_graph(None)
     # No seeds section when graph isn't available.
     assert "Popular seed slugs" not in html_out
