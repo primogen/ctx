@@ -1539,6 +1539,9 @@ def test_layout_nav_tabs_are_draggable_and_persist_order() -> None:
     assert "data-nav-key='graph'" in out
     assert "localStorage.setItem(storageKey" in out
     assert "dragstart" in out
+    assert "function insertionTarget" in out
+    assert "nav.addEventListener('dragover'" in out
+    assert "nav.insertBefore(dragged, target" in out
     assert "drop" in out
     assert "id='nav-reset'" in out
 
