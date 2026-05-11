@@ -1837,6 +1837,21 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
                      color: inherit; cursor: pointer; padding: 0.35rem 0.7rem; }
 .entity-tab-button.active { background: #111827; color: #fff; border-color: #111827; }
 .entity-tab-panel[hidden] { display: none; }
+.docs-tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0.8rem 0 1rem; }
+.docs-tab-button { border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+                   color: var(--text); padding: 0.38rem 0.7rem; }
+.docs-tab-button.active { background: #111827; color: #fff; border-color: #111827; }
+.docs-tab-panel[hidden] { display: none; }
+.docs-reader { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+               gap: 1rem; align-items: start; }
+.docs-page-list { position: sticky; top: 4.5rem; display: flex; flex-direction: column;
+                  gap: 0.35rem; }
+.docs-page-list a { padding: 0.25rem 0.4rem; border-radius: 5px; color: var(--muted-text); }
+.docs-page-list a:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
+.docs-page { border: 1px solid var(--border); border-radius: var(--radius);
+             background: var(--surface); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
+.docs-page-source { display: flex; justify-content: space-between; gap: 0.75rem;
+                    align-items: center; margin-bottom: 0.75rem; }
 .quality-signal-table { table-layout: fixed; }
 .quality-signal-table td:last-child code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .wizard-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
@@ -1870,6 +1885,8 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 @media (max-width: 860px) {
     .wiki-entity-grid { grid-template-columns: 1fr; }
     .wizard-layout, .wizard-grid, .setup-header, .setup-flow { grid-template-columns: 1fr; }
+    .docs-reader { grid-template-columns: 1fr; }
+    .docs-page-list { position: static; }
 }
 @media (prefers-color-scheme: dark) {
     :root {
@@ -1894,6 +1911,7 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
     .card { border-color: var(--border); }
     .entity-tab-button { background: #0f172a; border-color: #334155; }
     .entity-tab-button.active { background: #e2e8f0; color: #0f172a; }
+    .docs-tab-button.active { background: #e2e8f0; color: #0f172a; }
     code, pre { background: rgba(255,255,255,0.06); }
     .error { color: #fecaca; background: rgba(127,29,29,0.25);
              border-color: rgba(248,113,113,0.35); }
@@ -3631,16 +3649,29 @@ def _doc_summary(text: str) -> str:
     return ""
 
 
+def _strip_doc_frontmatter(text: str) -> str:
+    if not text.startswith("---\n"):
+        return text
+    parts = text.split("---", 2)
+    return parts[2].lstrip() if len(parts) == 3 else text
+
+
+def _doc_anchor(value: str) -> str:
+    return _slugish(value) or "docs"
+
+
 def _docs_index_entries() -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
     seen: set[str] = set()
     for root in _docs_roots():
         candidates = [root / "README.md", root / "graph" / "README.md"]
-        candidates.extend(sorted((root / "docs").glob("*.md")))
+        candidates.extend(sorted((root / "docs").rglob("*.md")))
         for path in candidates:
             if not path.is_file():
                 continue
             rel = path.relative_to(root).as_posix()
+            if rel == "docs/SKILL.md":
+                continue
             if rel in seen:
                 continue
             seen.add(rel)
@@ -3648,55 +3679,193 @@ def _docs_index_entries() -> list[dict[str, str]]:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+            text = _strip_doc_frontmatter(text)
             title = _doc_title(text, path.stem.replace("-", " ").title())
             entries.append({
                 "title": title,
                 "path": rel,
                 "summary": _doc_summary(text),
+                "body": text,
             })
-    return sorted(entries, key=lambda row: (row["path"] != "README.md", row["path"]))
+    return sorted(entries, key=lambda row: row["path"])
+
+
+def _docs_nav_from_mkdocs(
+    root: Path,
+    entries_by_path: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    mkdocs_path = root / "mkdocs.yml"
+    if not mkdocs_path.is_file():
+        return []
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        data = yaml.load(mkdocs_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader) or {}
+    except Exception:
+        return []
+    raw_nav = data.get("nav")
+    if not isinstance(raw_nav, list):
+        return []
+
+    def pages_from_nav(value: Any) -> list[tuple[str, str]]:
+        if isinstance(value, str):
+            return [(Path(value).stem.replace("-", " ").title(), f"docs/{value}")]
+        if isinstance(value, list):
+            pages: list[tuple[str, str]] = []
+            for child in value:
+                pages.extend(pages_from_nav(child))
+            return pages
+        if isinstance(value, dict):
+            pages = []
+            for label, child in value.items():
+                if isinstance(child, str):
+                    pages.append((str(label), f"docs/{child}"))
+                else:
+                    pages.extend(pages_from_nav(child))
+            return pages
+        return []
+
+    tabs: list[dict[str, Any]] = []
+    for item in raw_nav:
+        if not isinstance(item, dict):
+            continue
+        for label, value in item.items():
+            pages = [
+                {**entries_by_path[path], "nav_title": page_label}
+                for page_label, path in pages_from_nav(value)
+                if path in entries_by_path
+            ]
+            if pages:
+                tabs.append({
+                    "label": str(label),
+                    "slug": _doc_anchor(str(label)),
+                    "pages": pages,
+                })
+    return tabs
+
+
+def _docs_tabs(entries: list[dict[str, str]]) -> list[dict[str, Any]]:
+    entries_by_path = {entry["path"]: entry for entry in entries}
+    tabs: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for root in _docs_roots():
+        tabs = _docs_nav_from_mkdocs(root, entries_by_path)
+        if tabs:
+            break
+    for tab in tabs:
+        for page in tab["pages"]:
+            used.add(str(page["path"]))
+
+    repo_pages = [
+        entries_by_path[path]
+        for path in ("README.md", "graph/README.md")
+        if path in entries_by_path
+    ]
+    if repo_pages:
+        tabs.append({"label": "Repo", "slug": "repo", "pages": repo_pages})
+        used.update(str(page["path"]) for page in repo_pages)
+
+    other_pages = [
+        entry
+        for entry in entries
+        if entry["path"] not in used and entry["path"] != "docs/SKILL.md"
+    ]
+    if other_pages:
+        tabs.append({"label": "Other", "slug": "other", "pages": other_pages})
+    if not tabs and entries:
+        tabs.append({"label": "Docs", "slug": "docs", "pages": entries})
+    return tabs
+
+
+def _render_docs_page(entry: dict[str, str], tab_slug: str) -> str:
+    page_anchor = f"doc-{tab_slug}-{_doc_anchor(entry['path'])}"
+    source_url = f"https://github.com/stevesolun/ctx/blob/main/{quote(entry['path'])}"
+    return (
+        f"<article id='{html.escape(page_anchor)}' class='docs-page wiki-body' "
+        f"data-doc-page='{html.escape((entry['title'] + ' ' + entry['path'] + ' ' + entry['body']).lower())}'>"
+        "<div class='docs-page-source'>"
+        f"<code>{html.escape(entry['path'])}</code>"
+        f"<a href='{html.escape(source_url)}'>source -></a>"
+        "</div>"
+        f"{_render_wiki_markdown(entry['body'])}"
+        "</article>"
+    )
 
 
 def _render_docs() -> str:
     entries = _docs_index_entries()
     public_docs_url = "https://stevesolun.github.io/ctx/"
-    cards = "".join(
-        "<article class='card doc-card' "
-        f"data-doc='{html.escape((entry['title'] + ' ' + entry['path'] + ' ' + entry['summary']).lower())}'>"
-        "<div style='display:flex; justify-content:space-between; gap:0.75rem; align-items:flex-start;'>"
-        f"<h2 style='margin:0; font-size:1rem;'>{html.escape(entry['title'])}</h2>"
-        f"<code>{html.escape(entry['path'])}</code>"
-        "</div>"
-        f"<p class='muted'>{html.escape(entry['summary'] or 'No summary found.')}</p>"
-        f"<a href='https://github.com/stevesolun/ctx/blob/main/{quote(entry['path'])}'>source -></a>"
-        "</article>"
-        for entry in entries
-    )
-    body = (
-        "<h1>Docs</h1>"
-        "<div class='card'>"
-        "<strong>Documentation index</strong>"
-        f"<p class='muted'>Local repo docs are indexed here for dashboard-side reference. "
-        f"Public rendered docs: <a href='{public_docs_url}'>{public_docs_url}</a></p>"
-        "<input id='docs-search' type='text' placeholder='Search docs...' "
-        "style='width:100%; max-width:34rem; padding:0.45rem 0.6rem; "
-        "border:1px solid var(--border); border-radius:var(--radius);'>"
-        "</div>"
-        "<div class='doc-grid' style='display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:0.75rem;'>"
-        + (cards or (
+    tabs = _docs_tabs(entries)
+    if not tabs:
+        body = (
+            "<h1>Docs</h1>"
             "<div class='card'><strong>No local docs found.</strong>"
             f"<p class='muted'>Open the public docs at "
             f"<a href='{public_docs_url}'>{public_docs_url}</a>.</p></div>"
-        ))
-        + "</div>"
-        "<script>\n"
+        )
+        return _layout("Docs", body)
+
+    tab_buttons = "".join(
+        f"<button class='docs-tab-button{' active' if idx == 0 else ''}' "
+        f"type='button' data-doc-tab='{html.escape(str(tab['slug']))}'>"
+        f"{html.escape(str(tab['label']))}</button>"
+        for idx, tab in enumerate(tabs)
+    )
+    panels: list[str] = []
+    for idx, tab in enumerate(tabs):
+        tab_slug = str(tab["slug"])
+        pages = list(tab["pages"])
+        page_links = "".join(
+            f"<a href='#doc-{html.escape(tab_slug)}-{html.escape(_doc_anchor(page['path']))}'>"
+            f"{html.escape(str(page.get('nav_title') or page['title']))}</a>"
+            for page in pages
+        )
+        page_bodies = "".join(_render_docs_page(page, tab_slug) for page in pages)
+        hidden = " hidden" if idx else ""
+        panels.append(
+            f"<section class='docs-tab-panel' data-doc-panel='{html.escape(tab_slug)}'{hidden}>"
+            "<div class='docs-reader'>"
+            f"<aside class='docs-page-list'>{page_links}</aside>"
+            f"<div>{page_bodies}</div>"
+            "</div>"
+            "</section>"
+        )
+
+    body = (
+        "<h1>Docs</h1>"
+        "<div class='card'>"
+        "<strong>Repo documentation</strong>"
+        f"<p class='muted'>Rendered from the same docs tree and MkDocs nav used by the repo. "
+        f"Public rendered docs: <a href='{public_docs_url}'>{public_docs_url}</a></p>"
+        "<input id='docs-search' type='text' placeholder='Search current docs tab...' "
+        "style='width:100%; max-width:34rem; padding:0.45rem 0.6rem; "
+        "border:1px solid var(--border); border-radius:var(--radius);'>"
+        "</div>"
+        f"<div class='docs-tabs' role='tablist'>{tab_buttons}</div>"
+        + "".join(panels)
+        + "<script>\n"
         "const docsSearch = document.getElementById('docs-search');\n"
-        "const docCards = Array.from(document.querySelectorAll('.doc-card'));\n"
-        "function applyDocsFilter() {\n"
-        "  const q = (docsSearch.value || '').trim().toLowerCase();\n"
-        "  docCards.forEach(card => { card.style.display = (!q || card.dataset.doc.includes(q)) ? '' : 'none'; });\n"
+        "const docButtons = Array.from(document.querySelectorAll('.docs-tab-button'));\n"
+        "const docPanels = Array.from(document.querySelectorAll('.docs-tab-panel'));\n"
+        "function activeDocPanel() { return docPanels.find(panel => !panel.hidden); }\n"
+        "function activateDocTab(key) {\n"
+        "  docButtons.forEach(button => button.classList.toggle('active', button.dataset.docTab === key));\n"
+        "  docPanels.forEach(panel => { panel.hidden = panel.dataset.docPanel !== key; });\n"
+        "  applyDocsFilter();\n"
         "}\n"
+        "function applyDocsFilter() {\n"
+        "  const panel = activeDocPanel();\n"
+        "  if (!panel) return;\n"
+        "  const q = (docsSearch.value || '').trim().toLowerCase();\n"
+        "  Array.from(panel.querySelectorAll('[data-doc-page]')).forEach(page => {\n"
+        "    page.style.display = (!q || page.dataset.docPage.includes(q)) ? '' : 'none';\n"
+        "  });\n"
+        "}\n"
+        "docButtons.forEach(button => button.addEventListener('click', () => activateDocTab(button.dataset.docTab)));\n"
         "if (docsSearch) docsSearch.addEventListener('input', applyDocsFilter);\n"
+        "const initialDocTab = (location.hash || '').replace('#doc-tab-', '');\n"
+        "if (initialDocTab && docButtons.some(button => button.dataset.docTab === initialDocTab)) activateDocTab(initialDocTab);\n"
+        "applyDocsFilter();\n"
         "</script>"
     )
     return _layout("Docs", body)

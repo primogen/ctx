@@ -1808,13 +1808,34 @@ def test_render_docs_lists_repo_docs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "harness").mkdir()
     (tmp_path / "graph").mkdir()
+    (tmp_path / "mkdocs.yml").write_text(
+        "\n".join([
+            "nav:",
+            "  - Home: index.md",
+            "  - Dashboard: dashboard.md",
+            "  - Harness:",
+            "      - Attach to hosts: harness/attaching-to-hosts.md",
+            "extra:",
+            "  custom: !!python/name:material.extensions.emoji.twemoji",
+        ]),
+        encoding="utf-8",
+    )
     (tmp_path / "README.md").write_text(
         "# ctx\n\nMain repo docs.\n",
         encoding="utf-8",
     )
+    (tmp_path / "docs" / "index.md").write_text(
+        "# Home\n\nRepo docs home.\n",
+        encoding="utf-8",
+    )
     (tmp_path / "docs" / "dashboard.md").write_text(
         "# Dashboard\n\nMonitor skills, agents, MCPs, harnesses, and graph state.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "harness" / "attaching-to-hosts.md").write_text(
+        "# Attach to hosts\n\nConnect ctx to a non-Claude harness.\n",
         encoding="utf-8",
     )
     (tmp_path / "graph" / "README.md").write_text(
@@ -1826,12 +1847,20 @@ def test_render_docs_lists_repo_docs(
     html_out = cm._render_docs()
 
     assert "<h1>Docs</h1>" in html_out
+    assert "class='docs-tabs'" in html_out
+    assert "data-doc-tab='home'" in html_out
+    assert "data-doc-tab='dashboard'" in html_out
+    assert "data-doc-tab='harness'" in html_out
+    assert "data-doc-tab='repo'" in html_out
     assert "README.md" in html_out
     assert "docs/dashboard.md" in html_out
+    assert "docs/harness/attaching-to-hosts.md" in html_out
     assert "graph/README.md" in html_out
     assert "Monitor skills, agents, MCPs, harnesses, and graph state." in html_out
+    assert "Connect ctx to a non-Claude harness." in html_out
     assert "id='docs-search'" in html_out
     assert "https://stevesolun.github.io/ctx/" in html_out
+    assert "doc-card" not in html_out
 
 
 def test_render_docs_falls_back_to_public_docs(
