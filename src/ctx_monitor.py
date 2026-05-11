@@ -55,6 +55,7 @@ import argparse
 import html
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -429,6 +430,149 @@ def _graph_type_from_node_id(node_id: str, fallback: str = "skill") -> str:
     }.get(prefix, fallback)
 
 
+def _subgraph_sidecar(slug: str, entity_type: str) -> dict[str, Any] | None:
+    sidecar = _load_sidecar(slug, entity_type=entity_type)
+    return sidecar if isinstance(sidecar, dict) else None
+
+
+def _subgraph_quality_cell(sidecar: dict[str, Any] | None) -> str:
+    if sidecar is None:
+        return "<span class='muted'>no sidecar</span>"
+    grade = html.escape(str(sidecar.get("grade", "F")))
+    score = float(sidecar.get("raw_score", sidecar.get("score", 0.0)) or 0.0)
+    floor = str(sidecar.get("hard_floor") or "").strip()
+    floor_html = (
+        f" <span class='muted'>floor {html.escape(floor)}</span>"
+        if floor
+        else ""
+    )
+    return (
+        f"<span class='pill grade-{grade}'>{grade}</span> "
+        f"<code>{score:.3f}</code>{floor_html}"
+    )
+
+
+def _subgraph_node_title(
+    label: str,
+    entity_type: str,
+    sidecar: dict[str, Any] | None,
+) -> str:
+    if sidecar is None:
+        return f"{label} ({entity_type}) · no sidecar"
+    grade = str(sidecar.get("grade", "F"))
+    score = float(sidecar.get("raw_score", sidecar.get("score", 0.0)) or 0.0)
+    floor = str(sidecar.get("hard_floor") or "").strip()
+    floor_text = f" · floor {floor}" if floor else ""
+    return f"{label} ({entity_type}) · grade {grade} · score {score:.3f}{floor_text}"
+
+
+def _subgraph_node_fill(entity_type: str) -> str:
+    return {
+        "agent": "#f59e0b",
+        "mcp-server": "#ef4444",
+        "harness": "#22c55e",
+        "skill": "#6366f1",
+    }.get(entity_type, "#64748b")
+
+
+def _subgraph_grade_stroke(sidecar: dict[str, Any] | None) -> str:
+    grade = str((sidecar or {}).get("grade") or "")
+    return {
+        "A": "#059669",
+        "B": "#2563eb",
+        "C": "#d97706",
+        "D": "#ea580c",
+        "F": "#dc2626",
+    }.get(grade, "#ffffff")
+
+
+def _render_entity_subgraph_svg(
+    node_by_id: dict[str, dict[str, Any]],
+    edges: list[dict],
+    center: str,
+    sidecar_by_id: dict[str, dict[str, Any] | None],
+) -> str:
+    """Render an embedded, hoverable 1-hop graph for wiki entity pages."""
+    width = 980
+    height = 320
+    cx = width / 2
+    cy = height / 2
+    neighbor_ids = sorted(
+        (node_id for node_id in node_by_id if node_id != center),
+        key=lambda node_id: str(node_by_id[node_id].get("label") or node_id),
+    )
+    positions: dict[str, tuple[float, float]] = {center: (cx, cy)}
+    radius = 115.0 if len(neighbor_ids) <= 12 else 128.0
+    for idx, node_id in enumerate(neighbor_ids):
+        angle = -1.5708 + (6.28318 * idx / max(1, len(neighbor_ids)))
+        positions[node_id] = (
+            cx + radius * math.cos(angle),
+            cy + radius * math.sin(angle),
+        )
+
+    edge_parts: list[str] = []
+    for edge in edges:
+        data = edge.get("data", {})
+        source = str(data.get("source", ""))
+        target = str(data.get("target", ""))
+        if source not in positions or target not in positions:
+            continue
+        sx, sy = positions[source]
+        tx, ty = positions[target]
+        shared = ", ".join(str(tag) for tag in data.get("shared_tags", [])[:6]) or "none"
+        title = (
+            f"{_graph_slug_from_node_id(source)} ↔ {_graph_slug_from_node_id(target)} "
+            f"· weight {float(data.get('weight', 0.0) or 0.0):.3f} "
+            f"· shared {shared}"
+        )
+        edge_parts.append(
+            "<line data-testid='entity-subgraph-edge' "
+            f"x1='{sx:.1f}' y1='{sy:.1f}' x2='{tx:.1f}' y2='{ty:.1f}' "
+            "stroke='#94a3b8' stroke-opacity='0.55' stroke-width='1.8'>"
+            f"<title>{html.escape(title)}</title></line>"
+        )
+
+    node_parts: list[str] = []
+    for node_id, (x, y) in positions.items():
+        node = node_by_id[node_id]
+        node_type = _graph_type_from_node_id(
+            node_id, str(node.get("type") or "skill"),
+        )
+        node_slug = _graph_slug_from_node_id(node_id)
+        label = str(node.get("label") or node_slug)
+        sidecar = sidecar_by_id.get(node_id)
+        title = _subgraph_node_title(label, node_type, sidecar)
+        radius_px = 18 if node_id == center else 13
+        node_parts.append(
+            f"<a href='{html.escape(_entity_wiki_href(node_slug, node_type))}'>"
+            "<g data-testid='entity-subgraph-node'>"
+            f"<title>{html.escape(title)}</title>"
+            f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{radius_px}' "
+            f"fill='{_subgraph_node_fill(node_type)}' "
+            f"stroke='{_subgraph_grade_stroke(sidecar)}' stroke-width='3' />"
+            f"<text x='{x:.1f}' y='{(y + radius_px + 14):.1f}' "
+            "text-anchor='middle' font-size='11' fill='#111827' "
+            "style='pointer-events:none;'>"
+            f"{html.escape(label[:28])}</text>"
+            "</g></a>"
+        )
+
+    return (
+        "<div data-testid='entity-subgraph-graph' "
+        "style='border:1px solid #e5e7eb; border-radius:8px; "
+        "background:#f8fafc; margin:1rem 0; overflow:auto;'>"
+        f"<svg viewBox='0 0 {width} {height}' width='100%' height='320' "
+        "role='img' aria-label='Embedded entity subgraph'>"
+        "<rect width='100%' height='100%' fill='#f8fafc' />"
+        + "".join(edge_parts)
+        + "".join(node_parts)
+        + "</svg>"
+        "<p class='muted' style='margin:0 0 0.7rem 0.8rem;'>"
+        "Hover nodes for sidecar grade/score/floor; hover edges for weight and shared signals."
+        "</p></div>"
+    )
+
+
 def _render_entity_subgraph(slug: str, entity_type: str | None = None) -> str:
     """Render a compact 1-hop subgraph table for wiki entity pages."""
     graph = _graph_neighborhood(slug, hops=1, limit=32, entity_type=entity_type)
@@ -445,6 +589,13 @@ def _render_entity_subgraph(slug: str, entity_type: str | None = None) -> str:
         str(node.get("data", {}).get("id", "")): node.get("data", {})
         for node in nodes
     }
+    sidecar_by_id = {
+        node_id: _subgraph_sidecar(
+            _graph_slug_from_node_id(node_id),
+            _graph_type_from_node_id(node_id, str(node.get("type") or "skill")),
+        )
+        for node_id, node in node_by_id.items()
+    }
     rows: list[str] = []
     for edge in edges:
         data = edge.get("data", {})
@@ -458,28 +609,29 @@ def _render_entity_subgraph(slug: str, entity_type: str | None = None) -> str:
         other_slug = other_id.split(":", 1)[-1]
         shared = ", ".join(str(tag) for tag in data.get("shared_tags", [])[:6])
         shared_html = html.escape(shared) if shared else "<span class='muted'>none</span>"
+        quality_html = _subgraph_quality_cell(sidecar_by_id.get(other_id))
         rows.append(
             "<tr>"
             f"<td><a href='{html.escape(_entity_wiki_href(other_slug, other_type))}'>"
             f"{html.escape(str(other.get('label') or other_slug))}</a></td>"
             f"<td><span class='pill entity-type-{html.escape(other_type)}'>"
             f"{html.escape(other_type)}</span></td>"
+            f"<td>{quality_html}</td>"
             f"<td><code>{float(data.get('weight', 0.0)):.3f}</code></td>"
             f"<td>{shared_html}</td>"
             "</tr>"
         )
     table = (
-        "<table><tr><th>Entity</th><th>Type</th><th>Weight</th><th>Shared signals</th></tr>"
-        + ("".join(rows) if rows else "<tr><td colspan='4' class='muted'>No neighbors under the current limit.</td></tr>")
+        "<table><tr><th>Entity</th><th>Type</th><th>Quality sidecar</th>"
+        "<th>Weight</th><th>Shared signals</th></tr>"
+        + ("".join(rows) if rows else "<tr><td colspan='5' class='muted'>No neighbors under the current limit.</td></tr>")
         + "</table>"
     )
-    graph_type = entity_type if entity_type in _DASHBOARD_ENTITY_TYPES else _graph_type_from_node_id(center)
     return (
         "<div class='card'>"
         "<h2>Subgraph</h2>"
         f"<p class='muted'>{len(nodes)} nodes and {len(edges)} edges in the 1-hop neighborhood.</p>"
-        f"<p><a href='/graph?slug={html.escape(slug)}&amp;type={html.escape(graph_type)}'>"
-        "Open interactive graph view</a></p>"
+        + _render_entity_subgraph_svg(node_by_id, edges, center, sidecar_by_id)
         + table
         + "</div>"
     )

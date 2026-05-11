@@ -1074,6 +1074,19 @@ def test_render_mcp_wiki_entity_has_tabs_subgraph_and_quality(
             "freshness": {"score": 0.2, "evidence": {"last_commit_at": None}},
         },
     })
+    _write_sidecar(fake_claude, "github-actions", {
+        "slug": "github-actions",
+        "subject_type": "skill",
+        "grade": "A",
+        "raw_score": 0.91,
+    })
+    _write_sidecar(fake_claude, "repo-reviewer", {
+        "slug": "repo-reviewer",
+        "subject_type": "agent",
+        "grade": "C",
+        "raw_score": 0.43,
+        "hard_floor": "needs-usage",
+    })
     graph = nx.Graph()
     graph.add_node("mcp-server:github", label="github", type="mcp-server", tags=["reference"])
     graph.add_node("skill:github-actions", label="github-actions", type="skill", tags=["github", "ci"])
@@ -1088,9 +1101,15 @@ def test_render_mcp_wiki_entity_has_tabs_subgraph_and_quality(
     assert "data-entity-tab='subgraph'" in html_out
     assert "data-entity-tab='quality'" in html_out
     assert "<h2>Subgraph</h2>" in html_out
+    assert "data-testid='entity-subgraph-graph'" in html_out
+    assert "data-testid='entity-subgraph-node'" in html_out
+    assert "data-testid='entity-subgraph-edge'" in html_out
+    assert "Open interactive graph view" not in html_out
     assert "href='/wiki/github-actions?type=skill'" in html_out
     assert "href='/wiki/repo-reviewer?type=agent'" in html_out
-    assert "/graph?slug=github&amp;type=mcp-server" in html_out
+    assert "grade-A" in html_out
+    assert "grade-C" in html_out
+    assert "needs-usage" in html_out
     assert "<h2>Quality</h2>" in html_out
     assert "freshness" in html_out
     assert "has_install" in html_out
