@@ -675,6 +675,12 @@ class TestRunCommand:
         ]
         assert events[0]["session_id"] == "lifecycle-run"
         assert events[0]["payload"]["task"] == "hi"
+        tool = next(
+            item for item in fake_litellm._calls[0]["tools"]
+            if item["function"]["name"] == "ctx__load_entity"
+        )
+        assert "session_id" not in tool["function"]["parameters"]["properties"]
+        assert "session_id" not in tool["function"]["parameters"]["required"]
 
 
 # ── Subcommand: sessions ──────────────────────────────────────────────────
@@ -903,6 +909,13 @@ class TestResumeCommand:
         ]
         assert events[2]["event_type"] == "resume_task"
         assert events[2]["payload"]["task"] == "follow-up"
+        resume_call = fake_litellm._calls[-1]
+        tool = next(
+            item for item in resume_call["tools"]
+            if item["function"]["name"] == "ctx__session_state"
+        )
+        assert "session_id" not in tool["function"]["parameters"]["properties"]
+        assert "session_id" not in tool["function"]["parameters"]["required"]
 
     def test_resume_reuses_recorded_provider_settings(
         self,

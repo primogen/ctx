@@ -104,10 +104,12 @@ class CtxCoreToolbox:
         wiki_dir: Path | None = None,
         graph_path: Path | None = None,
         lifecycle_dir: Path | None = None,
+        bound_session_id: str | None = None,
     ) -> None:
         self._wiki_dir = wiki_dir
         self._graph_path = graph_path
         self._lifecycle = RuntimeLifecycleStore(lifecycle_dir)
+        self._bound_session_id = str(bound_session_id or "").strip() or None
         self._graph: Any | None = None       # networkx.Graph
         self._pages: list[Any] | None = None  # list[SkillPage]
         self._graph_signature: FileSignature | None = None
@@ -245,7 +247,7 @@ class CtxCoreToolbox:
                 },
             ),
         ]
-        definitions.extend(_lifecycle_tool_definitions())
+        definitions.extend(_lifecycle_tool_definitions(self._bound_session_id))
         return definitions
 
     def dispatch(self, call: ToolCall) -> str:
@@ -479,9 +481,10 @@ class CtxCoreToolbox:
 
     def _dispatch_lifecycle(self, args: dict[str, Any], name: str) -> str:
         try:
+            session_id = self._lifecycle_session_id(args)
             if name == "observe_dev_event":
                 result = self._lifecycle.record_dev_event(
-                    session_id=str(args.get("session_id") or ""),
+                    session_id=session_id,
                     event_type=str(args.get("event_type") or ""),
                     host=str(args.get("host") or "") or None,
                     cwd=str(args.get("cwd") or "") or None,
@@ -489,28 +492,28 @@ class CtxCoreToolbox:
                 )
             elif name == "load_entity":
                 result = self._lifecycle.load_entity(
-                    session_id=str(args.get("session_id") or ""),
+                    session_id=session_id,
                     entity_type=str(args.get("entity_type") or ""),
                     slug=str(args.get("slug") or ""),
                     reason=str(args.get("reason") or "") or None,
                 )
             elif name == "mark_entity_used":
                 result = self._lifecycle.mark_entity_used(
-                    session_id=str(args.get("session_id") or ""),
+                    session_id=session_id,
                     entity_type=str(args.get("entity_type") or ""),
                     slug=str(args.get("slug") or ""),
                     evidence=str(args.get("evidence") or "") or None,
                 )
             elif name == "unload_entity":
                 result = self._lifecycle.unload_entity(
-                    session_id=str(args.get("session_id") or ""),
+                    session_id=session_id,
                     entity_type=str(args.get("entity_type") or ""),
                     slug=str(args.get("slug") or ""),
                     reason=str(args.get("reason") or "") or None,
                 )
             elif name == "record_validation":
                 result = self._lifecycle.record_validation(
-                    session_id=str(args.get("session_id") or ""),
+                    session_id=session_id,
                     check_name=str(args.get("check_name") or ""),
                     status=str(args.get("status") or ""),
                     command=str(args.get("command") or "") or None,
@@ -521,7 +524,7 @@ class CtxCoreToolbox:
                 )
             elif name == "record_escalation":
                 result = self._lifecycle.record_escalation(
-                    session_id=str(args.get("session_id") or ""),
+                    session_id=session_id,
                     trigger=str(args.get("trigger") or ""),
                     reason=str(args.get("reason") or ""),
                     severity=str(args.get("severity") or "") or None,
@@ -532,13 +535,13 @@ class CtxCoreToolbox:
                 )
             elif name == "session_end":
                 result = self._lifecycle.end_session(
-                    session_id=str(args.get("session_id") or ""),
+                    session_id=session_id,
                     status=str(args.get("status") or "") or None,
                     summary=str(args.get("summary") or "") or None,
                 )
             elif name == "session_state":
                 result = self._lifecycle.session_state(
-                    session_id=str(args.get("session_id") or ""),
+                    session_id=session_id,
                     min_unused_seconds=_float_arg(
                         args.get("min_unused_seconds"),
                     ),
@@ -548,6 +551,16 @@ class CtxCoreToolbox:
         except ValueError as exc:
             return json.dumps({"ok": False, "error": str(exc)})
         return json.dumps(result)
+
+    def _lifecycle_session_id(self, args: dict[str, Any]) -> str:
+        supplied = str(args.get("session_id") or "").strip()
+        if self._bound_session_id is not None:
+            if supplied and supplied != self._bound_session_id:
+                raise ValueError("session_id is host-bound and cannot be overridden")
+            return self._bound_session_id
+        if not supplied:
+            raise ValueError("session_id is required")
+        return supplied
 
     def _serialise_page(self, path: Path, entity_type: str, wikilink: str) -> str:
         from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body  # noqa: PLC0415
@@ -768,7 +781,9 @@ def _recommend_companion_harnesses(
     ]
 
 
-def _lifecycle_tool_definitions() -> list[ToolDefinition]:
+def _lifecycle_tool_definitions(
+    bound_session_id: str | None = None,
+) -> list[ToolDefinition]:
     entity_enum = list(RECOMMENDABLE_ENTITY_TYPES)
     session = {
         "type": "string",
@@ -783,7 +798,7 @@ def _lifecycle_tool_definitions() -> list[ToolDefinition]:
         "type": "string",
         "description": "Entity slug from ctx recommendations or wiki search.",
     }
-    return [
+    definitions = [
         ToolDefinition(
             name=f"{_NAMESPACE}observe_dev_event",
             description=(
@@ -945,6 +960,17 @@ def _lifecycle_tool_definitions() -> list[ToolDefinition]:
             },
         ),
     ]
+    if bound_session_id is not None:
+        for definition in definitions:
+            properties = definition.parameters.get("properties")
+            if isinstance(properties, dict):
+                properties.pop("session_id", None)
+            required = definition.parameters.get("required")
+            if isinstance(required, list):
+                definition.parameters["required"] = [
+                    name for name in required if name != "session_id"
+                ]
+    return definitions
 
 
 def _dict_arg(raw: Any) -> dict[str, Any]:
