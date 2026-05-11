@@ -19,6 +19,7 @@ Routes:
     /graph?slug=<slug>&type=... Focus graph view on a specific entity
     /manage                     Search/edit/delete/import catalog entities
     /harness                    Manual harness setup for user-owned LLMs
+    /docs                       Local docs index + public docs handoff
     /config                     Editable ctx config with defaults fallback
     /status                     Durable queue + graph/wiki artifact state
     /kpi                        Grade / lifecycle / category KPIs
@@ -1910,6 +1911,7 @@ def _layout(title: str, body: str) -> str:
         ("graph", "Graph", "/graph"),
         ("manage", "Manage", "/manage"),
         ("harness", "Harness Setup", "/harness"),
+        ("docs", "Docs", "/docs"),
         ("config", "Config", "/config"),
         ("status", "Status", "/status"),
         ("kpi", "KPIs", "/kpi"),
@@ -3595,6 +3597,111 @@ def _render_wiki_index() -> str:
     return _layout("Wiki", body)
 
 
+def _docs_roots() -> list[Path]:
+    roots: list[Path] = []
+    for root in (Path.cwd(), Path(__file__).resolve().parent.parent):
+        if root not in roots and (root / "docs").is_dir():
+            roots.append(root)
+    return roots
+
+
+def _doc_title(text: str, fallback: str) -> str:
+    for line in text.splitlines():
+        match = re.match(r"^#\s+(.+?)\s*$", line)
+        if match:
+            return match.group(1).strip()
+    return fallback
+
+
+def _doc_summary(text: str) -> str:
+    in_frontmatter = text.startswith("---\n")
+    for block in re.split(r"\n\s*\n", text):
+        chunk = block.strip()
+        if not chunk:
+            continue
+        if in_frontmatter:
+            if chunk == "---" or chunk.endswith("\n---"):
+                in_frontmatter = False
+            continue
+        if chunk.startswith("#") or chunk.startswith("```") or chunk.startswith("<!--"):
+            continue
+        summary = re.sub(r"\s+", " ", chunk)
+        summary, _truncated = _truncate_text(summary, 180)
+        return summary
+    return ""
+
+
+def _docs_index_entries() -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for root in _docs_roots():
+        candidates = [root / "README.md", root / "graph" / "README.md"]
+        candidates.extend(sorted((root / "docs").glob("*.md")))
+        for path in candidates:
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root).as_posix()
+            if rel in seen:
+                continue
+            seen.add(rel)
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            title = _doc_title(text, path.stem.replace("-", " ").title())
+            entries.append({
+                "title": title,
+                "path": rel,
+                "summary": _doc_summary(text),
+            })
+    return sorted(entries, key=lambda row: (row["path"] != "README.md", row["path"]))
+
+
+def _render_docs() -> str:
+    entries = _docs_index_entries()
+    public_docs_url = "https://stevesolun.github.io/ctx/"
+    cards = "".join(
+        "<article class='card doc-card' "
+        f"data-doc='{html.escape((entry['title'] + ' ' + entry['path'] + ' ' + entry['summary']).lower())}'>"
+        "<div style='display:flex; justify-content:space-between; gap:0.75rem; align-items:flex-start;'>"
+        f"<h2 style='margin:0; font-size:1rem;'>{html.escape(entry['title'])}</h2>"
+        f"<code>{html.escape(entry['path'])}</code>"
+        "</div>"
+        f"<p class='muted'>{html.escape(entry['summary'] or 'No summary found.')}</p>"
+        f"<a href='https://github.com/stevesolun/ctx/blob/main/{quote(entry['path'])}'>source -></a>"
+        "</article>"
+        for entry in entries
+    )
+    body = (
+        "<h1>Docs</h1>"
+        "<div class='card'>"
+        "<strong>Documentation index</strong>"
+        f"<p class='muted'>Local repo docs are indexed here for dashboard-side reference. "
+        f"Public rendered docs: <a href='{public_docs_url}'>{public_docs_url}</a></p>"
+        "<input id='docs-search' type='text' placeholder='Search docs...' "
+        "style='width:100%; max-width:34rem; padding:0.45rem 0.6rem; "
+        "border:1px solid var(--border); border-radius:var(--radius);'>"
+        "</div>"
+        "<div class='doc-grid' style='display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:0.75rem;'>"
+        + (cards or (
+            "<div class='card'><strong>No local docs found.</strong>"
+            f"<p class='muted'>Open the public docs at "
+            f"<a href='{public_docs_url}'>{public_docs_url}</a>.</p></div>"
+        ))
+        + "</div>"
+        "<script>\n"
+        "const docsSearch = document.getElementById('docs-search');\n"
+        "const docCards = Array.from(document.querySelectorAll('.doc-card'));\n"
+        "function applyDocsFilter() {\n"
+        "  const q = (docsSearch.value || '').trim().toLowerCase();\n"
+        "  docCards.forEach(card => { card.style.display = (!q || card.dataset.doc.includes(q)) ? '' : 'none'; });\n"
+        "}\n"
+        "if (docsSearch) docsSearch.addEventListener('input', applyDocsFilter);\n"
+        "</script>"
+    )
+    return _layout("Docs", body)
+
+
 def _render_manage(mutations_enabled: bool | None = None) -> str:
     """Render catalog management for wiki entities and graph refresh queueing."""
     if mutations_enabled is None:
@@ -4885,6 +4992,8 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_html(_render_manage(self._mutations_enabled()))
             elif path == "/harness":
                 self._send_html(_render_harness_wizard())
+            elif path == "/docs":
+                self._send_html(_render_docs())
             elif path == "/config":
                 self._send_html(_render_config())
             elif path == "/status":

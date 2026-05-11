@@ -374,6 +374,57 @@ class TestRuntimeLifecycle:
             "session_end",
         ]
 
+    def test_bound_session_id_is_hidden_and_enforced(self, tmp_path: Path) -> None:
+        toolbox = CtxCoreToolbox(
+            lifecycle_dir=tmp_path / "runtime",
+            bound_session_id="host-session",
+        )
+        lifecycle_defs = [
+            definition
+            for definition in toolbox.tool_definitions()
+            if definition.name.startswith("ctx__")
+            and definition.name.rsplit("__", 1)[-1]
+            in {
+                "observe_dev_event",
+                "load_entity",
+                "mark_entity_used",
+                "record_validation",
+                "record_escalation",
+                "unload_entity",
+                "session_end",
+                "session_state",
+            }
+        ]
+        assert lifecycle_defs
+        for definition in lifecycle_defs:
+            assert "session_id" not in definition.parameters["properties"]
+            assert "session_id" not in definition.parameters.get("required", [])
+
+        loaded = json.loads(toolbox.dispatch(ToolCall(
+            id="c1",
+            name="ctx__load_entity",
+            arguments={"entity_type": "skill", "slug": "fastapi-pro"},
+        )))
+        assert loaded["ok"] is True
+
+        state = json.loads(toolbox.dispatch(ToolCall(
+            id="c2",
+            name="ctx__session_state",
+            arguments={},
+        )))
+        assert state["ok"] is True
+        assert state["session_id"] == "host-session"
+
+        mismatch = json.loads(toolbox.dispatch(ToolCall(
+            id="c3",
+            name="ctx__session_state",
+            arguments={"session_id": "attacker-session"},
+        )))
+        assert mismatch == {
+            "ok": False,
+            "error": "session_id is host-bound and cannot be overridden",
+        }
+
     def test_lifecycle_validation_errors_are_structured(
         self,
         toolbox: CtxCoreToolbox,

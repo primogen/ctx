@@ -9,6 +9,7 @@ hostile inputs alongside the happy paths.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -475,6 +476,24 @@ class TestInstallMcp:
         assert r.status == "claude-cli-failed"
         assert "boom" in r.message
 
+    def test_claude_cli_failure_redacts_secret_output(
+        self,
+        wiki_dir: Path,
+        fake_claude: dict[str, Any],
+        isolated_manifest: Path,
+    ) -> None:
+        _write_entity(wiki_dir, "gh", {"status": "cataloged"})
+        fake_claude["rc"] = 1
+        fake_claude["stderr"] = "failed GITHUB_TOKEN=ghp_supersecret123456789012345"
+
+        r = mcp_install.install_mcp(
+            "gh", wiki_dir=wiki_dir, command="npx -y p", auto=True,
+        )
+
+        assert r.status == "claude-cli-failed"
+        assert "ghp_supersecret" not in r.message
+        assert "GITHUB_TOKEN=[redacted]" in r.message
+
     def test_json_config_routes_to_add_json(
         self,
         wiki_dir: Path,
@@ -490,8 +509,54 @@ class TestInstallMcp:
         call = fake_claude["calls"][0]
         assert "add-json" in call and "gh" in call and cfg in call
         manifest = install_utils.load_manifest()
-        assert manifest["load"][0]["json_config"] == cfg
+        entry = manifest["load"][0]
+        assert "json_config" not in entry
         assert "command" not in manifest["load"][0]
+        assert entry["json_config_sha256"] == hashlib.sha256(
+            cfg.encode("utf-8"),
+        ).hexdigest()
+        assert entry["json_config_command"] == "npx"
+        assert entry["json_config_keys"] == "args,command"
+        assert entry["json_config_args_count"] == "2"
+
+    def test_json_config_rejects_inline_secret_env(
+        self,
+        wiki_dir: Path,
+        fake_claude: dict[str, Any],
+        isolated_manifest: Path,
+    ) -> None:
+        _write_entity(wiki_dir, "gh", {"status": "cataloged"})
+        cfg = json.dumps({
+            "command": "npx",
+            "env": {"GITHUB_TOKEN": "ghp_supersecret123456789012345"},
+        })
+
+        r = mcp_install.install_mcp(
+            "gh", wiki_dir=wiki_dir, json_config=cfg, auto=True,
+        )
+
+        assert r.status == "invalid-cmd"
+        assert "inline secret" in r.message
+        assert fake_claude["calls"] == []
+
+    def test_json_config_allows_env_reference(
+        self,
+        wiki_dir: Path,
+        fake_claude: dict[str, Any],
+        isolated_manifest: Path,
+    ) -> None:
+        _write_entity(wiki_dir, "gh", {"status": "cataloged"})
+        cfg = json.dumps({
+            "command": "npx",
+            "env": {"GITHUB_TOKEN": "$GITHUB_TOKEN"},
+        })
+
+        r = mcp_install.install_mcp(
+            "gh", wiki_dir=wiki_dir, json_config=cfg, auto=True,
+        )
+
+        assert r.status == "installed"
+        assert fake_claude["calls"]
 
     def test_happy_path_writes_manifest_and_status(
         self,

@@ -833,7 +833,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     extra_tools = []
     tool_executor = None
     if ctx_tools_enabled:
-        toolbox = CtxCoreToolbox(lifecycle_dir=lifecycle.root)
+        toolbox = CtxCoreToolbox(
+            lifecycle_dir=lifecycle.root,
+            bound_session_id=session_id,
+        )
         extra_tools.extend(toolbox.tool_definitions())
         tool_executor = make_tool_executor(toolbox, fallback=None)
 
@@ -1138,7 +1141,10 @@ def _cmd_resume(args: argparse.Namespace) -> int:
     extra_tools: list[ToolDefinition] = []
     tool_executor = None
     if use_ctx_tools:
-        ctx_toolbox = CtxCoreToolbox(lifecycle_dir=lifecycle.root)
+        ctx_toolbox = CtxCoreToolbox(
+            lifecycle_dir=lifecycle.root,
+            bound_session_id=args.session_id,
+        )
         extra_tools.extend(ctx_toolbox.tool_definitions())
         tool_executor = make_tool_executor(ctx_toolbox)
     allow_tools, deny_tools = _resume_tool_policy_patterns(args, meta)

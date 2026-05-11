@@ -257,7 +257,9 @@ def validate_graph_artifacts(
         expected_harnesses=expected_harnesses,
     )
     catalog = _load_gzip_json(catalog_path)
-    _load_json(communities_path)
+    root_communities = _load_json(communities_path)
+    if not isinstance(root_communities, dict):
+        raise GraphArtifactError("graph/communities.json did not contain a JSON object")
     skills = _catalog_skills(catalog)
     body_unavailable = [
         str(item.get("ctx_slug") or item.get("id") or "")
@@ -286,6 +288,7 @@ def validate_graph_artifacts(
     skill_pages = agent_pages = mcp_pages = harness_pages = skills_sh_converted = 0
     export_ids: dict[str, str] = {}
     manifest: dict[str, Any] | None = None
+    archive_communities: dict[str, Any] | None = None
 
     with tarfile.open(tarball, "r:gz") as tf:
         for member in tf:
@@ -328,6 +331,9 @@ def validate_graph_artifacts(
                 _record_export_id(export_ids, name, _export_id_from_json(data, name))
             elif member.isfile() and name == "graphify-out/communities.json":
                 data = _read_tar_json(tf, member, name)
+                if not isinstance(data, dict):
+                    raise GraphArtifactError(f"{name} did not contain a JSON object")
+                archive_communities = data
                 _record_export_id(
                     export_ids,
                     name,
@@ -368,6 +374,7 @@ def validate_graph_artifacts(
     if "graphify-out/graph.json" not in export_ids:
         raise GraphArtifactError("graphify-out/graph.json is missing export_id")
     _validate_export_ids(export_ids, expected=manifest_export_id)
+    _validate_root_communities(root_communities, archive_communities)
     _validate_graph_previews(graph_dir, export_id=manifest_export_id, manifest=manifest)
     missing_pages = sorted(required_skill_pages - names)
     if missing_pages:
@@ -515,6 +522,22 @@ def _validate_runtime_graph_archive(
     if "graphify-out/graph.json" not in export_ids:
         raise GraphArtifactError("runtime graph.json is missing export_id")
     _validate_export_ids(export_ids, expected=manifest_export_id)
+
+
+def _validate_root_communities(
+    root_communities: dict[str, Any],
+    archive_communities: dict[str, Any] | None,
+) -> None:
+    if archive_communities is None:
+        raise GraphArtifactError("graphify-out/communities.json is missing")
+    if root_communities != archive_communities:
+        root_export = root_communities.get("export_id") or "missing"
+        archive_export = archive_communities.get("export_id") or "missing"
+        raise GraphArtifactError(
+            "stale graph/communities.json: root artifact must match "
+            "wiki-graph.tar.gz graphify-out/communities.json "
+            f"(root export_id={root_export}, archive export_id={archive_export})",
+        )
 
 
 def _validate_graph_previews(

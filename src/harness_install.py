@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -62,6 +63,7 @@ class HarnessRecord:
     attach_modes: tuple[str, ...]
     setup_commands: tuple[str, ...]
     verify_commands: tuple[str, ...]
+    repo_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,12 @@ def _as_tuple(raw: object) -> tuple[str, ...]:
     return ()
 
 
+def _repo_ref_from_frontmatter(fm: dict[str, Any]) -> str | None:
+    raw = fm.get("commit_sha") or fm.get("repo_ref") or fm.get("ref")
+    value = str(raw or "").strip()
+    return value or None
+
+
 def _load_page(path: Path, slug: str) -> HarnessRecord:
     text = path.read_text(encoding="utf-8", errors="replace")
     fm, _body = parse_frontmatter_and_body(text)
@@ -102,6 +110,7 @@ def _load_page(path: Path, slug: str) -> HarnessRecord:
         attach_modes=_normalize_attach_modes(fm.get("attach_modes")),
         setup_commands=_as_tuple(fm.get("setup_commands")),
         verify_commands=_as_tuple(fm.get("verify_commands")),
+        repo_ref=_repo_ref_from_frontmatter(fm),
     )
 
 
@@ -206,6 +215,8 @@ def render_plan(record: HarnessRecord, *, target: Path) -> str:
         f"Repository: {record.repo_url}",
         f"Target: {target}",
     ]
+    if record.repo_ref:
+        lines.append(f"Repository ref: {record.repo_ref}")
     if record.docs_url:
         lines.append(f"Docs: {record.docs_url}")
     if record.tags:
@@ -249,12 +260,36 @@ def _reject_symlink_tree(root: Path) -> None:
             raise ValueError(f"refusing symlink inside harness source: {path}")
 
 
+def _is_full_commit_sha(value: str | None) -> bool:
+    return bool(value and re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", value))
+
+
+def _run_git(args: list[str], *, timeout: int = 300) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        env=_command_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def _git_resolved_commit(target: Path) -> str | None:
+    proc = _run_git(["-C", str(target), "rev-parse", "HEAD"], timeout=30)
+    if proc.returncode != 0:
+        return None
+    resolved = proc.stdout.strip()
+    return resolved if _is_full_commit_sha(resolved) else None
+
+
 def _materialize_source(
     record: HarnessRecord,
     target: Path,
     *,
     allow_local_sources: bool,
-) -> None:
+    allow_mutable_repo_head: bool,
+) -> dict[str, str]:
     target.parent.mkdir(parents=True, exist_ok=True)
     local_source = _local_source_from_repo_url(record.repo_url)
     if local_source is not None:
@@ -268,19 +303,50 @@ def _materialize_source(
             raise ValueError(f"local harness source is not a directory: {local_source}")
         _reject_symlink_tree(local_source)
         shutil.copytree(local_source, target)
-        return
+        return {"source_type": "local"}
 
-    proc = subprocess.run(
-        ["git", "clone", "--depth", "1", record.repo_url, str(target)],
-        env=_command_env(),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=300,
-    )
+    if record.repo_ref and not _is_full_commit_sha(record.repo_ref):
+        raise ValueError(
+            "harness repo_ref/commit_sha must be a full commit SHA; "
+            f"got {record.repo_ref!r}"
+        )
+    if not record.repo_ref and not allow_mutable_repo_head:
+        raise ValueError(
+            "remote harness repo_url is not pinned to a commit; add commit_sha "
+            "to the catalog page or pass --allow-mutable-repo-head explicitly"
+        )
+
+    if record.repo_ref:
+        proc = _run_git(["clone", "--no-checkout", record.repo_url, str(target)])
+        if proc.returncode != 0:
+            stderr = proc.stderr.strip() or proc.stdout.strip()
+            raise RuntimeError(f"git clone failed: {stderr}")
+        fetch = _run_git(
+            ["-C", str(target), "fetch", "--depth", "1", "origin", record.repo_ref],
+        )
+        if fetch.returncode != 0:
+            stderr = fetch.stderr.strip() or fetch.stdout.strip()
+            raise RuntimeError(f"git fetch pinned commit failed: {stderr}")
+        checkout = _run_git(["-C", str(target), "checkout", "--detach", "FETCH_HEAD"])
+        if checkout.returncode != 0:
+            stderr = checkout.stderr.strip() or checkout.stdout.strip()
+            raise RuntimeError(f"git checkout pinned commit failed: {stderr}")
+        return {
+            "source_type": "git",
+            "repo_ref": record.repo_ref,
+            "resolved_commit": _git_resolved_commit(target) or "",
+        }
+
+    proc = _run_git(["clone", "--depth", "1", record.repo_url, str(target)])
     if proc.returncode != 0:
         stderr = proc.stderr.strip() or proc.stdout.strip()
         raise RuntimeError(f"git clone failed: {stderr}")
+    return {
+        "source_type": "git",
+        "repo_ref": "HEAD",
+        "resolved_commit": _git_resolved_commit(target) or "",
+        "mutable_repo_head": "true",
+    }
 
 
 def _run_command(command: str, *, cwd: Path) -> dict[str, Any]:
@@ -377,11 +443,13 @@ def _stage_harness(
     approve_commands: bool,
     run_verify: bool,
     allow_local_sources: bool,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    _materialize_source(
+    allow_mutable_repo_head: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str]]:
+    source_metadata = _materialize_source(
         record,
         stage_path,
         allow_local_sources=allow_local_sources,
+        allow_mutable_repo_head=allow_mutable_repo_head,
     )
     setup_runs: list[dict[str, Any]] = []
     verify_runs: list[dict[str, Any]] = []
@@ -397,7 +465,7 @@ def _stage_harness(
             verify_runs.append(run)
             if run["returncode"] != 0:
                 raise RuntimeError(_failed_run_message("verify", command, run))
-    return setup_runs, verify_runs
+    return setup_runs, verify_runs, source_metadata
 
 
 def _atomic_replace_target(stage_path: Path, target_path: Path) -> Path | None:
@@ -434,22 +502,24 @@ def _install_to_target(
     approve_commands: bool,
     run_verify: bool,
     allow_local_sources: bool,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Path | None]:
+    allow_mutable_repo_head: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str], Path | None]:
     if target_path.exists() and not force:
         raise FileExistsError("target already exists; pass --force to replace it")
     root = installs_root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     stage_path = root / f".{record.slug}.tmp-{os.getpid()}-{time.time_ns()}"
     try:
-        setup_runs, verify_runs = _stage_harness(
+        setup_runs, verify_runs, source_metadata = _stage_harness(
             record=record,
             stage_path=stage_path,
             approve_commands=approve_commands,
             run_verify=run_verify,
             allow_local_sources=allow_local_sources,
+            allow_mutable_repo_head=allow_mutable_repo_head,
         )
         backup_path = _atomic_replace_target(stage_path, target_path)
-        return setup_runs, verify_runs, backup_path
+        return setup_runs, verify_runs, source_metadata, backup_path
     except Exception:
         if stage_path.exists():
             _remove_path(stage_path)
@@ -464,6 +534,7 @@ def _write_manifest(
     setup_runs: list[dict[str, Any]],
     verify_runs: list[dict[str, Any]],
     attach_files: list[Path] | None = None,
+    source_metadata: dict[str, str] | None = None,
 ) -> Path:
     path = manifest_dir / f"{record.slug}.json"
     reject_symlink_path(path)
@@ -481,6 +552,9 @@ def _write_manifest(
         "setup_commands_run": setup_runs,
         "verify_commands_run": verify_runs,
     }
+    if record.repo_ref:
+        payload["repo_ref"] = record.repo_ref
+    payload.update(source_metadata or {})
     atomic_write_json(path, payload, indent=2)
     return path
 
@@ -512,6 +586,7 @@ def install_harness(
     approve_commands: bool = False,
     run_verify: bool = False,
     allow_local_sources: bool = False,
+    allow_mutable_repo_head: bool = False,
 ) -> InstallResult:
     try:
         record = resolve_harness(identifier, wiki_path=wiki_path)
@@ -542,7 +617,7 @@ def install_harness(
     target_preexisting = target_path.exists()
     backup_path: Path | None = None
     try:
-        setup_runs, verify_runs, backup_path = _install_to_target(
+        setup_runs, verify_runs, source_metadata, backup_path = _install_to_target(
             record=record,
             target_path=target_path,
             installs_root=installs_root,
@@ -550,6 +625,7 @@ def install_harness(
             approve_commands=approve_commands,
             run_verify=run_verify,
             allow_local_sources=allow_local_sources,
+            allow_mutable_repo_head=allow_mutable_repo_head,
         )
         attach_files = _write_attach_files(record, target=target_path)
         manifest_path = _write_manifest(
@@ -559,6 +635,7 @@ def install_harness(
             setup_runs=setup_runs,
             verify_runs=verify_runs,
             attach_files=attach_files,
+            source_metadata=source_metadata,
         )
     except FileExistsError as exc:
         return InstallResult(
@@ -752,6 +829,7 @@ def update_harness(
     approve_commands: bool = False,
     run_verify: bool = False,
     allow_local_sources: bool = False,
+    allow_mutable_repo_head: bool = False,
 ) -> InstallResult:
     try:
         record = resolve_harness(identifier, wiki_path=wiki_path)
@@ -791,6 +869,7 @@ def update_harness(
         approve_commands=approve_commands,
         run_verify=run_verify,
         allow_local_sources=allow_local_sources,
+        allow_mutable_repo_head=allow_mutable_repo_head,
     )
     if result.status != "installed":
         return result
@@ -1036,6 +1115,14 @@ def main(argv: list[str] | None = None) -> int:
             "trusted offline tests; public catalog entries should use https."
         ),
     )
+    parser.add_argument(
+        "--allow-mutable-repo-head",
+        action="store_true",
+        help=(
+            "Allow installing a remote harness catalog entry that lacks a full "
+            "commit_sha. The resolved commit is still recorded in the manifest."
+        ),
+    )
     args = parser.parse_args(argv)
 
     wiki_path = Path(os.path.expanduser(args.wiki))
@@ -1109,6 +1196,7 @@ def main(argv: list[str] | None = None) -> int:
             approve_commands=args.approve_commands,
             run_verify=args.run_verify,
             allow_local_sources=args.allow_local_source,
+            allow_mutable_repo_head=args.allow_mutable_repo_head,
         )
     else:
         result = install_harness(
@@ -1122,6 +1210,7 @@ def main(argv: list[str] | None = None) -> int:
             approve_commands=args.approve_commands,
             run_verify=args.run_verify,
             allow_local_sources=args.allow_local_source,
+            allow_mutable_repo_head=args.allow_mutable_repo_head,
         )
     if result.status in {
         "installed",

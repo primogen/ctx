@@ -1790,15 +1790,59 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     out = cm._layout("test", "<p>body</p>")
     assert "href='/wiki'" in out
     assert "href='/harness'" in out
+    assert "href='/docs'" in out
     assert "href='/kpi'" in out
     assert "href='/graph'" in out
     assert "href='/config'" in out
     assert ">Wiki<" in out
     assert ">Harness Setup<" in out
+    assert ">Docs<" in out
     assert ">KPIs<" in out
     assert ">Config<" in out
     assert "--surface" in out
     assert "--accent" in out
+
+
+def test_render_docs_lists_repo_docs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "graph").mkdir()
+    (tmp_path / "README.md").write_text(
+        "# ctx\n\nMain repo docs.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "dashboard.md").write_text(
+        "# Dashboard\n\nMonitor skills, agents, MCPs, harnesses, and graph state.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "graph" / "README.md").write_text(
+        "# Graph Artifacts\n\nCompressed wiki and knowledge graph artifacts.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cm, "_docs_roots", lambda: [tmp_path])
+
+    html_out = cm._render_docs()
+
+    assert "<h1>Docs</h1>" in html_out
+    assert "README.md" in html_out
+    assert "docs/dashboard.md" in html_out
+    assert "graph/README.md" in html_out
+    assert "Monitor skills, agents, MCPs, harnesses, and graph state." in html_out
+    assert "id='docs-search'" in html_out
+    assert "https://stevesolun.github.io/ctx/" in html_out
+
+
+def test_render_docs_falls_back_to_public_docs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cm, "_docs_roots", lambda: [])
+
+    html_out = cm._render_docs()
+
+    assert "No local docs found." in html_out
+    assert "https://stevesolun.github.io/ctx/" in html_out
 
 
 def test_layout_nav_tabs_are_draggable_and_persist_order() -> None:
