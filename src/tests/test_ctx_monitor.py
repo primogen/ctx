@@ -1869,6 +1869,11 @@ def test_render_docs_lists_repo_docs(
     html_out = cm._render_docs()
 
     assert "<h1>Docs</h1>" in html_out
+    assert "class='docs-shell'" in html_out
+    assert "class='docs-hero'" in html_out
+    assert "Repo documentation" in html_out
+    assert "sections</span>" in html_out
+    assert "pages</span>" in html_out
     assert "class='docs-tabs'" in html_out
     assert "data-doc-tab='home'" in html_out
     assert "data-doc-tab='dashboard'" in html_out
@@ -1906,6 +1911,7 @@ def test_render_docs_falls_back_to_public_docs(
 def test_layout_nav_tabs_are_draggable_and_persist_order() -> None:
     out = cm._layout("test", "<p>body</p>")
 
+    assert "name='viewport'" in out
     assert "id='dashboard-nav'" in out
     assert "data-nav-storage-key='ctx-monitor-nav-order'" in out
     assert "draggable='true'" in out
