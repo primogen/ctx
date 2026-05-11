@@ -1838,6 +1838,12 @@ def test_render_docs_lists_repo_docs(
             "",
             "## Explore the docs",
             "",
+            "Jump to the [dashboard docs](dashboard.md).",
+            "",
+            "### Deep section",
+            "",
+            "Nested docs body.",
+            "",
             "<div class=\"grid cards\" markdown>",
             "",
             "-   **Knowledge graph**",
@@ -1853,7 +1859,11 @@ def test_render_docs_lists_repo_docs(
         encoding="utf-8",
     )
     (tmp_path / "docs" / "dashboard.md").write_text(
-        "# Dashboard\n\n- **Monitor** skills, agents, MCPs, harnesses, and graph state.\n",
+        "# Dashboard\n\n- **Monitor** skills, agents, MCPs, harnesses, and graph state.\n\n## Runtime view\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "knowledge-graph.md").write_text(
+        "# Knowledge graph\n\n## Graph artifact\n\nGraph internals.\n",
         encoding="utf-8",
     )
     (tmp_path / "docs" / "harness" / "attaching-to-hosts.md").write_text(
@@ -1886,6 +1896,15 @@ def test_render_docs_lists_repo_docs(
     assert "<strong>Monitor</strong> skills, agents, MCPs, harnesses, and graph state." in html_out
     assert "Connect ctx to a non-Claude harness." in html_out
     assert "class=\"admonition tip\"" in html_out
+    assert "docs-heading-link docs-heading-level-2" in html_out
+    assert "docs-heading-link docs-heading-level-3" in html_out
+    assert "href='#doc-home-docs-index-md-explore-the-docs'" in html_out
+    assert "href='#doc-home-docs-index-md-deep-section'" in html_out
+    assert 'href="#doc-dashboard-docs-dashboard-md"' in html_out
+    assert 'href="#doc-other-docs-knowledge-graph-md"' in html_out
+    assert 'data-doc-tab="other"' in html_out
+    assert "id='docs-search-results'" in html_out
+    assert "jumpToDocTarget" in html_out
     assert '<div class="grid cards">' in html_out
     assert "<strong>Knowledge graph</strong>" in html_out
     assert "-&gt; Knowledge graph" in html_out

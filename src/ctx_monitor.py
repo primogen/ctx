@@ -69,7 +69,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -1869,9 +1869,17 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 .docs-page-list { position: sticky; top: 4.5rem; display: flex; flex-direction: column;
                   gap: 0.25rem; border: 1px solid var(--border); border-radius: 12px;
                   background: var(--surface); padding: 0.6rem; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
-.docs-page-list a { padding: 0.45rem 0.55rem; border-radius: 8px; color: var(--muted-text);
-                    font-weight: 650; line-height: 1.25; }
+.docs-toc-page { border-bottom: 1px solid var(--border); padding: 0.2rem 0 0.35rem; }
+.docs-toc-page:last-child { border-bottom: 0; }
+.docs-page-list a { display: block; padding: 0.38rem 0.55rem; border-radius: 8px;
+                    color: var(--muted-text); line-height: 1.25; }
 .docs-page-list a:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
+.docs-page-link { color: var(--text) !important; font-weight: 750; }
+.docs-heading-list { display: flex; flex-direction: column; gap: 0.05rem; margin: 0.1rem 0 0.2rem; }
+.docs-heading-link { font-size: 0.82rem; font-weight: 600; }
+.docs-heading-level-2 { margin-left: 0.45rem; }
+.docs-heading-level-3 { margin-left: 1.1rem; }
+.docs-heading-level-4 { margin-left: 1.75rem; font-size: 0.78rem; }
 .docs-page { border: 1px solid var(--border); border-radius: 12px;
              background: var(--surface); padding: 1.25rem 1.45rem; margin-bottom: 1rem;
              box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
@@ -1897,6 +1905,14 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
                                          background: #ffffff; }
 .docs-page .grid.cards hr { border: 0; border-top: 1px solid var(--border); margin: 0.55rem 0; }
 .docs-page .headerlink { color: var(--muted-text); font-size: 0.78em; margin-left: 0.35rem; }
+.docs-search-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                       gap: 0.45rem; margin-top: 0.75rem; }
+.docs-search-results[hidden] { display: none; }
+.docs-search-result { display: flex; flex-direction: column; gap: 0.12rem; text-align: left;
+                      background: var(--surface); color: var(--text); border-color: var(--border);
+                      border-radius: var(--radius); padding: 0.55rem 0.65rem; }
+.docs-search-result span { color: var(--muted-text); font-size: 0.78rem; font-weight: 500; }
+.docs-search-empty { color: var(--muted-text); font-size: 0.86rem; padding: 0.4rem 0.1rem; }
 .quality-signal-table { table-layout: fixed; }
 .quality-signal-table td:last-child code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .wizard-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
@@ -3830,7 +3846,133 @@ def _docs_tabs(entries: list[dict[str, str]]) -> list[dict[str, Any]]:
     return tabs
 
 
-def _render_docs_markdown(markdown_text: str) -> str:
+def _docs_heading_text(raw: str) -> str:
+    raw = re.sub(r"\s+\{#[^}]+\}\s*$", "", raw.strip())
+    raw = re.sub(r"`([^`]+)`", r"\1", raw)
+    raw = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", raw)
+    raw = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", raw)
+    raw = re.sub(r"[*_~]+", "", raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _docs_heading_id(page_anchor: str, title: str, seen: dict[str, int]) -> str:
+    base = f"{page_anchor}-{_doc_anchor(title)}"
+    count = seen.get(base, 0)
+    seen[base] = count + 1
+    return base if count == 0 else f"{base}_{count}"
+
+
+def _docs_heading_items(markdown_text: str, page_anchor: str) -> list[dict[str, Any]]:
+    headings: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    in_fence = False
+    for line in markdown_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = re.match(r"^(#{1,4})\s+(.+?)\s*#*\s*$", line)
+        if not match:
+            continue
+        level = len(match.group(1))
+        title = _docs_heading_text(match.group(2))
+        if not title:
+            continue
+        heading_id = _docs_heading_id(page_anchor, title, seen)
+        if level >= 2:
+            headings.append({"level": level, "title": title, "id": heading_id})
+    return headings
+
+
+def _docs_page_anchor(tab_slug: str, path: str) -> str:
+    return f"doc-{tab_slug}-{_doc_anchor(path)}"
+
+
+def _normalise_doc_path(path: str) -> str:
+    parts: list[str] = []
+    for part in PurePosixPath(path).parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return PurePosixPath(*parts).as_posix() if parts else ""
+
+
+def _resolve_docs_link_path(source_path: str, href_path: str, page_anchors: dict[str, tuple[str, str]]) -> str | None:
+    base = PurePosixPath(source_path).parent
+    resolved = _normalise_doc_path((base / href_path).as_posix())
+    candidates = [resolved]
+    if not resolved.endswith(".md"):
+        stripped = resolved.rstrip("/")
+        candidates.extend([f"{stripped}.md", f"{stripped}/index.md"])
+    for candidate in candidates:
+        if candidate in page_anchors:
+            return candidate
+    return None
+
+
+def _docs_dashboard_link(
+    source_path: str,
+    source_tab: str,
+    source_anchor: str,
+    href: str,
+    page_anchors: dict[str, tuple[str, str]],
+) -> tuple[str, str, str] | None:
+    href = html.unescape(href).strip()
+    lowered = href.lower()
+    if (
+        not href
+        or lowered.startswith(("http://", "https://", "mailto:", "tel:", "javascript:"))
+        or href.startswith("/")
+    ):
+        return None
+    href_path, sep, fragment = href.partition("#")
+    if not href_path:
+        target_tab = source_tab
+        target_anchor = source_anchor
+    else:
+        resolved_path = _resolve_docs_link_path(source_path, href_path, page_anchors)
+        if resolved_path is None:
+            return None
+        target_tab, target_anchor = page_anchors[resolved_path]
+    if sep and fragment:
+        fragment_anchor = _doc_anchor(unquote(fragment))
+        if not fragment_anchor.startswith(target_anchor):
+            fragment_anchor = f"{target_anchor}-{fragment_anchor}"
+        return f"#{fragment_anchor}", target_tab, fragment_anchor
+    return f"#{target_anchor}", target_tab, target_anchor
+
+
+def _rewrite_docs_links(
+    rendered_html: str,
+    source_path: str,
+    source_tab: str,
+    source_anchor: str,
+    page_anchors: dict[str, tuple[str, str]],
+) -> str:
+    def replace_link(match: re.Match[str]) -> str:
+        before = match.group(1)
+        href = match.group(2)
+        after = match.group(3)
+        resolved = _docs_dashboard_link(source_path, source_tab, source_anchor, href, page_anchors)
+        if resolved is None:
+            return match.group(0)
+        dashboard_href, target_tab, target_anchor = resolved
+        return (
+            f"<a{before}href=\"{html.escape(dashboard_href, quote=True)}\""
+            f" data-doc-tab=\"{html.escape(target_tab, quote=True)}\""
+            f" data-doc-target=\"{html.escape(target_anchor, quote=True)}\"{after}>"
+        )
+
+    return re.sub(r"<a([^>]*?)href=\"([^\"]+)\"([^>]*)>", replace_link, rendered_html)
+
+
+def _render_docs_markdown(markdown_text: str, page_anchor: str) -> str:
     """Render repo docs with MkDocs-like Markdown support when available."""
     markdown_text = re.sub(r":octicons-arrow-right-24:", "->", markdown_text)
     markdown_text = re.sub(r":octicons-[a-z0-9-]+:", "", markdown_text)
@@ -3855,7 +3997,10 @@ def _render_docs_markdown(markdown_text: str) -> str:
                 "pymdownx.inlinehilite",
             ],
             extension_configs={
-                "toc": {"permalink": True},
+                "toc": {
+                    "permalink": True,
+                    "slugify": lambda value, separator: f"{page_anchor}-{_doc_anchor(value)}",
+                },
                 "pymdownx.tabbed": {"alternate_style": True},
                 "pymdownx.tasklist": {"custom_checkbox": True},
             },
@@ -3873,9 +4018,47 @@ def _docs_search_text(entry: dict[str, str]) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
-def _render_docs_page(entry: dict[str, str], tab_slug: str) -> str:
-    page_anchor = f"doc-{tab_slug}-{_doc_anchor(entry['path'])}"
+def _render_docs_sidebar_page(
+    entry: dict[str, str],
+    tab_slug: str,
+    page_anchors: dict[str, tuple[str, str]],
+) -> str:
+    page_anchor = page_anchors.get(entry["path"], (tab_slug, _docs_page_anchor(tab_slug, entry["path"])))[1]
+    title = str(entry.get("nav_title") or entry["title"])
+    page_search = f"{title} {entry['path']}".lower()
+    heading_links = "".join(
+        "<a class='docs-heading-link "
+        f"docs-heading-level-{int(heading['level'])}' "
+        f"href='#{html.escape(str(heading['id']))}' "
+        f"data-doc-link data-doc-tab='{html.escape(tab_slug)}' "
+        f"data-doc-target='{html.escape(str(heading['id']))}' "
+        f"data-doc-search='{html.escape(str(heading['title']).lower())}' "
+        f"data-doc-label='{html.escape(title)} / {html.escape(str(heading['title']))}'>"
+        f"{html.escape(str(heading['title']))}</a>"
+        for heading in _docs_heading_items(entry["body"], page_anchor)
+    )
+    headings = f"<div class='docs-heading-list'>{heading_links}</div>" if heading_links else ""
+    return (
+        "<div class='docs-toc-page'>"
+        f"<a class='docs-page-link' href='#{html.escape(page_anchor)}' "
+        f"data-doc-link data-doc-tab='{html.escape(tab_slug)}' "
+        f"data-doc-target='{html.escape(page_anchor)}' "
+        f"data-doc-search='{html.escape(page_search)}' "
+        f"data-doc-label='{html.escape(title)}'>{html.escape(title)}</a>"
+        f"{headings}"
+        "</div>"
+    )
+
+
+def _render_docs_page(
+    entry: dict[str, str],
+    tab_slug: str,
+    page_anchors: dict[str, tuple[str, str]],
+) -> str:
+    page_anchor = page_anchors.get(entry["path"], (tab_slug, _docs_page_anchor(tab_slug, entry["path"])))[1]
     source_url = f"https://github.com/stevesolun/ctx/blob/main/{quote(entry['path'])}"
+    body_html = _render_docs_markdown(entry["body"], page_anchor)
+    body_html = _rewrite_docs_links(body_html, entry["path"], tab_slug, page_anchor, page_anchors)
     return (
         f"<article id='{html.escape(page_anchor)}' class='docs-page wiki-body' "
         f"data-doc-page='{html.escape(_docs_search_text(entry))}'>"
@@ -3883,7 +4066,7 @@ def _render_docs_page(entry: dict[str, str], tab_slug: str) -> str:
         f"<code>{html.escape(entry['path'])}</code>"
         f"<a href='{html.escape(source_url)}'>source -></a>"
         "</div>"
-        f"{_render_docs_markdown(entry['body'])}"
+        f"{body_html}"
         "</article>"
     )
 
@@ -3909,15 +4092,19 @@ def _render_docs() -> str:
     )
     panels: list[str] = []
     page_count = sum(len(list(tab["pages"])) for tab in tabs)
+    page_anchors: dict[str, tuple[str, str]] = {}
+    for tab in tabs:
+        tab_slug = str(tab["slug"])
+        for page in list(tab["pages"]):
+            page_anchors[str(page["path"])] = (tab_slug, _docs_page_anchor(tab_slug, str(page["path"])))
     for idx, tab in enumerate(tabs):
         tab_slug = str(tab["slug"])
         pages = list(tab["pages"])
         page_links = "".join(
-            f"<a href='#doc-{html.escape(tab_slug)}-{html.escape(_doc_anchor(page['path']))}'>"
-            f"{html.escape(str(page.get('nav_title') or page['title']))}</a>"
+            _render_docs_sidebar_page(page, tab_slug, page_anchors)
             for page in pages
         )
-        page_bodies = "".join(_render_docs_page(page, tab_slug) for page in pages)
+        page_bodies = "".join(_render_docs_page(page, tab_slug, page_anchors) for page in pages)
         hidden = " hidden" if idx else ""
         panels.append(
             f"<section class='docs-tab-panel' data-doc-panel='{html.escape(tab_slug)}'{hidden}>"
@@ -3936,7 +4123,7 @@ def _render_docs() -> str:
         "<div class='docs-eyebrow'>Repo documentation</div>"
         "<h1>Docs</h1>"
         "<p>Read the same Markdown tree and MkDocs nav shipped with the repo. "
-        "Use tabs for sections, search within the active section, and jump to source when you need the exact file.</p>"
+        "Use tabs for sections, search across local docs, and jump to source when you need the exact file.</p>"
         "</div>"
         "<div class='docs-hero-meta'>"
         f"<span class='docs-stat'>{len(tabs)} sections</span>"
@@ -3945,35 +4132,94 @@ def _render_docs() -> str:
         "</div>"
         "<div class='docs-actions'>"
         "<div class='docs-search-wrap'>"
-        "<input id='docs-search' type='text' placeholder='Search current docs tab...'>"
+        "<input id='docs-search' type='text' placeholder='Search local docs...'>"
         "</div>"
         f"<a class='docs-public-link' href='{public_docs_url}'>public docs -></a>"
         "</div>"
+        "<div id='docs-search-results' class='docs-search-results' hidden></div>"
         "</section>"
         f"<div class='docs-tabs' role='tablist'>{tab_buttons}</div>"
         + "".join(panels)
         + "<script>\n"
         "const docsSearch = document.getElementById('docs-search');\n"
+        "const docsSearchResults = document.getElementById('docs-search-results');\n"
         "const docButtons = Array.from(document.querySelectorAll('.docs-tab-button'));\n"
         "const docPanels = Array.from(document.querySelectorAll('.docs-tab-panel'));\n"
+        "const docLinks = Array.from(document.querySelectorAll('[data-doc-link]'));\n"
         "function activeDocPanel() { return docPanels.find(panel => !panel.hidden); }\n"
+        "function jumpToDocTarget(tab, target) {\n"
+        "  activateDocTab(tab);\n"
+        "  window.requestAnimationFrame(() => {\n"
+        "    const node = document.getElementById(target);\n"
+        "    if (node) {\n"
+        "      node.scrollIntoView({ block: 'start' });\n"
+        "      history.replaceState(null, '', '#' + target);\n"
+        "    }\n"
+        "  });\n"
+        "}\n"
         "function activateDocTab(key) {\n"
         "  docButtons.forEach(button => button.classList.toggle('active', button.dataset.docTab === key));\n"
         "  docPanels.forEach(panel => { panel.hidden = panel.dataset.docPanel !== key; });\n"
         "  applyDocsFilter();\n"
         "}\n"
+        "function renderDocsSearchResults(q) {\n"
+        "  if (!docsSearchResults) return;\n"
+        "  docsSearchResults.replaceChildren();\n"
+        "  docsSearchResults.hidden = !q;\n"
+        "  if (!q) return;\n"
+        "  const matches = docLinks.filter(link => (link.dataset.docSearch || '').includes(q)).slice(0, 12);\n"
+        "  if (!matches.length) {\n"
+        "    const empty = document.createElement('div');\n"
+        "    empty.className = 'docs-search-empty';\n"
+        "    empty.textContent = 'No local docs matches.';\n"
+        "    docsSearchResults.appendChild(empty);\n"
+        "    return;\n"
+        "  }\n"
+        "  matches.forEach(link => {\n"
+        "    const button = document.createElement('button');\n"
+        "    button.type = 'button';\n"
+        "    button.className = 'docs-search-result';\n"
+        "    button.dataset.docTab = link.dataset.docTab || '';\n"
+        "    button.dataset.docTarget = link.dataset.docTarget || '';\n"
+        "    button.textContent = link.dataset.docLabel || link.textContent || '';\n"
+        "    const meta = document.createElement('span');\n"
+        "    meta.textContent = (link.dataset.docTab || 'docs') + ' section';\n"
+        "    button.appendChild(meta);\n"
+        "    docsSearchResults.appendChild(button);\n"
+        "  });\n"
+        "}\n"
         "function applyDocsFilter() {\n"
         "  const panel = activeDocPanel();\n"
         "  if (!panel) return;\n"
         "  const q = (docsSearch.value || '').trim().toLowerCase();\n"
+        "  renderDocsSearchResults(q);\n"
         "  Array.from(panel.querySelectorAll('[data-doc-page]')).forEach(page => {\n"
         "    page.style.display = (!q || page.dataset.docPage.includes(q)) ? '' : 'none';\n"
         "  });\n"
         "}\n"
         "docButtons.forEach(button => button.addEventListener('click', () => activateDocTab(button.dataset.docTab)));\n"
+        "document.addEventListener('click', event => {\n"
+        "  const link = event.target.closest('a[data-doc-target]');\n"
+        "  if (!link) return;\n"
+        "  event.preventDefault();\n"
+        "  jumpToDocTarget(link.dataset.docTab, link.dataset.docTarget);\n"
+        "});\n"
+        "if (docsSearchResults) docsSearchResults.addEventListener('click', event => {\n"
+        "  const button = event.target.closest('button[data-doc-target]');\n"
+        "  if (!button) return;\n"
+        "  jumpToDocTarget(button.dataset.docTab, button.dataset.docTarget);\n"
+        "});\n"
         "if (docsSearch) docsSearch.addEventListener('input', applyDocsFilter);\n"
+        "if (docsSearch) docsSearch.addEventListener('keydown', event => {\n"
+        "  if (event.key !== 'Enter') return;\n"
+        "  const first = docsSearchResults ? docsSearchResults.querySelector('button[data-doc-target]') : null;\n"
+        "  if (first) jumpToDocTarget(first.dataset.docTab, first.dataset.docTarget);\n"
+        "});\n"
         "const initialDocTab = (location.hash || '').replace('#doc-tab-', '');\n"
         "if (initialDocTab && docButtons.some(button => button.dataset.docTab === initialDocTab)) activateDocTab(initialDocTab);\n"
+        "const initialDocTarget = (location.hash || '').replace('#', '');\n"
+        "const initialDocLink = initialDocTarget ? docLinks.find(link => link.dataset.docTarget === initialDocTarget) : null;\n"
+        "if (initialDocLink) activateDocTab(initialDocLink.dataset.docTab);\n"
         "applyDocsFilter();\n"
         "</script>"
         "</div>"
