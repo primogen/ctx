@@ -242,6 +242,73 @@ def test_install_refuses_local_source_without_explicit_opt_in(tmp_path: Path) ->
     assert not (tmp_path / "installs" / "text-to-cad").exists()
 
 
+def test_remote_install_requires_pinned_commit_by_default(tmp_path: Path) -> None:
+    wiki = tmp_path / "wiki"
+    _write_harness_page(wiki)
+
+    result = harness_install.install_harness(
+        "text-to-cad",
+        wiki_path=wiki,
+        installs_root=tmp_path / "installs",
+        manifest_dir=tmp_path / "manifests",
+    )
+
+    assert result.status == "install-failed"
+    assert "not pinned to a commit" in result.message
+    assert not (tmp_path / "installs" / "text-to-cad").exists()
+
+
+def test_remote_install_fetches_pinned_commit_and_records_manifest(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    commit = "a" * 40
+    wiki = tmp_path / "wiki"
+    _write_harness_page(wiki, commit_sha=commit)
+    git_calls: list[list[str]] = []
+
+    def fake_run_git(args: list[str], *, timeout: int = 300) -> _FakeRun:
+        git_calls.append(args)
+        if args[:2] == ["clone", "--no-checkout"]:
+            target = Path(args[-1])
+            target.mkdir(parents=True)
+            (target / "README.md").write_text("remote harness", encoding="utf-8")
+        if "rev-parse" in args:
+            return _FakeRun(stdout=f"{commit}\n")
+        return _FakeRun()
+
+    monkeypatch.setattr(harness_install, "_run_git", fake_run_git)
+
+    result = harness_install.install_harness(
+        "text-to-cad",
+        wiki_path=wiki,
+        installs_root=tmp_path / "installs",
+        manifest_dir=tmp_path / "manifests",
+    )
+
+    assert result.status == "installed"
+    assert git_calls[0][:2] == ["clone", "--no-checkout"]
+    assert any(
+        call[0] == "-C"
+        and call[2:6] == ["fetch", "--depth", "1", "origin"]
+        and call[-1] == commit
+        for call in git_calls
+    )
+    assert any(
+        call[0] == "-C" and call[2:] == ["checkout", "--detach", "FETCH_HEAD"]
+        for call in git_calls
+    )
+    assert any(
+        call[0] == "-C" and call[2:] == ["rev-parse", "HEAD"]
+        for call in git_calls
+    )
+    manifest = json.loads(
+        (tmp_path / "manifests" / "text-to-cad.json").read_text(encoding="utf-8")
+    )
+    assert manifest["repo_ref"] == commit
+    assert manifest["resolved_commit"] == commit
+
+
 def test_install_failure_after_target_replace_rolls_back_new_target(
     tmp_path: Path,
     monkeypatch: Any,
