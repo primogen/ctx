@@ -1038,6 +1038,8 @@ def test_render_wiki_entity_renders_markdown_and_wikilinks(fake_claude: Path) ->
         "---\n"
         "# Markdown Page\n\n"
         "Use `pytest` with [[entities/skills/find-skills]].\n\n"
+        "Source: [Homepage](https://example.com/docs).\n\n"
+        "Unsafe: [bad](javascript:alert(1)).\n\n"
         "- first item\n"
         "- [[entities/agents/reviewer|reviewer agent]]\n",
         encoding="utf-8",
@@ -1049,6 +1051,8 @@ def test_render_wiki_entity_renders_markdown_and_wikilinks(fake_claude: Path) ->
     assert "<code>pytest</code>" in html_out
     assert "href='/wiki/find-skills?type=skill'" in html_out
     assert "href='/wiki/reviewer?type=agent'" in html_out
+    assert "<a href='https://example.com/docs'>Homepage</a>" in html_out
+    assert "href='javascript:alert(1)'" not in html_out
     assert "<li>first item</li>" in html_out
     assert "<pre style=" not in html_out
 

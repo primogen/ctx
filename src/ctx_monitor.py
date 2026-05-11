@@ -533,7 +533,9 @@ def _frontmatter_tags(value: Any, *, limit: int | None = 6) -> list[str]:
     return out
 
 
-_WIKI_INLINE_RE = re.compile(r"(`[^`\n]+`|\[\[[^\]\n]+\]\])")
+_WIKI_INLINE_RE = re.compile(
+    r"(`[^`\n]+`|\[\[[^\]\n]+\]\]|(?<!!)\[[^\]\n]+\]\([^\s()\n]+(?:\s+\"[^\"]*\")?\))",
+)
 _WIKI_QUALITY_BLOCK_RE = re.compile(
     r"<!--\s*quality:begin\s*-->\s*(.*?)\s*<!--\s*quality:end\s*-->",
     re.IGNORECASE | re.DOTALL,
@@ -559,6 +561,20 @@ def _wiki_link_href(target: str) -> tuple[str, str]:
     return f"/wiki/{quote(slug)}{suffix}", slug
 
 
+def _markdown_link_href(target: str) -> str | None:
+    """Return a safe href for normal Markdown links, or None to suppress it."""
+    cleaned = target.strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith(("/", "#")):
+        return cleaned
+    if re.match(r"^https?://", cleaned, re.IGNORECASE):
+        return cleaned
+    if re.match(r"^mailto:[^@\s]+@[^@\s]+$", cleaned, re.IGNORECASE):
+        return cleaned
+    return None
+
+
 def _render_wiki_inline(text: str) -> str:
     """Render a small safe inline Markdown subset used by wiki pages."""
     out: list[str] = []
@@ -568,7 +584,7 @@ def _render_wiki_inline(text: str) -> str:
         token = match.group(0)
         if token.startswith("`"):
             out.append(f"<code>{html.escape(token[1:-1])}</code>")
-        else:
+        elif token.startswith("[["):
             inner = token[2:-2]
             target, _, label = inner.partition("|")
             href, fallback_label = _wiki_link_href(target)
@@ -576,6 +592,22 @@ def _render_wiki_inline(text: str) -> str:
             out.append(
                 f"<a href='{html.escape(href)}'>{html.escape(link_text)}</a>",
             )
+        else:
+            link_match = re.fullmatch(
+                r"\[([^\]\n]+)\]\(([^\s()\n]+)(?:\s+\"[^\"]*\")?\)",
+                token,
+            )
+            if not link_match:
+                out.append(html.escape(token))
+            else:
+                label, target = link_match.groups()
+                safe_href = _markdown_link_href(target)
+                if safe_href is None:
+                    out.append(html.escape(label))
+                else:
+                    out.append(
+                        f"<a href='{html.escape(safe_href)}'>{html.escape(label)}</a>",
+                    )
         last = match.end()
     out.append(html.escape(text[last:]))
     return "".join(out)
