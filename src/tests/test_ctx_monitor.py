@@ -1530,6 +1530,19 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     assert ">Config<" in out
 
 
+def test_layout_nav_tabs_are_draggable_and_persist_order() -> None:
+    out = cm._layout("test", "<p>body</p>")
+
+    assert "id='dashboard-nav'" in out
+    assert "data-nav-storage-key='ctx-monitor-nav-order'" in out
+    assert "draggable='true'" in out
+    assert "data-nav-key='graph'" in out
+    assert "localStorage.setItem(storageKey" in out
+    assert "dragstart" in out
+    assert "drop" in out
+    assert "id='nav-reset'" in out
+
+
 def test_render_config_page_shows_required_defaults_and_examples(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

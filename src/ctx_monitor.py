@@ -1441,7 +1441,12 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 .muted { color: #6b7280; font-size: 0.85rem; }
 .error { color: #991b1b; background: #fee2e2; border: 1px solid #fecaca;
          border-radius: 6px; padding: 0.5rem 0.65rem; }
-.nav { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
+.nav { display: flex; gap: 0.75rem; margin-bottom: 1.5rem; align-items: center; flex-wrap: wrap; }
+.nav a[draggable="true"] { cursor: grab; border-radius: 4px; padding: 0.1rem 0.2rem; }
+.nav a.nav-dragging { opacity: 0.45; cursor: grabbing; }
+.nav a.nav-drag-over { outline: 2px solid #93c5fd; background: rgba(147,197,253,0.18); }
+.nav-reset { border: 1px solid #d1d5db; border-radius: 4px; background: transparent;
+             color: #6b7280; cursor: pointer; padding: 0.1rem 0.35rem; font-size: 0.78rem; }
 .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem 1.25rem;
         margin-bottom: 1rem; }
 .wiki-entity-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
@@ -1480,24 +1485,99 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 
 def _layout(title: str, body: str) -> str:
     """Wrap body HTML in the standard page chrome."""
+    nav_items = (
+        ("home", "Home", "/"),
+        ("loaded", "Loaded", "/loaded"),
+        ("skills", "Skills", "/skills"),
+        ("wiki", "Wiki", "/wiki"),
+        ("graph", "Graph", "/graph"),
+        ("config", "Config", "/config"),
+        ("status", "Status", "/status"),
+        ("kpi", "KPIs", "/kpi"),
+        ("runtime", "Runtime", "/runtime"),
+        ("sessions", "Sessions", "/sessions"),
+        ("logs", "Logs", "/logs"),
+        ("events", "Live", "/events"),
+    )
+    nav_html = "".join(
+        f"<a href='{html.escape(href)}' data-nav-key='{html.escape(key)}' "
+        "draggable='true' title='Drag to reorder dashboard tabs'>"
+        f"{html.escape(label)}</a>"
+        for key, label, href in nav_items
+    )
+    nav_keys_json = json.dumps([key for key, _label, _href in nav_items])
+    nav_script = (
+        "<script>\n"
+        "(function () {\n"
+        "  const nav = document.getElementById('dashboard-nav');\n"
+        "  if (!nav) return;\n"
+        "  const storageKey = nav.dataset.navStorageKey;\n"
+        f"  const defaultKeys = {nav_keys_json};\n"
+        "  const reset = document.getElementById('nav-reset');\n"
+        "  function links() { return Array.from(nav.querySelectorAll('a[data-nav-key]')); }\n"
+        "  function linkFor(key) { return nav.querySelector('a[data-nav-key=\"' + CSS.escape(key) + '\"]'); }\n"
+        "  function applyOrder(order) {\n"
+        "    const valid = Array.isArray(order) ? order.filter(key => defaultKeys.includes(key)) : [];\n"
+        "    const merged = valid.concat(defaultKeys.filter(key => !valid.includes(key)));\n"
+        "    merged.forEach(key => { const link = linkFor(key); if (link) nav.appendChild(link); });\n"
+        "    if (reset) nav.appendChild(reset);\n"
+        "  }\n"
+        "  function saveOrder() {\n"
+        "    try { localStorage.setItem(storageKey, JSON.stringify(links().map(a => a.dataset.navKey))); } catch (_) {}\n"
+        "  }\n"
+        "  function resetOrder() {\n"
+        "    try { localStorage.removeItem(storageKey); } catch (_) {}\n"
+        "    applyOrder(defaultKeys);\n"
+        "  }\n"
+        "  try { applyOrder(JSON.parse(localStorage.getItem(storageKey) || '[]')); } catch (_) { applyOrder(defaultKeys); }\n"
+        "  let dragged = null;\n"
+        "  links().forEach(link => {\n"
+        "    link.addEventListener('dragstart', event => {\n"
+        "      dragged = link;\n"
+        "      link.classList.add('nav-dragging');\n"
+        "      if (event.dataTransfer) {\n"
+        "        event.dataTransfer.effectAllowed = 'move';\n"
+        "        event.dataTransfer.setData('text/plain', link.dataset.navKey || '');\n"
+        "      }\n"
+        "    });\n"
+        "    link.addEventListener('dragend', () => {\n"
+        "      link.classList.remove('nav-dragging');\n"
+        "      links().forEach(item => item.classList.remove('nav-drag-over'));\n"
+        "      dragged = null;\n"
+        "    });\n"
+        "    link.addEventListener('dragover', event => {\n"
+        "      event.preventDefault();\n"
+        "      if (link !== dragged) link.classList.add('nav-drag-over');\n"
+        "    });\n"
+        "    link.addEventListener('dragleave', () => link.classList.remove('nav-drag-over'));\n"
+        "    link.addEventListener('drop', event => {\n"
+        "      event.preventDefault();\n"
+        "      link.classList.remove('nav-drag-over');\n"
+        "      const source = dragged || linkFor(event.dataTransfer ? event.dataTransfer.getData('text/plain') : '');\n"
+        "      if (!source || source === link) return;\n"
+        "      const rect = link.getBoundingClientRect();\n"
+        "      const after = event.clientX > rect.left + rect.width / 2;\n"
+        "      nav.insertBefore(source, after ? link.nextSibling : link);\n"
+        "      if (reset) nav.appendChild(reset);\n"
+        "      saveOrder();\n"
+        "    });\n"
+        "  });\n"
+        "  if (reset) reset.addEventListener('click', resetOrder);\n"
+        "})();\n"
+        "</script>"
+    )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<title>{html.escape(title)} — ctx monitor</title>"
         f"<style>{_CSS}</style></head><body>"
-        "<div class='nav'>"
-        "<a href='/'>Home</a>"
-        "<a href='/loaded'>Loaded</a>"
-        "<a href='/skills'>Skills</a>"
-        "<a href='/wiki'>Wiki</a>"
-        "<a href='/graph'>Graph</a>"
-        "<a href='/config'>Config</a>"
-        "<a href='/status'>Status</a>"
-        "<a href='/kpi'>KPIs</a>"
-        "<a href='/runtime'>Runtime</a>"
-        "<a href='/sessions'>Sessions</a>"
-        "<a href='/logs'>Logs</a>"
-        "<a href='/events'>Live</a>"
+        "<div class='nav' id='dashboard-nav' "
+        "data-nav-storage-key='ctx-monitor-nav-order' "
+        "aria-label='Dashboard navigation'>"
+        + nav_html
+        + "<button type='button' id='nav-reset' class='nav-reset' "
+          "title='Reset dashboard tab order'>reset</button>"
         "</div>"
+        + nav_script
         + body
         + "</body></html>"
     )
