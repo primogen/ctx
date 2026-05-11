@@ -84,6 +84,8 @@ _MONITOR_TOKEN = ""
 _MONITOR_MUTATIONS_ENABLED = True
 _GRAPH_CACHE_KEY: tuple[Path, float, int, int] | None = None
 _GRAPH_CACHE_VALUE: Any | None = None
+_SIDECAR_INDEX_CACHE_KEY: tuple[tuple[Path, float, int], ...] | None = None
+_SIDECAR_INDEX_CACHE_VALUE: dict[tuple[str, str], dict] | None = None
 _WIKI_INDEX_LIMIT_PER_TYPE = 500
 _GRAPH_REPORT_RE = re.compile(r"Nodes:\s*([\d,]+)\s*\|\s*Edges:\s*([\d,]+)")
 _MAX_POST_BODY_BYTES = 64 * 1024
@@ -1539,12 +1541,7 @@ def _load_sidecar(slug: str, entity_type: str | None = None) -> dict | None:
         if entity_type is None or _sidecar_entity_type(sidecar) == entity_type:
             return sidecar
     if entity_type is not None:
-        for path in _sidecar_files():
-            sidecar = _read_sidecar_file(path)
-            if sidecar is None:
-                continue
-            if sidecar.get("slug") == slug and _sidecar_entity_type(sidecar) == entity_type:
-                return sidecar
+        return _sidecar_index().get((slug, entity_type))
     return None
 
 
@@ -1559,6 +1556,36 @@ def _sidecar_files() -> list[Path]:
             and not p.name.endswith(".lifecycle.json")
         )
     return files
+
+
+def _sidecar_index_cache_key() -> tuple[tuple[Path, float, int], ...]:
+    keys: list[tuple[Path, float, int]] = []
+    for root in (_sidecar_dir(), _sidecar_dir() / "mcp"):
+        if not root.is_dir():
+            continue
+        stat = root.stat()
+        keys.append((root.resolve(), stat.st_mtime, stat.st_size))
+    return tuple(keys)
+
+
+def _sidecar_index() -> dict[tuple[str, str], dict]:
+    global _SIDECAR_INDEX_CACHE_KEY, _SIDECAR_INDEX_CACHE_VALUE
+
+    cache_key = _sidecar_index_cache_key()
+    if _SIDECAR_INDEX_CACHE_KEY == cache_key and _SIDECAR_INDEX_CACHE_VALUE is not None:
+        return _SIDECAR_INDEX_CACHE_VALUE
+
+    index: dict[tuple[str, str], dict] = {}
+    for path in _sidecar_files():
+        sidecar = _read_sidecar_file(path)
+        if sidecar is None:
+            continue
+        slug = str(sidecar.get("slug") or path.stem)
+        entity_type = _sidecar_entity_type(sidecar)
+        index.setdefault((slug, entity_type), sidecar)
+    _SIDECAR_INDEX_CACHE_KEY = cache_key
+    _SIDECAR_INDEX_CACHE_VALUE = index
+    return index
 
 
 def _all_sidecars() -> list[dict]:
@@ -2871,6 +2898,7 @@ def _render_config() -> str:
         example_html = html.escape(json.dumps(example_value) if not isinstance(example_value, str) else str(example_value))
         common_attrs = (
             f"name='{html.escape(path)}' data-config-path='{html.escape(path)}' "
+            f"data-original-value='{html.escape(str(value))}' "
             f"data-default='{default_html}' {'required' if required else ''}"
         )
         if spec.get("type") == "choice":
@@ -2906,11 +2934,20 @@ def _render_config() -> str:
             if is_override
             else "<span class='muted'>default</span>"
         )
+        clear_html = (
+            f"<label style='display:inline-flex; align-items:center; gap:0.35rem; "
+            f"margin-top:0.45rem;'>"
+            f"<input type='checkbox' data-config-clear='{html.escape(path)}'>"
+            "remove user override on save</label>"
+            if is_override
+            else ""
+        )
         rows_by_group[str(spec["group"])].append(
             "<div class='card' style='margin:0 0 0.75rem 0;'>"
             f"<label><strong>{html.escape(str(spec['label']))}</strong>{req_html}<br>"
             f"<code>{html.escape(path)}</code></label>"
             f"<div style='margin-top:0.45rem;'>{control}</div>"
+            f"{clear_html}"
             f"<p class='muted' style='margin-bottom:0;'>{help_text}<br>"
             f"Default: <code>{default_html}</code> · Example: <code>{example_html}</code> · "
             f"{override_html}</p>"
@@ -2926,7 +2963,7 @@ def _render_config() -> str:
     token = _MONITOR_TOKEN or ""
     body = (
         "<h1>Config</h1>"
-        "<p class='muted'>Edit ctx runtime defaults from the dashboard. Blank values remove your override and fall back to the shipped default. Important fields are marked Required.</p>"
+        "<p class='muted'>Edit ctx runtime defaults from the dashboard. Saves only changed fields. For existing overrides, use remove user override to fall back to the shipped default. Important fields are marked Required.</p>"
         f"<p class='muted'>User config: <code>{html.escape(payload['path'])}</code></p>"
         "<form id='config-form'>"
         + group_html
@@ -2942,7 +2979,13 @@ def _render_config() -> str:
         "form.addEventListener('submit', async (ev) => {\n"
         "  ev.preventDefault();\n"
         "  const updates = {};\n"
-        "  form.querySelectorAll('[data-config-path]').forEach(el => { updates[el.dataset.configPath] = el.value; });\n"
+        "  const clears = new Set(Array.from(form.querySelectorAll('[data-config-clear]:checked')).map(el => el.dataset.configClear));\n"
+        "  form.querySelectorAll('[data-config-path]').forEach(el => {\n"
+        "    const path = el.dataset.configPath;\n"
+        "    if (clears.has(path)) updates[path] = '';\n"
+        "    else if (String(el.value) !== String(el.dataset.originalValue || '')) updates[path] = el.value;\n"
+        "  });\n"
+        "  if (Object.keys(updates).length === 0) { msg.textContent = 'no config changes to save'; return; }\n"
         "  msg.textContent = 'saving...';\n"
         "  const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json', 'X-CTX-Monitor-Token':CTX_MONITOR_TOKEN}, body: JSON.stringify({updates})});\n"
         "  let body = {}; try { body = await r.json(); } catch (_) {}\n"
@@ -4855,7 +4898,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_html(_render_kpi())
             elif path == "/runtime":
                 self._send_html(_render_runtime_lifecycle())
-            elif path == "/events":
+            elif path in {"/events", "/live"}:
                 self._send_html(_render_events())
             elif path == "/api/sessions.json":
                 self._send_json(_summarize_sessions())
