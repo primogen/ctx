@@ -59,6 +59,7 @@ import argparse
 import html
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -2041,6 +2042,68 @@ def _resolve_graph_center(
     )
 
 
+def _unit_score(value: Any) -> float | None:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(score):
+        return None
+    return max(0.0, min(1.0, score))
+
+
+def _sidecar_score_inputs(slug: str, entity_type: str) -> tuple[float | None, float | None]:
+    sidecar = _load_sidecar(slug, entity_type=entity_type)
+    if not isinstance(sidecar, dict):
+        return None, None
+    quality = _unit_score(sidecar.get("score", sidecar.get("raw_score")))
+    usage = None
+    signals = sidecar.get("signals")
+    if isinstance(signals, dict):
+        telemetry = signals.get("telemetry")
+        if isinstance(telemetry, dict):
+            usage = _unit_score(telemetry.get("score"))
+    return quality, usage
+
+
+def _graph_node_size(
+    nid: str,
+    data: dict[str, Any],
+    *,
+    entity_type: str,
+    degree: int,
+    max_degree: int,
+) -> dict[str, Any]:
+    """Return bounded visual size metadata for a graph node."""
+    slug = nid.split(":", 1)[-1]
+    quality = _unit_score(data.get("quality_score"))
+    usage = _unit_score(data.get("usage_score"))
+    if quality is None or usage is None:
+        sidecar_quality, sidecar_usage = _sidecar_score_inputs(slug, entity_type)
+        quality = quality if quality is not None else sidecar_quality
+        usage = usage if usage is not None else sidecar_usage
+
+    quality_value = 0.35 if quality is None else quality
+    usage_value = 0.0 if usage is None else usage
+    popularity = (
+        math.log1p(max(0, degree)) / math.log1p(max(1, max_degree))
+        if max_degree > 0
+        else 0.0
+    )
+    signal = max(
+        0.0,
+        min(1.0, 0.45 * quality_value + 0.35 * usage_value + 0.20 * popularity),
+    )
+    return {
+        "node_size": round(8.0 + signal * 16.0, 2),
+        "size_signal": round(signal, 4),
+        "size_reason": (
+            f"quality {quality_value:.3f}; usage {usage_value:.3f}; "
+            f"popularity {popularity:.3f}"
+        ),
+    }
+
+
 def _graph_neighborhood(
     slug: str,
     hops: int = 1,
@@ -2077,11 +2140,15 @@ def _graph_neighborhood(
     emitted_edges: set[tuple[str, str]] = set()
     frontier = [center]
     seen: set[str] = {center}
+    try:
+        max_degree = max((int(degree) for _node, degree in G.degree()), default=1)
+    except Exception:  # noqa: BLE001
+        max_degree = 1
 
     def _add_node(nid: str, depth: int) -> None:
         if nid in nodes_out:
             return
-        data = G.nodes.get(nid, {})
+        data = dict(G.nodes.get(nid, {}))
         label = data.get("label", nid.split(":", 1)[-1])
         tags = list(data.get("tags", []))
         default_type = (
@@ -2091,17 +2158,30 @@ def _graph_neighborhood(
             else "skill"
         )
         ntype = data.get("type") or default_type
+        try:
+            degree = int(G.degree[nid])
+        except Exception:  # noqa: BLE001
+            degree = 0
+        size_data = _graph_node_size(
+            nid,
+            data,
+            entity_type=str(ntype),
+            degree=degree,
+            max_degree=max_degree,
+        )
         nodes_out[nid] = {
             "data": {
                 "id": nid,
                 "label": label,
                 "type": ntype,
                 "depth": depth,
+                "degree": degree,
                 "tags": tags[:6],
                 "description": data.get("description", ""),
                 "quality_score": data.get("quality_score"),
                 "usage_score": data.get("usage_score"),
                 "filter_tokens": [nid, label, nid.split(":", 1)[-1], *tags],
+                **size_data,
             },
         }
 
@@ -2978,8 +3058,16 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "function nodeDetail(d) {\n"
         "  const tags = Array.from(d.tags || []).join(', ') || 'none';\n"
         "  const quality = d.quality_score == null ? 'unknown' : Number(d.quality_score).toFixed(3);\n"
+        "  const usage = d.usage_score == null ? 'unknown' : Number(d.usage_score).toFixed(3);\n"
+        "  const size = d.node_size == null ? 'auto' : Number(d.node_size).toFixed(1);\n"
+        "  const sizeReason = d.size_reason ? ' · size: ' + size + ' (' + d.size_reason + ')' : ' · size: ' + size;\n"
         "  const desc = d.description ? ' · ' + d.description : '';\n"
-        "  return (d.label || nodeSlug(d.id)) + ' · ' + (d.type || 'entity') + desc + ' · tags: ' + tags + ' · quality: ' + quality;\n"
+        "  return (d.label || nodeSlug(d.id)) + ' · ' + (d.type || 'entity') + desc + ' · tags: ' + tags + ' · quality: ' + quality + ' · usage: ' + usage + sizeReason;\n"
+        "}\n"
+        "function nodeRadius(d, isCenter, scale) {\n"
+        "  const base = Math.max(isCenter ? 14 : 8, Math.min(24, Number(d.node_size || (isCenter ? 16 : 11))));\n"
+        "  const perspective = Math.max(0.8, Math.min(1.2, Number(scale || 1)));\n"
+        "  return Math.max(8, Math.min(28, base * perspective));\n"
         "}\n"
         "function edgeDetail(d) {\n"
         "  const tags = Array.from(d.shared_tags || []).join(', ') || 'none';\n"
@@ -3057,7 +3145,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "      const tags = Array.from(d.filter_tokens || d.tags || []).join(' ');\n"
         "      const label = d.label || nodeSlug(d.id);\n"
         "      const isCenter = d.id === centerId;\n"
-        "      const r = Math.max(6, (isCenter ? 18 : 11) * Math.max(0.7, p.scale));\n"
+        "      const r = nodeRadius(d, isCenter, p.scale);\n"
         "      return '<a href=\"' + escapeHtml(wikiHref(d)) + '\"><g data-testid=\"graph-3d-node\" id=\"' + escapeHtml(nodeDomId(d.id)) + '\" data-3d-node-id=\"' + escapeHtml(d.id || '') + '\" data-node-detail=\"' + escapeHtml(nodeDetail(d)) + '\" data-type=\"' + escapeHtml(d.type || '') + '\" data-depth=\"' + escapeHtml(d.depth || 0) + '\" data-tags=\"' + escapeHtml(tags.toLowerCase()) + '\"><title>' + escapeHtml(nodeDetail(d)) + '</title><circle data-testid=\"graph-svg-node\" cx=\"' + p.x.toFixed(1) + '\" cy=\"' + p.y.toFixed(1) + '\" r=\"' + r + '\" fill=\"' + nodeColor(d.type) + '\" stroke=\"#fff\" stroke-width=\"2\" /><text x=\"' + p.x.toFixed(1) + '\" y=\"' + (p.y + r + 14).toFixed(1) + '\" text-anchor=\"middle\" font-size=\"11\" fill=\"#111827\" style=\"pointer-events:none;\">' + escapeHtml(label).slice(0, 28) + '</text></g></a>';\n"
         "    }).join('');\n"
         "    const edgeHitHtml = edges.map(e => {\n"
