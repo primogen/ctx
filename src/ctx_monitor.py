@@ -17,7 +17,7 @@ Routes:
     /wiki/<slug>?type=<entity>  One wiki entity page (frontmatter + body)
     /graph                      Built-in graph explorer + popular seeds
     /graph?slug=<slug>&type=... Focus graph view on a specific entity
-    /harness                    Manual harness selection + install wizard
+    /harness                    Manual harness setup for user-owned LLMs
     /config                     Editable ctx config with defaults fallback
     /status                     Durable queue + graph/wiki artifact state
     /kpi                        Grade / lifecycle / category KPIs
@@ -1522,6 +1522,15 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 .wizard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
 .wizard-grid label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.9rem; }
 .wizard-grid .wide { grid-column: 1 / -1; }
+.setup-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem;
+                align-items: end; margin-bottom: 1rem; }
+.setup-kicker { text-transform: uppercase; letter-spacing: 0; font-size: 0.74rem;
+                font-weight: 750; color: var(--muted-text); }
+.setup-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.55rem;
+              margin: 0.8rem 0 1rem; }
+.setup-flow-step { border: 1px solid var(--border); border-radius: var(--radius);
+                   background: var(--surface); padding: 0.7rem; min-height: 4.4rem; }
+.setup-flow-step strong { display: block; font-size: 0.88rem; margin-bottom: 0.2rem; }
 .command-box { background: #0f172a; color: #e2e8f0; border-radius: var(--radius);
                padding: 0.85rem; white-space: pre-wrap; overflow-x: auto; min-height: 8rem; }
 .harness-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.8rem;
@@ -1531,7 +1540,7 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 .harness-card button { align-self: flex-start; }
 @media (max-width: 860px) {
     .wiki-entity-grid { grid-template-columns: 1fr; }
-    .wizard-layout, .wizard-grid { grid-template-columns: 1fr; }
+    .wizard-layout, .wizard-grid, .setup-header, .setup-flow { grid-template-columns: 1fr; }
 }
 @media (prefers-color-scheme: dark) {
     :root {
@@ -1571,7 +1580,7 @@ def _layout(title: str, body: str) -> str:
         ("skills", "Skills", "/skills"),
         ("wiki", "Wiki", "/wiki"),
         ("graph", "Graph", "/graph"),
-        ("harness", "Harness", "/harness"),
+        ("harness", "Harness Setup", "/harness"),
         ("config", "Config", "/config"),
         ("status", "Status", "/status"),
         ("kpi", "KPIs", "/kpi"),
@@ -3280,10 +3289,20 @@ def _render_harness_wizard() -> str:
         )
 
     body = (
-        "<h1>Harness wizard</h1>"
+        "<div class='setup-header'>"
+        "<div><div class='setup-kicker'>Model -> intent -> install -> attach ctx</div>"
+        "<h1>Harness Setup</h1>"
         "<p class='muted'>For users running their own API or local model instead of Claude Code. "
         "Interview the model/runtime choice, generate a real ctx harness recommendation command, "
-        "then install a catalog harness or produce a no-fit PRD for a custom harness.</p>"
+        "then install a catalog harness or produce a no-fit PRD for a custom harness.</p></div>"
+        "<span class='pill entity-type-harness'>local/API model path</span>"
+        "</div>"
+        "<div class='setup-flow'>"
+        "<div class='setup-flow-step'><strong>1. Model</strong><span class='muted'>Provider, model slug, endpoint.</span></div>"
+        "<div class='setup-flow-step'><strong>2. Intent</strong><span class='muted'>Goal, OS, access, privacy.</span></div>"
+        "<div class='setup-flow-step'><strong>3. Install</strong><span class='muted'>Recommend, dry-run, install.</span></div>"
+        "<div class='setup-flow-step'><strong>4. Attach ctx</strong><span class='muted'>Graph/wiki recommendations flow into the harness.</span></div>"
+        "</div>"
         "<div class='wizard-layout'>"
         "<form id='harness-wizard-form' class='card'>"
         "<div class='wizard-step'><strong>1. Model</strong>"
@@ -3405,7 +3424,7 @@ def _render_harness_wizard() -> str:
         "})();\n"
         "</script>"
     )
-    return _layout("Harness", body)
+    return _layout("Harness Setup", body)
 
 
 def _kpi_summary():

@@ -1527,7 +1527,7 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     assert "href='/graph'" in out
     assert "href='/config'" in out
     assert ">Wiki<" in out
-    assert ">Harness<" in out
+    assert ">Harness Setup<" in out
     assert ">KPIs<" in out
     assert ">Config<" in out
     assert "--surface" in out
@@ -1597,7 +1597,9 @@ def test_render_harness_wizard_guides_model_choice_and_real_commands(
 
     html_out = cm._render_harness_wizard()
 
-    assert "<h1>Harness wizard</h1>" in html_out
+    assert "<h1>Harness Setup</h1>" in html_out
+    assert "class='setup-flow'" in html_out
+    assert "Model -> intent -> install -> attach ctx" in html_out
     assert "id='harness-wizard-form'" in html_out
     assert "Model provider" in html_out
     assert "Development goal" in html_out
