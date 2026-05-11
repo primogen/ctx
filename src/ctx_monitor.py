@@ -17,6 +17,7 @@ Routes:
     /wiki/<slug>?type=<entity>  One wiki entity page (frontmatter + body)
     /graph                      Built-in graph explorer + popular seeds
     /graph?slug=<slug>&type=... Focus graph view on a specific entity
+    /manage                     Search/edit/delete/import catalog entities
     /harness                    Manual harness setup for user-owned LLMs
     /config                     Editable ctx config with defaults fallback
     /status                     Durable queue + graph/wiki artifact state
@@ -30,6 +31,8 @@ Routes:
     /api/runtime.json           Generic harness validation/escalation summary
     /api/skill/<slug>.json      Sidecar passthrough
     /api/graph/<slug>.json      Dashboard-shaped neighborhood; accepts type
+    /api/entities/search.json   Search wiki entities across supported types
+    /api/entity/<slug>.json     Wiki entity frontmatter + Markdown body
     /api/config.json            Effective/default/user config
     /api/kpi.json               DashboardSummary passthrough
 
@@ -72,6 +75,7 @@ from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
+from ctx.utils._fs_utils import safe_atomic_write_text as _safe_atomic_write_text
 from ctx.utils._safe_name import is_safe_source_name
 
 
@@ -231,6 +235,260 @@ def _wiki_entity_path(slug: str, entity_type: str | None = None) -> Path | None:
     return None
 
 
+def _wiki_entity_target_path(slug: str, entity_type: str) -> Path:
+    """Return the canonical wiki entity path for a new/updated entity."""
+    if not _is_safe_slug(slug):
+        raise ValueError(f"invalid slug: {slug!r}")
+    normalized = _normalize_dashboard_entity_type(entity_type)
+    if normalized is None:
+        raise ValueError(f"unsupported entity_type: {entity_type!r}")
+    for sub, current_type, recursive in _DASHBOARD_ENTITY_SOURCES:
+        if normalized != current_type:
+            continue
+        if recursive:
+            return _wiki_dir() / "entities" / sub / _mcp_shard(slug) / f"{slug}.md"
+        return _wiki_dir() / "entities" / sub / f"{slug}.md"
+    raise ValueError(f"unsupported entity_type: {entity_type!r}")
+
+
+def _iter_wiki_entity_paths(
+    entity_type: str | None = None,
+) -> list[tuple[str, str, Path]]:
+    normalized = _normalize_dashboard_entity_type(entity_type) if entity_type else None
+    if entity_type is not None and normalized is None:
+        raise ValueError(f"unsupported entity_type: {entity_type!r}")
+    base = _wiki_dir() / "entities"
+    if not base.is_dir():
+        return []
+    rows: list[tuple[str, str, Path]] = []
+    for sub, current_type, recursive in _DASHBOARD_ENTITY_SOURCES:
+        if normalized is not None and normalized != current_type:
+            continue
+        root = base / sub
+        if not root.is_dir():
+            continue
+        paths = root.rglob("*.md") if recursive else root.glob("*.md")
+        for path in paths:
+            slug = path.stem
+            if _is_safe_slug(slug):
+                rows.append((slug, current_type, path))
+    return sorted(rows, key=lambda row: (row[1], row[0].lower(), row[2].as_posix()))
+
+
+def _wiki_entity_detail(slug: str, entity_type: str | None = None) -> dict[str, Any] | None:
+    normalized = _normalize_dashboard_entity_type(entity_type) if entity_type else None
+    if entity_type is not None and normalized is None:
+        raise ValueError(f"unsupported entity_type: {entity_type!r}")
+    path = _wiki_entity_path(slug, entity_type=normalized)
+    if path is None:
+        return None
+    text = path.read_text(encoding="utf-8", errors="replace")
+    frontmatter, body = _parse_frontmatter(text)
+    detected_type = normalized or _normalize_dashboard_entity_type(frontmatter.get("type")) or "skill"
+    return {
+        "slug": slug,
+        "type": detected_type,
+        "path": str(path),
+        "frontmatter": frontmatter,
+        "body": body,
+    }
+
+
+def _search_wiki_entities(
+    query: str = "",
+    entity_type: str | None = None,
+    *,
+    limit: int = 80,
+) -> list[dict[str, Any]]:
+    terms = [term for term in re.split(r"\s+", query.lower().strip()) if term]
+    results: list[dict[str, Any]] = []
+    for slug, current_type, path in _iter_wiki_entity_paths(entity_type):
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:4096]
+        except OSError:
+            continue
+        frontmatter, body = _parse_frontmatter(head)
+        tags = _frontmatter_tags(frontmatter.get("tags", ""), limit=None)
+        description = _frontmatter_text(frontmatter.get("description", ""))
+        title = _frontmatter_text(frontmatter.get("title") or frontmatter.get("name") or slug)
+        haystack = " ".join([slug, current_type, title, description, " ".join(tags), body]).lower()
+        if terms and not all(term in haystack for term in terms):
+            continue
+        results.append({
+            "slug": slug,
+            "type": current_type,
+            "title": title,
+            "description": description,
+            "tags": tags[:12],
+            "path": str(path),
+            "href": _entity_wiki_href(slug, current_type),
+        })
+        if len(results) >= max(1, limit):
+            break
+    return results
+
+
+def _normalize_entity_tags(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        parts = raw
+    else:
+        parts = re.split(r"[,\n]+", str(raw or ""))
+    tags: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        tag = re.sub(r"[^a-z0-9_.+-]+", "-", str(part).lower()).strip("-_.+")
+        if tag and tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+    return tags
+
+
+def _yaml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return '""'
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _./:+@-]*", text):
+        return text
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _frontmatter_to_text(frontmatter: dict[str, Any]) -> str:
+    lines = ["---"]
+    for key, value in frontmatter.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, list):
+            rendered = ", ".join(_yaml_scalar(item) for item in value)
+            lines.append(f"{key}: [{rendered}]")
+        else:
+            lines.append(f"{key}: {_yaml_scalar(value)}")
+    lines.append("---")
+    return "\n".join(lines) + "\n"
+
+
+def _entity_content_from_payload(
+    payload: dict[str, Any],
+    *,
+    existing: dict[str, Any] | None = None,
+) -> tuple[str, str, str]:
+    slug = str(payload.get("slug", "")).strip()
+    if not _is_safe_slug(slug):
+        raise ValueError(f"invalid slug: {slug!r}")
+    entity_type = str(payload.get("entity_type", "skill")).strip() or "skill"
+    normalized = _normalize_dashboard_entity_type(entity_type)
+    if normalized is None:
+        raise ValueError(f"unsupported entity_type: {entity_type!r}")
+    body = str(payload.get("body", "")).strip()
+    if not body:
+        raise ValueError("body is required")
+    title = str(payload.get("title") or slug).strip()
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    frontmatter = dict(existing or {})
+    frontmatter["title"] = title
+    frontmatter["type"] = normalized
+    frontmatter.setdefault("created", today)
+    frontmatter["updated"] = today
+    description = str(payload.get("description") or "").strip()
+    if description or "description" in payload:
+        frontmatter.pop("description", None)
+    if description:
+        frontmatter["description"] = description
+    tags = _normalize_entity_tags(payload.get("tags"))
+    if tags or "tags" in payload:
+        frontmatter.pop("tags", None)
+    if tags:
+        frontmatter["tags"] = tags
+    source_url = str(payload.get("source_url") or "").strip()
+    if source_url or "source_url" in payload:
+        frontmatter.pop("source_url", None)
+    if source_url:
+        frontmatter["source_url"] = source_url
+    return slug, normalized, _frontmatter_to_text(frontmatter) + body.rstrip() + "\n"
+
+
+def _queue_entity_refresh(
+    *,
+    entity_type: str,
+    slug: str,
+    entity_path: Path,
+    content: str,
+    action: str,
+) -> None:
+    wiki = _wiki_dir()
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type=entity_type,
+        slug=slug,
+        entity_path=entity_path,
+        content=content,
+        action=action,
+        source="ctx-monitor",
+    )
+    wiki_queue.enqueue_maintenance_job(
+        wiki,
+        kind=wiki_queue.GRAPH_EXPORT_JOB,
+        payload={"reason": f"entity-{action}", "entity_type": entity_type, "slug": slug},
+        source="ctx-monitor",
+    )
+
+
+def _upsert_wiki_entity(payload: dict[str, Any]) -> tuple[bool, str]:
+    try:
+        requested_slug = str(payload.get("slug", "")).strip()
+        requested_type = str(payload.get("entity_type", "skill")).strip() or "skill"
+        existing_detail = _wiki_entity_detail(requested_slug, requested_type)
+        existing_meta = (
+            existing_detail.get("frontmatter")
+            if isinstance(existing_detail, dict)
+            else None
+        )
+        slug, entity_type, content = _entity_content_from_payload(
+            payload,
+            existing=existing_meta if isinstance(existing_meta, dict) else None,
+        )
+        path = _wiki_entity_target_path(slug, entity_type)
+        with file_lock(path):
+            _safe_atomic_write_text(path, content, encoding="utf-8")
+        _queue_entity_refresh(
+            entity_type=entity_type,
+            slug=slug,
+            entity_path=path,
+            content=content,
+            action="upsert",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+    return True, f"saved {entity_type}:{slug} and queued graph refresh"
+
+
+def _delete_wiki_entity(slug: str, entity_type: str) -> tuple[bool, str]:
+    try:
+        normalized = _normalize_dashboard_entity_type(entity_type)
+        if normalized is None:
+            raise ValueError(f"unsupported entity_type: {entity_type!r}")
+        if not _is_safe_slug(slug):
+            raise ValueError(f"invalid slug: {slug!r}")
+        path = _wiki_entity_path(slug, entity_type=normalized)
+        if path is None:
+            return False, f"no wiki entity found for {normalized}:{slug}"
+        with file_lock(path):
+            path.unlink()
+        _queue_entity_refresh(
+            entity_type=normalized,
+            slug=slug,
+            entity_path=path,
+            content="",
+            action="delete",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+    return True, f"deleted {normalized}:{slug} and queued graph refresh"
+
+
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     """Split frontmatter from body using the canonical wiki parser."""
     return parse_frontmatter_and_body(text)
@@ -252,6 +510,10 @@ def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
     if limit <= 3:
         return value[:limit], True
     return value[: limit - 3].rstrip() + "...", True
+
+
+def _json_for_script(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str).replace("</", "<\\/")
 
 
 def _frontmatter_tags(value: Any, *, limit: int | None = 6) -> list[str]:
@@ -1538,6 +1800,12 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 .harness-card[data-fit-hidden="true"] { display: none; }
 .harness-card.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
 .harness-card button { align-self: flex-start; }
+.manage-results { display: flex; flex-direction: column; gap: 0.45rem; max-height: 65vh; overflow-y: auto; }
+.manage-result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.25rem 0.5rem;
+                 text-align: left; border: 1px solid var(--border); border-radius: var(--radius);
+                 padding: 0.65rem 0.75rem; background: var(--surface); cursor: pointer; }
+.manage-result:hover { border-color: var(--accent); background: var(--surface-2); }
+.manage-result .muted { grid-column: 1 / -1; font-size: 0.82rem; }
 @media (max-width: 860px) {
     .wiki-entity-grid { grid-template-columns: 1fr; }
     .wizard-layout, .wizard-grid, .setup-header, .setup-flow { grid-template-columns: 1fr; }
@@ -1580,6 +1848,7 @@ def _layout(title: str, body: str) -> str:
         ("skills", "Skills", "/skills"),
         ("wiki", "Wiki", "/wiki"),
         ("graph", "Graph", "/graph"),
+        ("manage", "Manage", "/manage"),
         ("harness", "Harness Setup", "/harness"),
         ("config", "Config", "/config"),
         ("status", "Status", "/status"),
@@ -3163,6 +3432,159 @@ def _render_wiki_index() -> str:
     return _layout("Wiki", body)
 
 
+def _render_manage(mutations_enabled: bool | None = None) -> str:
+    """Render catalog management for wiki entities and graph refresh queueing."""
+    if mutations_enabled is None:
+        mutations_enabled = _MONITOR_MUTATIONS_ENABLED
+    token = _MONITOR_TOKEN if mutations_enabled else ""
+    initial_results = _search_wiki_entities(limit=40)
+    type_options = "".join(
+        f"<option value='{html.escape(entity_type)}'>{html.escape(entity_type)}</option>"
+        for entity_type in _DASHBOARD_ENTITY_TYPES
+    )
+    initial_json = _json_for_script(initial_results)
+    read_only = (
+        ""
+        if mutations_enabled
+        else (
+            "<div class='card'><strong>Read-only mode.</strong> Catalog edits are "
+            "disabled because ctx-monitor is not bound to a loopback address.</div>"
+        )
+    )
+    disabled = "" if mutations_enabled else " disabled"
+    body = (
+        "<h1>Manage catalog</h1>"
+        "<p class='muted'>Search skills, agents, MCP servers, and harnesses. "
+        "Edit the wiki page, delete stale entries, or add a new entity. Saves "
+        "write into <code>~/.claude/skill-wiki/entities/</code> and queue graph "
+        "refresh work for the knowledge graph.</p>"
+        + read_only
+        +
+        "<div class='wizard-layout'>"
+        "<section class='card'>"
+        "<h2>Search catalog</h2>"
+        "<div class='wizard-grid'>"
+        "<label>Query"
+        "<input id='manage-search' type='search' placeholder='slug, tag, description' "
+        "autocomplete='off'></label>"
+        "<label>Type"
+        f"<select id='manage-type'><option value=''>all types</option>{type_options}</select>"
+        "</label>"
+        "</div>"
+        "<p id='manage-search-status' class='muted'>Loading...</p>"
+        "<div id='manage-results' class='manage-results'></div>"
+        "</section>"
+        "<section class='card'>"
+        "<h2>Add or update entity</h2>"
+        "<form id='entity-editor-form'>"
+        "<div class='wizard-grid'>"
+        "<label>Slug <span class='pill grade-A'>Required</span>"
+        "<input name='slug' required pattern='[a-z0-9][a-z0-9_.+-]*' "
+        "placeholder='custom-reviewer'></label>"
+        "<label>Type <span class='pill grade-A'>Required</span>"
+        f"<select name='entity_type' required>{type_options}</select></label>"
+        "<label>Title <span class='pill grade-A'>Required</span>"
+        "<input name='title' required placeholder='Custom Reviewer'></label>"
+        "<label>Tags"
+        "<input name='tags' placeholder='python, review, policy'></label>"
+        "<label class='wide'>Description"
+        "<input name='description' placeholder='What this entity does and when to use it'></label>"
+        "<label class='wide'>Source URL"
+        "<input name='source_url' placeholder='https://github.com/org/repo'></label>"
+        "<label class='wide'>Markdown body <span class='pill grade-A'>Required</span>"
+        "<textarea name='body' required rows='16' "
+        "placeholder='# Custom Reviewer\n\nInstall and usage notes...'></textarea></label>"
+        "</div>"
+        "<div style='display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.8rem;'>"
+        f"<button type='submit'{disabled}>Save to wiki + graph queue</button>"
+        "<button type='button' id='entity-new-button'>New</button>"
+        f"<button type='button' id='entity-delete-button' data-testid='entity-delete-button'{disabled}>Delete selected</button>"
+        "</div>"
+        "<p id='entity-editor-status' class='muted'></p>"
+        "</form>"
+        "</section>"
+        "</div>"
+        "<script>\n"
+        f"const MANAGE_MUTATIONS_ENABLED = {json.dumps(mutations_enabled)};\n"
+        f"const MANAGE_TOKEN = {json.dumps(token)};\n"
+        f"let manageResults = {initial_json};\n"
+        "const resultsEl = document.getElementById('manage-results');\n"
+        "const statusEl = document.getElementById('manage-search-status');\n"
+        "const form = document.getElementById('entity-editor-form');\n"
+        "const editorStatus = document.getElementById('entity-editor-status');\n"
+        "let selected = null;\n"
+        "function escapeHtml(value) {\n"
+        "  return String(value ?? '').replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[ch]));\n"
+        "}\n"
+        "function entityLabel(row) { return row.type + ':' + row.slug; }\n"
+        "function setStatus(text) { editorStatus.textContent = text || ''; }\n"
+        "function fillForm(detail) {\n"
+        "  selected = {slug: detail.slug, type: detail.type};\n"
+        "  const fm = detail.frontmatter || {};\n"
+        "  form.slug.value = detail.slug || '';\n"
+        "  form.entity_type.value = detail.type || 'skill';\n"
+        "  form.title.value = fm.title || fm.name || detail.slug || '';\n"
+        "  form.description.value = fm.description || '';\n"
+        "  form.tags.value = Array.isArray(fm.tags) ? fm.tags.join(', ') : (fm.tags || '');\n"
+        "  form.source_url.value = fm.source_url || fm.repo_url || fm.github_url || fm.homepage_url || '';\n"
+        "  form.body.value = detail.body || '';\n"
+        "  setStatus('editing ' + entityLabel(selected));\n"
+        "}\n"
+        "function renderResults(rows) {\n"
+        "  statusEl.textContent = rows.length + ' result' + (rows.length === 1 ? '' : 's');\n"
+        "  if (!rows.length) { resultsEl.innerHTML = '<p class=\"muted\">No entities found.</p>'; return; }\n"
+        "  resultsEl.innerHTML = rows.map(row => '<button type=\"button\" class=\"manage-result\" data-slug=\"' + escapeHtml(row.slug) + '\" data-type=\"' + escapeHtml(row.type) + '\"><strong>' + escapeHtml(row.slug) + '</strong><span class=\"pill entity-type-' + escapeHtml(row.type) + '\">' + escapeHtml(row.type) + '</span><span class=\"muted\">' + escapeHtml(row.description || row.title || '') + '</span></button>').join('');\n"
+        "  document.querySelectorAll('.manage-result').forEach(btn => btn.addEventListener('click', async () => {\n"
+        "    const slug = btn.dataset.slug; const type = btn.dataset.type;\n"
+        "    const res = await fetch('/api/entity/' + encodeURIComponent(slug) + '.json?type=' + encodeURIComponent(type));\n"
+        "    if (!res.ok) { setStatus('load failed: ' + res.statusText); return; }\n"
+        "    fillForm(await res.json());\n"
+        "  }));\n"
+        "}\n"
+        "let timer = null;\n"
+        "async function searchNow() {\n"
+        "  const q = document.getElementById('manage-search').value.trim();\n"
+        "  const type = document.getElementById('manage-type').value;\n"
+        "  const url = '/api/entities/search.json?q=' + encodeURIComponent(q) + (type ? '&type=' + encodeURIComponent(type) : '');\n"
+        "  statusEl.textContent = 'Searching...';\n"
+        "  const res = await fetch(url);\n"
+        "  if (!res.ok) { statusEl.textContent = 'Search failed: ' + res.statusText; return; }\n"
+        "  manageResults = (await res.json()).results || [];\n"
+        "  renderResults(manageResults);\n"
+        "}\n"
+        "function scheduleSearch() { clearTimeout(timer); timer = setTimeout(searchNow, 250); }\n"
+        "document.getElementById('manage-search').addEventListener('input', scheduleSearch);\n"
+        "document.getElementById('manage-type').addEventListener('change', searchNow);\n"
+        "document.getElementById('entity-new-button').addEventListener('click', () => { selected = null; form.reset(); setStatus('new entity'); });\n"
+        "async function post(url, payload) {\n"
+        "  if (!MANAGE_MUTATIONS_ENABLED) return {ok:false, detail:'mutations disabled on non-loopback bind'};\n"
+        "  const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json', 'X-CTX-Monitor-Token':MANAGE_TOKEN}, body:JSON.stringify(payload)});\n"
+        "  let data = {}; try { data = await res.json(); } catch (_) {}\n"
+        "  data.ok = res.ok && data.ok !== false;\n"
+        "  return data;\n"
+        "}\n"
+        "form.addEventListener('submit', async ev => {\n"
+        "  ev.preventDefault();\n"
+        "  const payload = Object.fromEntries(new FormData(form).entries());\n"
+        "  setStatus('saving...');\n"
+        "  const data = await post('/api/entity/upsert', payload);\n"
+        "  setStatus(data.detail || (data.ok ? 'saved' : 'save failed'));\n"
+        "  if (data.ok) searchNow();\n"
+        "});\n"
+        "document.getElementById('entity-delete-button').addEventListener('click', async () => {\n"
+        "  const slug = form.slug.value.trim(); const type = form.entity_type.value;\n"
+        "  if (!slug || !confirm('Delete ' + type + ':' + slug + ' from the wiki catalog?')) return;\n"
+        "  setStatus('deleting...');\n"
+        "  const data = await post('/api/entity/delete', {slug:slug, entity_type:type});\n"
+        "  setStatus(data.detail || (data.ok ? 'deleted' : 'delete failed'));\n"
+        "  if (data.ok) { selected = null; form.reset(); searchNow(); }\n"
+        "});\n"
+        "renderResults(manageResults);\n"
+        "</script>"
+    )
+    return _layout("Manage catalog", body)
+
+
 def _harness_wizard_entries(limit: int = 24) -> list[dict[str, Any]]:
     """Return catalog harness pages for the manual dashboard wizard."""
     harness_dir = _wiki_dir() / "entities" / "harnesses"
@@ -4296,6 +4718,8 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_html(_render_logs())
             elif path == "/graph":
                 self._send_html(_render_graph(qs.get("slug"), qs.get("type")))
+            elif path == "/manage":
+                self._send_html(_render_manage(self._mutations_enabled()))
             elif path == "/harness":
                 self._send_html(_render_harness_wizard())
             elif path == "/config":
@@ -4328,6 +4752,29 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_json(_runtime_lifecycle_summary())
             elif path == "/api/config.json":
                 self._send_json(_effective_config_payload())
+            elif path == "/api/entities/search.json":
+                try:
+                    limit = max(1, min(int(qs.get("limit", 80)), 200))
+                    results = _search_wiki_entities(
+                        qs.get("q", ""),
+                        qs.get("type") or None,
+                        limit=limit,
+                    )
+                except ValueError as exc:
+                    self._send_json_status(400, {"detail": str(exc)})
+                    return
+                self._send_json({"results": results, "total": len(results)})
+            elif path.startswith("/api/entity/") and path.endswith(".json"):
+                slug = unquote(path[len("/api/entity/"): -len(".json")])
+                try:
+                    detail = _wiki_entity_detail(slug, qs.get("type"))
+                except ValueError as exc:
+                    self._send_json_status(400, {"detail": str(exc)})
+                    return
+                if detail is None:
+                    self._send_json_status(404, {"detail": f"no wiki entity for {slug}"})
+                else:
+                    self._send_json(detail)
             elif path.startswith("/api/skill/") and path.endswith(".json"):
                 slug = unquote(path[len("/api/skill/"): -len(".json")])
                 sidecar = _load_sidecar(slug, entity_type=qs.get("type"))
@@ -4428,6 +4875,18 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                     return
                 result = _save_config_updates(updates)
                 self._send_json_status(200 if result.get("ok") else 400, result)
+            elif path == "/api/entity/upsert":
+                ok, msg = _upsert_wiki_entity(body)
+                self._send_json_status(
+                    200 if ok else 400, {"ok": ok, "detail": msg},
+                )
+            elif path == "/api/entity/delete":
+                slug = str(body.get("slug", "")).strip()
+                etype = str(body.get("entity_type", "skill")).strip() or "skill"
+                ok, msg = _delete_wiki_entity(slug, etype)
+                self._send_json_status(
+                    200 if ok else 400, {"ok": ok, "detail": msg},
+                )
             else:
                 self._send_404(path)
         except (BrokenPipeError, ConnectionAbortedError):
