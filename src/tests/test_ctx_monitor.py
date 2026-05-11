@@ -1827,7 +1827,29 @@ def test_render_docs_lists_repo_docs(
         encoding="utf-8",
     )
     (tmp_path / "docs" / "index.md").write_text(
-        "# Home\n\nRepo docs home.\n\n!!! tip \"Install\"\n\n    ctx-init --graph\n",
+        "\n".join([
+            "# Home",
+            "",
+            "Repo docs home.",
+            "",
+            "!!! tip \"Install\"",
+            "",
+            "    ctx-init --graph",
+            "",
+            "## Explore the docs",
+            "",
+            "<div class=\"grid cards\" markdown>",
+            "",
+            "-   **Knowledge graph**",
+            "",
+            "    ---",
+            "",
+            "    Graph docs.",
+            "",
+            "    [:octicons-arrow-right-24: Knowledge graph](knowledge-graph.md)",
+            "",
+            "</div>",
+        ]),
         encoding="utf-8",
     )
     (tmp_path / "docs" / "dashboard.md").write_text(
@@ -1859,6 +1881,10 @@ def test_render_docs_lists_repo_docs(
     assert "<strong>Monitor</strong> skills, agents, MCPs, harnesses, and graph state." in html_out
     assert "Connect ctx to a non-Claude harness." in html_out
     assert "class=\"admonition tip\"" in html_out
+    assert '<div class="grid cards">' in html_out
+    assert "<strong>Knowledge graph</strong>" in html_out
+    assert "-&gt; Knowledge graph" in html_out
+    assert ":octicons-arrow-right-24:" not in html_out
     assert "!!! tip" not in html_out
     assert "**Monitor**" not in html_out
     assert "id='docs-search'" in html_out

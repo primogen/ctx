@@ -39,9 +39,9 @@ Routes:
 
 Design notes:
 
-- No Flask / Starlette / FastAPI dependency. stdlib only — keeps
-  ``pip install claude-ctx`` lean. Request handling is threaded so one
-  open SSE client cannot monopolize the local dashboard.
+- No Flask / Starlette / FastAPI dependency. Request handling is threaded
+  so one open SSE client cannot monopolize the local dashboard. Repo-doc
+  rendering uses the package's Markdown dependencies for MkDocs-like output.
 - GET views read append-only files. POST mutation endpoints require
   loopback access, a per-process token, and same-origin headers.
 - SSE endpoint tails ``~/.claude/ctx-audit.jsonl`` and pushes each new
@@ -1857,6 +1857,13 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 .docs-page .admonition-title { font-weight: 750; margin: 0 0 0.45rem; }
 .docs-page .tabbed-set { border: 1px solid var(--border); border-radius: var(--radius);
                          padding: 0.75rem; margin: 1rem 0; }
+.docs-page .grid.cards > ul { list-style: none; padding-left: 0; display: grid;
+                              grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+                              gap: 0.75rem; }
+.docs-page .grid.cards > ul > li { border: 1px solid var(--border); border-radius: var(--radius);
+                                   background: var(--surface-2); padding: 0.85rem 0.95rem; }
+.docs-page .grid.cards hr { border: 0; border-top: 1px solid var(--border); margin: 0.55rem 0; }
+.docs-page .headerlink { color: var(--muted-text); font-size: 0.78em; margin-left: 0.35rem; }
 .quality-signal-table { table-layout: fixed; }
 .quality-signal-table td:last-child code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .wizard-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
@@ -3784,6 +3791,8 @@ def _docs_tabs(entries: list[dict[str, str]]) -> list[dict[str, Any]]:
 
 def _render_docs_markdown(markdown_text: str) -> str:
     """Render repo docs with MkDocs-like Markdown support when available."""
+    markdown_text = re.sub(r":octicons-arrow-right-24:", "->", markdown_text)
+    markdown_text = re.sub(r":octicons-[a-z0-9-]+:", "", markdown_text)
     try:
         import markdown as markdown_lib  # type: ignore[import-untyped]
 
@@ -3795,6 +3804,7 @@ def _render_docs_markdown(markdown_text: str) -> str:
                 "def_list",
                 "fenced_code",
                 "footnotes",
+                "md_in_html",
                 "tables",
                 "toc",
                 "pymdownx.details",
