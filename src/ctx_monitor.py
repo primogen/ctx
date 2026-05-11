@@ -1852,6 +1852,11 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
              background: var(--surface); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
 .docs-page-source { display: flex; justify-content: space-between; gap: 0.75rem;
                     align-items: center; margin-bottom: 0.75rem; }
+.docs-page .admonition { border-left: 4px solid var(--accent); background: var(--surface-2);
+                         border-radius: var(--radius); padding: 0.75rem 0.9rem; margin: 1rem 0; }
+.docs-page .admonition-title { font-weight: 750; margin: 0 0 0.45rem; }
+.docs-page .tabbed-set { border: 1px solid var(--border); border-radius: var(--radius);
+                         padding: 0.75rem; margin: 1rem 0; }
 .quality-signal-table { table-layout: fixed; }
 .quality-signal-table td:last-child code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .wizard-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
@@ -3777,17 +3782,57 @@ def _docs_tabs(entries: list[dict[str, str]]) -> list[dict[str, Any]]:
     return tabs
 
 
+def _render_docs_markdown(markdown_text: str) -> str:
+    """Render repo docs with MkDocs-like Markdown support when available."""
+    try:
+        import markdown as markdown_lib  # type: ignore[import-untyped]
+
+        return str(markdown_lib.markdown(
+            markdown_text,
+            extensions=[
+                "admonition",
+                "attr_list",
+                "def_list",
+                "fenced_code",
+                "footnotes",
+                "tables",
+                "toc",
+                "pymdownx.details",
+                "pymdownx.superfences",
+                "pymdownx.tabbed",
+                "pymdownx.tasklist",
+                "pymdownx.inlinehilite",
+            ],
+            extension_configs={
+                "toc": {"permalink": True},
+                "pymdownx.tabbed": {"alternate_style": True},
+                "pymdownx.tasklist": {"custom_checkbox": True},
+            },
+            output_format="html5",
+        ))
+    except Exception:
+        return _render_wiki_markdown(markdown_text)
+
+
+def _docs_search_text(entry: dict[str, str]) -> str:
+    text = f"{entry['title']} {entry['path']} {entry['summary']} {entry['body']}"
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    text = re.sub(r"!!!\s+\w+(?:\s+\"[^\"]+\")?", " ", text)
+    text = re.sub(r"[*_`#>\[\]().!:-]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
 def _render_docs_page(entry: dict[str, str], tab_slug: str) -> str:
     page_anchor = f"doc-{tab_slug}-{_doc_anchor(entry['path'])}"
     source_url = f"https://github.com/stevesolun/ctx/blob/main/{quote(entry['path'])}"
     return (
         f"<article id='{html.escape(page_anchor)}' class='docs-page wiki-body' "
-        f"data-doc-page='{html.escape((entry['title'] + ' ' + entry['path'] + ' ' + entry['body']).lower())}'>"
+        f"data-doc-page='{html.escape(_docs_search_text(entry))}'>"
         "<div class='docs-page-source'>"
         f"<code>{html.escape(entry['path'])}</code>"
         f"<a href='{html.escape(source_url)}'>source -></a>"
         "</div>"
-        f"{_render_wiki_markdown(entry['body'])}"
+        f"{_render_docs_markdown(entry['body'])}"
         "</article>"
     )
 

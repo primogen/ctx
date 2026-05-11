@@ -1827,11 +1827,11 @@ def test_render_docs_lists_repo_docs(
         encoding="utf-8",
     )
     (tmp_path / "docs" / "index.md").write_text(
-        "# Home\n\nRepo docs home.\n",
+        "# Home\n\nRepo docs home.\n\n!!! tip \"Install\"\n\n    ctx-init --graph\n",
         encoding="utf-8",
     )
     (tmp_path / "docs" / "dashboard.md").write_text(
-        "# Dashboard\n\nMonitor skills, agents, MCPs, harnesses, and graph state.\n",
+        "# Dashboard\n\n- **Monitor** skills, agents, MCPs, harnesses, and graph state.\n",
         encoding="utf-8",
     )
     (tmp_path / "docs" / "harness" / "attaching-to-hosts.md").write_text(
@@ -1856,8 +1856,11 @@ def test_render_docs_lists_repo_docs(
     assert "docs/dashboard.md" in html_out
     assert "docs/harness/attaching-to-hosts.md" in html_out
     assert "graph/README.md" in html_out
-    assert "Monitor skills, agents, MCPs, harnesses, and graph state." in html_out
+    assert "<strong>Monitor</strong> skills, agents, MCPs, harnesses, and graph state." in html_out
     assert "Connect ctx to a non-Claude harness." in html_out
+    assert "class=\"admonition tip\"" in html_out
+    assert "!!! tip" not in html_out
+    assert "**Monitor**" not in html_out
     assert "id='docs-search'" in html_out
     assert "https://stevesolun.github.io/ctx/" in html_out
     assert "doc-card" not in html_out
