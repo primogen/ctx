@@ -1102,8 +1102,15 @@ def test_render_mcp_wiki_entity_has_tabs_subgraph_and_quality(
     assert "data-entity-tab='quality'" in html_out
     assert "<h2>Subgraph</h2>" in html_out
     assert "data-testid='entity-subgraph-graph'" in html_out
-    assert "data-testid='entity-subgraph-node'" in html_out
-    assert "data-testid='entity-subgraph-edge'" in html_out
+    assert "data-testid='entity-subgraph-3d'" in html_out
+    assert "data-testid=\"entity-subgraph-node\"" in html_out
+    assert "data-testid=\"entity-subgraph-edge\"" in html_out
+    assert "id='entity-subgraph-zoom-in'" in html_out
+    assert "id='entity-subgraph-zoom-out'" in html_out
+    assert "drag to rotate" in html_out
+    assert "wheel to zoom" in html_out
+    assert "data-testid='entity-subgraph-node-detail'" in html_out
+    assert "data-testid='entity-subgraph-edge-detail'" in html_out
     assert "Open interactive graph view" not in html_out
     assert "href='/wiki/github-actions?type=skill'" in html_out
     assert "href='/wiki/repo-reviewer?type=agent'" in html_out
