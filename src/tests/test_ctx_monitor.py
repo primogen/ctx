@@ -1283,6 +1283,56 @@ def test_graph_neighborhood_resolves_partial_slug(monkeypatch) -> None:
     assert "brainstorming" in result["suggestions"]
 
 
+def test_graph_neighborhood_sizes_nodes_by_score_usage_and_popularity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import networkx as nx
+
+    G = nx.Graph()
+    G.add_node(
+        "skill:hub",
+        label="hub",
+        type="skill",
+        tags=["python"],
+        quality_score=0.95,
+        usage_score=0.8,
+    )
+    G.add_node(
+        "skill:leaf-low",
+        label="leaf-low",
+        type="skill",
+        tags=["python"],
+        quality_score=0.1,
+        usage_score=0.0,
+    )
+    G.add_node(
+        "skill:leaf-high",
+        label="leaf-high",
+        type="skill",
+        tags=["python"],
+        quality_score=0.85,
+        usage_score=0.7,
+    )
+    G.add_edge("skill:hub", "skill:leaf-low", weight=0.2)
+    G.add_edge("skill:hub", "skill:leaf-high", weight=0.9)
+    monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
+
+    result = cm._graph_neighborhood("hub", entity_type="skill")
+    sizes = {
+        node["data"]["id"]: node["data"]["node_size"]
+        for node in result["nodes"]
+    }
+
+    assert sizes["skill:hub"] > sizes["skill:leaf-high"] > sizes["skill:leaf-low"]
+    assert 8 <= sizes["skill:leaf-low"] <= 24
+    assert 8 <= sizes["skill:hub"] <= 24
+    hub = next(node["data"] for node in result["nodes"] if node["data"]["id"] == "skill:hub")
+    assert hub["size_signal"] > 0
+    assert "quality 0.950" in hub["size_reason"]
+    assert "usage 0.800" in hub["size_reason"]
+    assert "popularity" in hub["size_reason"]
+
+
 def test_graph_helpers_reuse_graph_loaded_from_same_file(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,

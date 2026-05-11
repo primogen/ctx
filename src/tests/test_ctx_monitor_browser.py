@@ -113,8 +113,22 @@ def test_graph_page_uses_builtin_svg_renderer(
 ) -> None:
     G = nx.Graph()
     G.add_node("skill:python-patterns", label="python-patterns", type="skill", tags=["python"])
-    G.add_node("agent:code-reviewer", label="code-reviewer", type="agent", tags=["review"])
-    G.add_node("mcp-server:github-mcp-server", label="github-mcp-server", type="mcp-server", tags=["github"])
+    G.add_node(
+        "agent:code-reviewer",
+        label="code-reviewer",
+        type="agent",
+        tags=["review"],
+        quality_score=0.95,
+        usage_score=0.8,
+    )
+    G.add_node(
+        "mcp-server:github-mcp-server",
+        label="github-mcp-server",
+        type="mcp-server",
+        tags=["github"],
+        quality_score=0.1,
+        usage_score=0.0,
+    )
     G.add_node("harness:langgraph", label="langgraph", type="harness", tags=["agent"])
     G.add_edge("skill:python-patterns", "agent:code-reviewer", weight=0.9, shared_tags=["review"])
     G.add_edge("skill:python-patterns", "mcp-server:github-mcp-server", weight=0.8, shared_tags=["github"])
@@ -131,6 +145,13 @@ def test_graph_page_uses_builtin_svg_renderer(
         assert page.locator("[data-testid='graph-svg-node']").count() == 4
         assert page.locator("[data-testid='graph-fallback-node']").count() == 4
         assert "Graph renderer unavailable" not in page.locator("#cy").inner_text()
+        reviewer_radius = float(page.locator(
+            "[data-3d-node-id='agent:code-reviewer'] [data-testid='graph-svg-node']",
+        ).get_attribute("r") or "0")
+        mcp_radius = float(page.locator(
+            "[data-3d-node-id='mcp-server:github-mcp-server'] [data-testid='graph-svg-node']",
+        ).get_attribute("r") or "0")
+        assert reviewer_radius > mcp_radius
 
         page.fill("#tag-filter", "review")
         _wait_for_browser_state(
