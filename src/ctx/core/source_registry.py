@@ -84,7 +84,7 @@ BUILTIN_EXTERNAL_SOURCES: tuple[ExternalSourceRecord, ...] = (
     ExternalSourceRecord(
         name="academic-research-skills",
         url="https://github.com/Imbad0202/academic-research-skills",
-        revision="153203d129b1",
+        revision="153203d129b1d0e83dd65ab96340048257cd45b2",
         license="CC BY-NC 4.0",
         source_kind="skill-suite",
         import_mode="metadata-only",
@@ -94,7 +94,7 @@ BUILTIN_EXTERNAL_SOURCES: tuple[ExternalSourceRecord, ...] = (
     ExternalSourceRecord(
         name="agents-md",
         url="https://github.com/agentsmd/agents.md",
-        revision="d1ac7f063d20",
+        revision="d1ac7f063d20e70015ed6732664049ae4ba9d74e",
         license="MIT",
         source_kind="knowledge-protocol",
         import_mode="metadata-only",
@@ -103,7 +103,7 @@ BUILTIN_EXTERNAL_SOURCES: tuple[ExternalSourceRecord, ...] = (
     ExternalSourceRecord(
         name="lat-md",
         url="https://github.com/1st1/lat.md",
-        revision="bf8d95ca7ece",
+        revision="bf8d95ca7ece6e1a9e4a325eddb51ddd5db038b0",
         license="MIT",
         source_kind="knowledge-protocol",
         import_mode="metadata-only",
@@ -112,7 +112,7 @@ BUILTIN_EXTERNAL_SOURCES: tuple[ExternalSourceRecord, ...] = (
     ExternalSourceRecord(
         name="optillm",
         url="https://github.com/algorithmicsuperintelligence/optillm",
-        revision="df018d64db96",
+        revision="df018d64db96d07fdd338d71a35fc567f9d50c7b",
         license="Apache-2.0",
         source_kind="harness",
         import_mode="metadata-only",
@@ -121,7 +121,7 @@ BUILTIN_EXTERNAL_SOURCES: tuple[ExternalSourceRecord, ...] = (
     ExternalSourceRecord(
         name="julius-caveman",
         url="https://github.com/JuliusBrussee/caveman",
-        revision="63a91ecadbf4",
+        revision="63a91ecadbf4c4719a4602a5abb00883f9966034",
         license="MIT",
         source_kind="skill-suite",
         import_mode="full",

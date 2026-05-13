@@ -85,6 +85,11 @@ def test_builtin_registry_records_requested_sources() -> None:
     } <= names
 
 
+def test_builtin_registry_records_full_git_revisions() -> None:
+    for source in BUILTIN_EXTERNAL_SOURCES:
+        assert len(source.revision) == 40
+
+
 def test_load_source_registry_validates_json_records(tmp_path: Path) -> None:
     registry_path = tmp_path / "sources.json"
     registry_path.write_text(
