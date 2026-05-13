@@ -68,6 +68,7 @@ _EXPECTED_CONSOLE_SCRIPTS: tuple[str, ...] = (
     "ctx-skill-install",
     "ctx-skill-mirror",
     "ctx-skill-quality",
+    "ctx-source-registry",
     "ctx-tag-backfill",
     "ctx-toolbox",
     "ctx-wiki-graphify",

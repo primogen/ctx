@@ -9,17 +9,21 @@ github triage, and meta-workflows for working with Claude Code.
 | Field | Value |
 |---|---|
 | Upstream repo | https://github.com/mattpocock/skills |
-| Revision | `90ea8eec03d4ae8f43427aaf6fe4722653561a42` |
-| Revision date | 2026-04-26 |
+| Revision | `f304057d61d3df3c9fd992ac2b6e3833cb9325fb` |
+| Revision date | 2026-05-12 |
 | Upstream license | MIT (see `LICENSE`) |
 | Imported on | 2026-04-27 |
-| Skill count | 21 |
+| Skill count | 31 total: 28 current upstream skills plus 3 legacy aliases preserved for compatibility |
 
 ## What's in here
 
 Each top-level directory is one skill, with `SKILL.md` as the entry point and
 optional supporting `.md` / `.sh` files alongside it (e.g. `tdd/deep-modules.md`,
 `domain-model/ADR-FORMAT.md`, `git-guardrails-claude-code/scripts/block-dangerous-git.sh`).
+
+`domain-model`, `github-triage`, and `triage-issue` are retained as legacy
+ctx aliases. The current upstream equivalents are `grill-with-docs` and
+`triage`.
 
 | Skill | Purpose |
 |---|---|
@@ -32,6 +36,12 @@ optional supporting `.md` / `.sh` files alongside it (e.g. `tdd/deep-modules.md`
 | `improve-codebase-architecture` | Architecture review playbook (with `DEEPENING.md`, `INTERFACE-DESIGN.md`, `LANGUAGE.md` sidecars) |
 | `github-triage` | Triage GitHub issues with agent-brief + out-of-scope guardrails |
 | `triage-issue` | Single-issue triage workflow |
+| `diagnose` | Disciplined reproduce/minimize/hypothesize/instrument/fix loop |
+| `grill-with-docs` | Plan interrogation backed by `CONTEXT.md` and ADRs |
+| `handoff` | Compact a session into a continuation handoff |
+| `prototype` | Throwaway logic/UI prototypes before committing to a design |
+| `review` | Standards/spec two-axis review against a fixed point |
+| `setup-matt-pocock-skills` | Per-repo setup for issue tracker, triage labels, and domain docs |
 | `to-issues` | Convert plans/notes into well-formed issues |
 | `to-prd` | Convert sketches into a product requirements document |
 | `request-refactor-plan` | Plan a refactor before touching code |
@@ -43,6 +53,9 @@ optional supporting `.md` / `.sh` files alongside it (e.g. `tdd/deep-modules.md`
 | `edit-article` | Editing pass for article drafts |
 | `grill-me` | Adversarial questioning to stress-test a plan |
 | `write-a-skill` | Meta: how to write a skill |
+| `writing-beats` | Build an article beat by beat from raw material |
+| `writing-fragments` | Capture raw article fragments through a grilling session |
+| `writing-shape` | Shape a pile of notes into a publishable article |
 | `zoom-out` | Force a higher-altitude review of current work |
 
 ## License compliance

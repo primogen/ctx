@@ -1201,15 +1201,25 @@ def _render_graph_report(graph: dict[str, Any], communities: dict[str, Any] | No
         raw_communities = communities.get("communities")
         if isinstance(raw_communities, dict):
             community_count = len(raw_communities)
+    export_id = None
+    graph_meta = graph.get("graph")
+    if isinstance(graph_meta, dict):
+        raw_export_id = graph_meta.get("export_id")
+        if isinstance(raw_export_id, str) and raw_export_id.strip():
+            export_id = raw_export_id.strip()
     lines = [
         "# Graph Report",
         "",
         f"> Generated: {_utc_now()}",
+    ]
+    if export_id is not None:
+        lines.append(f"> Export ID: {export_id}")
+    lines.extend([
         f"> Nodes: {len(nodes):,} | Edges: {len(edges):,} | Communities: {community_count:,}",
         "",
         "## Most Connected Nodes",
         "",
-    ]
+    ])
     for node_id, count in top_nodes:
         node = node_by_id.get(node_id, {})
         label = node.get("label") or node_id

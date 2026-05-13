@@ -1,9 +1,9 @@
 {
   "upstream": "https://github.com/mattpocock/skills",
-  "upstream_revision": "90ea8eec03d4ae8f43427aaf6fe4722653561a42",
+  "upstream_revision": "f304057d61d3df3c9fd992ac2b6e3833cb9325fb",
   "license": "MIT",
   "namespace": "mattpocock",
-  "total": 21,
+  "total": 31,
   "entries": [
     {
       "name": "caveman",
@@ -20,6 +20,16 @@
       "source_path": "design-an-interface/SKILL.md",
       "support_files": [],
       "lines": 94
+    },
+    {
+      "name": "diagnose",
+      "description": "Disciplined diagnosis loop for hard bugs and performance regressions. Reproduce \u2192 minimise \u2192 hypothesise \u2192 instrument \u2192 fix \u2192 regression-test. Use when user says \"diagnose this\" / \"debug this\", reports a bug, says something is broken/throwing/failing, or describes a performance regression.",
+      "slug": "diagnose",
+      "source_path": "diagnose/SKILL.md",
+      "support_files": [
+        "scripts/hitl-loop.template.sh"
+      ],
+      "lines": 117
     },
     {
       "name": "domain-model",
@@ -70,6 +80,25 @@
       "lines": 10
     },
     {
+      "name": "grill-with-docs",
+      "description": "Grilling session that challenges your plan against the existing domain model, sharpens terminology, and updates documentation (CONTEXT.md, ADRs) inline as decisions crystallise. Use when user wants to stress-test a plan against their project's language and documented decisions.",
+      "slug": "grill-with-docs",
+      "source_path": "grill-with-docs/SKILL.md",
+      "support_files": [
+        "ADR-FORMAT.md",
+        "CONTEXT-FORMAT.md"
+      ],
+      "lines": 88
+    },
+    {
+      "name": "handoff",
+      "description": "Compact the current conversation into a handoff document for another agent to pick up.",
+      "slug": "handoff",
+      "source_path": "handoff/SKILL.md",
+      "support_files": [],
+      "lines": 13
+    },
+    {
       "name": "improve-codebase-architecture",
       "description": "Find deepening opportunities in a codebase, informed by the domain language in CONTEXT.md and the decisions in docs/adr/. Use when the user wants to improve architecture, find refactoring opportunities, consolidate tightly-coupled modules, or make a codebase more testable and AI-navigable.",
       "slug": "improve-codebase-architecture",
@@ -79,7 +108,7 @@
         "INTERFACE-DESIGN.md",
         "LANGUAGE.md"
       ],
-      "lines": 76
+      "lines": 71
     },
     {
       "name": "migrate-to-shoehorn",
@@ -98,6 +127,17 @@
       "lines": 59
     },
     {
+      "name": "prototype",
+      "description": "Build a throwaway prototype to flesh out a design before committing to it. Routes between two branches \u2014 a runnable terminal app for state/business-logic questions, or several radically different UI variations toggleable from one route. Use when the user wants to prototype, sanity-check a data model or state machine, mock up a UI, explore design options, or says \"prototype this\", \"let me play with it\", \"try a few designs\".",
+      "slug": "prototype",
+      "source_path": "prototype/SKILL.md",
+      "support_files": [
+        "LOGIC.md",
+        "UI.md"
+      ],
+      "lines": 30
+    },
+    {
       "name": "qa",
       "description": "Interactive QA session where user reports bugs or issues conversationally, and the agent files GitHub issues. Explores the codebase in the background for context and domain language. Use when user wants to report bugs, do QA, file issues conversationally, or mentions \"QA session\".",
       "slug": "qa",
@@ -114,12 +154,34 @@
       "lines": 68
     },
     {
+      "name": "review",
+      "description": "Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes \u2014 Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/PRD asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to \"review since X\".",
+      "slug": "review",
+      "source_path": "review/SKILL.md",
+      "support_files": [],
+      "lines": 78
+    },
+    {
       "name": "scaffold-exercises",
       "description": "Create exercise directory structures with sections, problems, solutions, and explainers that pass linting. Use when user wants to scaffold exercises, create exercise stubs, or set up a new course section.",
       "slug": "scaffold-exercises",
       "source_path": "scaffold-exercises/SKILL.md",
       "support_files": [],
       "lines": 106
+    },
+    {
+      "name": "setup-matt-pocock-skills",
+      "description": "Sets up an `## Agent skills` block in AGENTS.md/CLAUDE.md and `docs/agents/` so the engineering skills know this repo's issue tracker (GitHub or local markdown), triage label vocabulary, and domain doc layout. Run before first use of `to-issues`, `to-prd`, `triage`, `diagnose`, `tdd`, `improve-codebase-architecture`, or `zoom-out` \u2014 or if those skills appear to be missing context about the issue tracker, triage labels, or domain docs.",
+      "slug": "setup-matt-pocock-skills",
+      "source_path": "setup-matt-pocock-skills/SKILL.md",
+      "support_files": [
+        "domain.md",
+        "issue-tracker-github.md",
+        "issue-tracker-gitlab.md",
+        "issue-tracker-local.md",
+        "triage-labels.md"
+      ],
+      "lines": 121
     },
     {
       "name": "setup-pre-commit",
@@ -141,23 +203,34 @@
         "refactoring.md",
         "tests.md"
       ],
-      "lines": 107
+      "lines": 109
     },
     {
       "name": "to-issues",
-      "description": "Break a plan, spec, or PRD into independently-grabbable GitHub issues using tracer-bullet vertical slices. Use when user wants to convert a plan into issues, create implementation tickets, or break down work into issues.",
+      "description": "Break a plan, spec, or PRD into independently-grabbable issues on the project issue tracker using tracer-bullet vertical slices. Use when user wants to convert a plan into issues, create implementation tickets, or break down work into issues.",
       "slug": "to-issues",
       "source_path": "to-issues/SKILL.md",
       "support_files": [],
-      "lines": 79
+      "lines": 83
     },
     {
       "name": "to-prd",
-      "description": "Turn the current conversation context into a PRD and submit it as a GitHub issue. Use when user wants to create a PRD from the current context.",
+      "description": "Turn the current conversation context into a PRD and publish it to the project issue tracker. Use when user wants to create a PRD from the current context.",
       "slug": "to-prd",
       "source_path": "to-prd/SKILL.md",
       "support_files": [],
-      "lines": 72
+      "lines": 76
+    },
+    {
+      "name": "triage",
+      "description": "Triage issues through a state machine driven by triage roles. Use when user wants to create an issue, triage issues, review incoming bugs or feature requests, prepare issues for an AFK agent, or manage issue workflow.",
+      "slug": "triage",
+      "source_path": "triage/SKILL.md",
+      "support_files": [
+        "AGENT-BRIEF.md",
+        "OUT-OF-SCOPE.md"
+      ],
+      "lines": 103
     },
     {
       "name": "triage-issue",
@@ -182,6 +255,30 @@
       "source_path": "write-a-skill/SKILL.md",
       "support_files": [],
       "lines": 117
+    },
+    {
+      "name": "writing-beats",
+      "description": "Shape an article as a journey of beats, choose-your-own-adventure style. The user picks a starting beat from the raw material, you write only that beat, then offer options for where to pivot next, beat by beat, until the article reaches a natural end. Use when the user has raw material and wants to assemble it as a narrative rather than an argument.",
+      "slug": "writing-beats",
+      "source_path": "writing-beats/SKILL.md",
+      "support_files": [],
+      "lines": 52
+    },
+    {
+      "name": "writing-fragments",
+      "description": "Grilling session that mines the user for fragments \u2014 heterogeneous nuggets of writing (claims, vignettes, sharp sentences, half-thoughts) \u2014 and appends them to a single document as raw material for a future article. Use when the user wants to develop ideas before imposing structure, or mentions \"fragments\", \"ideate\", or \"raw material\" for writing.",
+      "slug": "writing-fragments",
+      "source_path": "writing-fragments/SKILL.md",
+      "support_files": [],
+      "lines": 75
+    },
+    {
+      "name": "writing-shape",
+      "description": "Take a markdown file of raw material and shape it into an article through a conversational session \u2014 drafting candidate openings, growing the piece paragraph by paragraph, arguing about format (lists, tables, callouts, quotes) at each step. Use when the user has a pile of notes, fragments, or a rough draft and wants help turning it into something publishable.",
+      "slug": "writing-shape",
+      "source_path": "writing-shape/SKILL.md",
+      "support_files": [],
+      "lines": 64
     },
     {
       "name": "zoom-out",
