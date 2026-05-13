@@ -73,10 +73,11 @@ def build() -> dict[str, object]:
     agents = []
     for agent_md in sorted((ROOT / "agents").glob("*.md")):
         text = agent_md.read_text(encoding="utf-8")
+        frontmatter = parse_frontmatter(text)
         slug = agent_md.stem
         agents.append({
-            "name": slug,
-            "description": "",
+            "name": frontmatter.get("name", slug),
+            "description": frontmatter.get("description", "").strip(),
             "slug": slug,
             "type": "agent",
             "source_path": agent_md.relative_to(ROOT).as_posix(),

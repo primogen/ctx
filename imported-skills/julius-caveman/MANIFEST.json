@@ -3,9 +3,9 @@
   "upstream_revision": "63a91ecadbf4",
   "license": "MIT",
   "namespace": "julius-caveman",
-  "total": 7,
+  "total": 10,
   "skills": 7,
-  "agents": 0,
+  "agents": 3,
   "entries": [
     {
       "name": "cavecrew",
@@ -91,6 +91,33 @@
         "README.md"
       ],
       "lines": 10
+    },
+    {
+      "name": "cavecrew-builder",
+      "description": "Surgical 1-2 file edit. Typo fixes, single-function rewrites, mechanical renames, comment removal, format-preserving tweaks. Hard refuses 3+ file scope. Returns caveman diff receipt. Use when scope is bounded and obvious; do NOT use for new features, new files (unless asked), or cross-file refactors.",
+      "slug": "cavecrew-builder",
+      "type": "agent",
+      "source_path": "agents/cavecrew-builder.md",
+      "support_files": [],
+      "lines": 47
+    },
+    {
+      "name": "cavecrew-investigator",
+      "description": "Read-only code locator. Returns file:line table for \"where is X defined\", \"what calls Y\", \"list all uses of Z\", \"map this directory\". Output is caveman-compressed so the main thread eats ~60% fewer tokens than vanilla Explore. Refuses to suggest fixes.",
+      "slug": "cavecrew-investigator",
+      "type": "agent",
+      "source_path": "agents/cavecrew-investigator.md",
+      "support_files": [],
+      "lines": 57
+    },
+    {
+      "name": "cavecrew-reviewer",
+      "description": "Diff/branch/file reviewer. One line per finding, severity-tagged, no praise, no scope creep. Output format `path:line: <emoji> <severity>: <problem>. <fix>.` Use for \"review this PR\", \"review my diff\", \"audit this file\". Skips formatting nits unless they change meaning.",
+      "slug": "cavecrew-reviewer",
+      "type": "agent",
+      "source_path": "agents/cavecrew-reviewer.md",
+      "support_files": [],
+      "lines": 48
     }
   ]
 }
