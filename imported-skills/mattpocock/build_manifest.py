@@ -9,11 +9,14 @@ and are deployed into the same target directory.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).parent
+MANIFEST_PATH = ROOT / "MANIFEST.json"
+UPSTREAM_REVISION_PATH = ROOT / "UPSTREAM_REVISION"
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 UPSTREAM = "https://github.com/mattpocock/skills"
 LICENSE = "MIT"
@@ -52,6 +55,21 @@ def support_files(skill_dir: Path) -> list[str]:
 
 
 def upstream_revision() -> str:
+    env_revision = os.environ.get("MATTPOCOCK_UPSTREAM_REVISION", "").strip()
+    if env_revision:
+        return env_revision
+    if UPSTREAM_REVISION_PATH.exists():
+        revision = UPSTREAM_REVISION_PATH.read_text(encoding="utf-8").strip()
+        if revision:
+            return revision
+    if MANIFEST_PATH.exists():
+        try:
+            existing = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = {}
+        revision = str(existing.get("upstream_revision", "")).strip()
+        if revision and revision != "unknown":
+            return revision
     try:
         return subprocess.check_output(
             ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
@@ -89,8 +107,7 @@ def build() -> dict:
 
 def main() -> None:
     manifest = build()
-    out = ROOT / "MANIFEST.json"
-    out.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    MANIFEST_PATH.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"Manifest written: {manifest['total']} skills @ {manifest['upstream_revision'][:12]}")
 
 

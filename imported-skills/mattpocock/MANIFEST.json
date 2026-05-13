@@ -1,6 +1,6 @@
 {
   "upstream": "https://github.com/mattpocock/skills",
-  "upstream_revision": "90ea8eec03d4ae8f43427aaf6fe4722653561a42",
+  "upstream_revision": "f304057d61d3df3c9fd992ac2b6e3833cb9325fb",
   "license": "MIT",
   "namespace": "mattpocock",
   "total": 21,
