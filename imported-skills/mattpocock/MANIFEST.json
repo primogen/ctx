@@ -3,7 +3,7 @@
   "upstream_revision": "f304057d61d3df3c9fd992ac2b6e3833cb9325fb",
   "license": "MIT",
   "namespace": "mattpocock",
-  "total": 21,
+  "total": 25,
   "entries": [
     {
       "name": "caveman",
@@ -70,6 +70,14 @@
       "lines": 10
     },
     {
+      "name": "handoff",
+      "description": "Compact the current conversation into a handoff document for another agent to pick up.",
+      "slug": "handoff",
+      "source_path": "handoff/SKILL.md",
+      "support_files": [],
+      "lines": 13
+    },
+    {
       "name": "improve-codebase-architecture",
       "description": "Find deepening opportunities in a codebase, informed by the domain language in CONTEXT.md and the decisions in docs/adr/. Use when the user wants to improve architecture, find refactoring opportunities, consolidate tightly-coupled modules, or make a codebase more testable and AI-navigable.",
       "slug": "improve-codebase-architecture",
@@ -112,6 +120,14 @@
       "source_path": "request-refactor-plan/SKILL.md",
       "support_files": [],
       "lines": 68
+    },
+    {
+      "name": "review",
+      "description": "Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes \u2014 Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/PRD asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to \"review since X\".",
+      "slug": "review",
+      "source_path": "review/SKILL.md",
+      "support_files": [],
+      "lines": 78
     },
     {
       "name": "scaffold-exercises",
@@ -182,6 +198,22 @@
       "source_path": "write-a-skill/SKILL.md",
       "support_files": [],
       "lines": 117
+    },
+    {
+      "name": "writing-beats",
+      "description": "Shape an article as a journey of beats, choose-your-own-adventure style. The user picks a starting beat from the raw material, you write only that beat, then offer options for where to pivot next, beat by beat, until the article reaches a natural end. Use when the user has raw material and wants to assemble it as a narrative rather than an argument.",
+      "slug": "writing-beats",
+      "source_path": "writing-beats/SKILL.md",
+      "support_files": [],
+      "lines": 52
+    },
+    {
+      "name": "writing-fragments",
+      "description": "Grilling session that mines the user for fragments \u2014 heterogeneous nuggets of writing (claims, vignettes, sharp sentences, half-thoughts) \u2014 and appends them to a single document as raw material for a future article. Use when the user wants to develop ideas before imposing structure, or mentions \"fragments\", \"ideate\", or \"raw material\" for writing.",
+      "slug": "writing-fragments",
+      "source_path": "writing-fragments/SKILL.md",
+      "support_files": [],
+      "lines": 75
     },
     {
       "name": "zoom-out",
