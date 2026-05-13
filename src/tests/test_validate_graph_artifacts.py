@@ -56,6 +56,7 @@ def _write_runtime_archive(
     graph_dir: Path,
     *,
     graph: dict[str, Any],
+    include_queue: bool = False,
     include_delta: bool = True,
     include_report: bool = True,
     include_manifest: bool = True,
@@ -101,6 +102,8 @@ def _write_runtime_archive(
                 }),
             )
         _add_text(tf, "external-catalogs/skills-sh/catalog.json", "{}")
+        if include_queue:
+            _add_text(tf, ".ctx/wiki-queue.sqlite3", "not a shipped artifact\n")
         for slug in sorted(DEFAULT_HARNESSES):
             _add_text(tf, f"entities/harnesses/{slug}.md", f"# {slug}\n")
 
@@ -111,6 +114,7 @@ def _write_archive(
     include_converted: bool = True,
     include_original: bool = False,
     include_lock: bool = False,
+    include_queue: bool = False,
     include_delta: bool = True,
     include_report: bool = True,
     include_manifest: bool = True,
@@ -187,6 +191,8 @@ def _write_archive(
             _add_text(tf, "./converted/skills-sh-example-skill/SKILL.md.original", "# Raw\n")
         if include_lock:
             _add_text(tf, "./index.md.lock", "")
+        if include_queue:
+            _add_text(tf, "./.ctx/wiki-queue.sqlite3", "not a shipped artifact\n")
     for preview in _PREVIEW_HTML_FILES:
         (graph_dir / preview).write_text(
             "\n".join([
@@ -455,6 +461,37 @@ def test_validate_graph_artifacts_rejects_lock_members(tmp_path: Path) -> None:
         validate_graph_artifacts(tmp_path)
 
 
+def test_validate_graph_artifacts_rejects_transient_queue_state(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path, include_queue=True)
+
+    with pytest.raises(GraphArtifactError, match="transient queue state"):
+        validate_graph_artifacts(tmp_path)
+
+
+def test_validate_graph_artifacts_rejects_runtime_queue_state(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    graph = {
+        "graph": {"export_id": "export-test"},
+        "nodes": [
+            {"id": "skill:skills-sh-example-skill", "type": "skill"},
+            {"id": "harness:langgraph", "type": "harness"},
+        ],
+        "edges": [],
+    }
+    _write_runtime_archive(tmp_path, graph=graph, include_queue=True)
+
+    with pytest.raises(GraphArtifactError, match="transient queue state"):
+        validate_graph_artifacts(tmp_path, expected_harnesses={"langgraph"})
+
+
 @pytest.mark.parametrize(
     "raw_name",
     [
@@ -581,14 +618,14 @@ def test_graph_only_workflow_uses_exact_release_counts() -> None:
         "--min-edges": "2000000",
         "--min-skills-sh-nodes": "89000",
         "--min-semantic-edges": "1000000",
-        "--expected-nodes": "102696",
-        "--expected-edges": "2900834",
-        "--expected-semantic-edges": "1682825",
+        "--expected-nodes": "102697",
+        "--expected-edges": "2900910",
+        "--expected-semantic-edges": "1682846",
         "--expected-harness-nodes": "13",
         "--expected-skills-sh-nodes": "89463",
         "--expected-skills-sh-catalog-entries": "89463",
         "--expected-skills-sh-converted": "89463",
-        "--expected-skill-pages": "91432",
+        "--expected-skill-pages": "91433",
         "--expected-agent-pages": "464",
         "--expected-mcp-pages": "10787",
         "--expected-harness-pages": "13",
