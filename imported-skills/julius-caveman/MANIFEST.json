@@ -1,0 +1,33 @@
+{
+  "upstream": "https://github.com/JuliusBrussee/caveman",
+  "upstream_revision": "63a91ecadbf4",
+  "license": "MIT",
+  "namespace": "julius-caveman",
+  "total": 2,
+  "skills": 2,
+  "agents": 0,
+  "entries": [
+    {
+      "name": "cavecrew",
+      "description": "Decision guide for delegating to caveman-style subagents. Tells the main thread WHEN to spawn `cavecrew-investigator` (locate code), `cavecrew-builder` (1-2 file edit), or `cavecrew-reviewer` (diff review) instead of doing the work inline or using vanilla `Explore`. Subagent output is caveman-compressed so the tool-result injected back into main context is ~60% smaller \u2014 main context lasts longer across long sessions. Trigger: \"delegate to subagent\", \"use cavecrew\", \"spawn investigator/builder/reviewer\", \"save context\", \"compressed agent output\".",
+      "slug": "cavecrew",
+      "type": "skill",
+      "source_path": "skills/cavecrew/SKILL.md",
+      "support_files": [
+        "README.md"
+      ],
+      "lines": 82
+    },
+    {
+      "name": "caveman",
+      "description": "Ultra-compressed communication mode. Cuts token usage ~75% by speaking like caveman while keeping full technical accuracy. Supports intensity levels: lite, full (default), ultra, wenyan-lite, wenyan-full, wenyan-ultra. Use when user says \"caveman mode\", \"talk like caveman\", \"use caveman\", \"less tokens\", \"be brief\", or invokes /caveman. Also auto-triggers when token efficiency is requested.",
+      "slug": "caveman",
+      "type": "skill",
+      "source_path": "skills/caveman/SKILL.md",
+      "support_files": [
+        "README.md"
+      ],
+      "lines": 74
+    }
+  ]
+}
