@@ -52,6 +52,9 @@
         "scripts/__main__.py",
         "scripts/benchmark.py",
         "scripts/cli.py",
+        "scripts/compress.py",
+        "scripts/detect.py",
+        "scripts/validate.py",
         "SECURITY.md"
       ],
       "lines": 111

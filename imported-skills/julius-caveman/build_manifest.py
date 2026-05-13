@@ -41,6 +41,8 @@ def parse_frontmatter(text: str) -> dict[str, str]:
 def support_files(entity_dir: Path, entry_file: Path) -> list[str]:
     out: list[str] = []
     for path in sorted(entity_dir.rglob("*")):
+        if "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
         if path.is_file() and path != entry_file:
             out.append(path.relative_to(entity_dir).as_posix())
     return out
