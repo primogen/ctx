@@ -1,115 +1,55 @@
-# Agent Skills For Real Engineers
+# Matt Pocock Skills
 
-My agent skills that I use every day to do real engineering - not vibe coding.
+Local mirror of [mattpocock/skills](https://github.com/mattpocock/skills), pinned
+at `f304057d61d3df3c9fd992ac2b6e3833cb9325fb`.
 
-If you want to keep up with changes to these skills, and any new ones I create, you can join ~60,000 other devs on my newsletter:
+This directory contains 31 ctx-staged entries: 28 current upstream skills plus
+3 legacy aliases (`domain-model`, `github-triage`, `triage-issue`) kept so older
+ctx graph/wiki references do not break.
 
-[Sign Up To The Newsletter](https://www.aihero.dev/s/skills-newsletter)
+Run `python imported-skills/mattpocock/build_manifest.py` after edits, then
+`python src/import_mattpocock_skills.py --dry-run` before installing.
 
-## Planning & Design
+## Current Upstream Skills
 
-These skills help you think through problems before writing code.
+Engineering:
 
-- **to-prd** — Turn the current conversation context into a PRD and submit it as a GitHub issue. No interview — just synthesizes what you've already discussed.
+- `diagnose`
+- `grill-with-docs`
+- `improve-codebase-architecture`
+- `prototype`
+- `setup-matt-pocock-skills`
+- `tdd`
+- `to-issues`
+- `to-prd`
+- `triage`
+- `zoom-out`
 
-  ```
-  npx skills@latest add mattpocock/skills/to-prd
-  ```
+Productivity:
 
-- **to-issues** — Break any plan, spec, or PRD into independently-grabbable GitHub issues using vertical slices.
+- `caveman`
+- `grill-me`
+- `handoff`
+- `write-a-skill`
 
-  ```
-  npx skills@latest add mattpocock/skills/to-issues
-  ```
+Writing/personal/misc:
 
-- **grill-me** — Get relentlessly interviewed about a plan or design until every branch of the decision tree is resolved.
+- `design-an-interface`
+- `edit-article`
+- `git-guardrails-claude-code`
+- `migrate-to-shoehorn`
+- `obsidian-vault`
+- `qa`
+- `request-refactor-plan`
+- `scaffold-exercises`
+- `setup-pre-commit`
+- `ubiquitous-language`
+- `writing-beats`
+- `writing-fragments`
+- `writing-shape`
 
-  ```
-  npx skills@latest add mattpocock/skills/grill-me
-  ```
+## Legacy Aliases
 
-- **design-an-interface** — Generate multiple radically different interface designs for a module using parallel sub-agents.
-
-  ```
-  npx skills@latest add mattpocock/skills/design-an-interface
-  ```
-
-- **request-refactor-plan** — Create a detailed refactor plan with tiny commits via user interview, then file it as a GitHub issue.
-
-  ```
-  npx skills@latest add mattpocock/skills/request-refactor-plan
-  ```
-
-## Development
-
-These skills help you write, refactor, and fix code.
-
-- **tdd** — Test-driven development with a red-green-refactor loop. Builds features or fixes bugs one vertical slice at a time.
-
-  ```
-  npx skills@latest add mattpocock/skills/tdd
-  ```
-
-- **triage-issue** — Investigate a bug by exploring the codebase, identify the root cause, and file a GitHub issue with a TDD-based fix plan.
-
-  ```
-  npx skills@latest add mattpocock/skills/triage-issue
-  ```
-
-- **improve-codebase-architecture** — Find deepening opportunities in a codebase, informed by the domain language in `CONTEXT.md` and the decisions in `docs/adr/`.
-
-  ```
-  npx skills@latest add mattpocock/skills/improve-codebase-architecture
-  ```
-
-- **migrate-to-shoehorn** — Migrate test files from `as` type assertions to @total-typescript/shoehorn.
-
-  ```
-  npx skills@latest add mattpocock/skills/migrate-to-shoehorn
-  ```
-
-- **scaffold-exercises** — Create exercise directory structures with sections, problems, solutions, and explainers.
-
-  ```
-  npx skills@latest add mattpocock/skills/scaffold-exercises
-  ```
-
-## Tooling & Setup
-
-- **setup-pre-commit** — Set up Husky pre-commit hooks with lint-staged, Prettier, type checking, and tests.
-
-  ```
-  npx skills@latest add mattpocock/skills/setup-pre-commit
-  ```
-
-- **git-guardrails-claude-code** — Set up Claude Code hooks to block dangerous git commands (push, reset --hard, clean, etc.) before they execute.
-
-  ```
-  npx skills@latest add mattpocock/skills/git-guardrails-claude-code
-  ```
-
-## Writing & Knowledge
-
-- **write-a-skill** — Create new skills with proper structure, progressive disclosure, and bundled resources.
-
-  ```
-  npx skills@latest add mattpocock/skills/write-a-skill
-  ```
-
-- **edit-article** — Edit and improve articles by restructuring sections, improving clarity, and tightening prose.
-
-  ```
-  npx skills@latest add mattpocock/skills/edit-article
-  ```
-
-- **ubiquitous-language** — Extract a DDD-style ubiquitous language glossary from the current conversation.
-
-  ```
-  npx skills@latest add mattpocock/skills/ubiquitous-language
-  ```
-
-- **obsidian-vault** — Search, create, and manage notes in an Obsidian vault with wikilinks and index notes.
-
-  ```
-  npx skills@latest add mattpocock/skills/obsidian-vault
-  ```
+- `domain-model` -> superseded upstream by `grill-with-docs`
+- `github-triage` -> superseded upstream by `triage`
+- `triage-issue` -> superseded upstream by `triage`
