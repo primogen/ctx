@@ -3,7 +3,7 @@
   "upstream_revision": "f304057d61d3df3c9fd992ac2b6e3833cb9325fb",
   "license": "MIT",
   "namespace": "mattpocock",
-  "total": 25,
+  "total": 27,
   "entries": [
     {
       "name": "caveman",
@@ -20,6 +20,16 @@
       "source_path": "design-an-interface/SKILL.md",
       "support_files": [],
       "lines": 94
+    },
+    {
+      "name": "diagnose",
+      "description": "Disciplined diagnosis loop for hard bugs and performance regressions. Reproduce \u2192 minimise \u2192 hypothesise \u2192 instrument \u2192 fix \u2192 regression-test. Use when user says \"diagnose this\" / \"debug this\", reports a bug, says something is broken/throwing/failing, or describes a performance regression.",
+      "slug": "diagnose",
+      "source_path": "diagnose/SKILL.md",
+      "support_files": [
+        "scripts/hitl-loop.template.sh"
+      ],
+      "lines": 117
     },
     {
       "name": "domain-model",
@@ -214,6 +224,14 @@
       "source_path": "writing-fragments/SKILL.md",
       "support_files": [],
       "lines": 75
+    },
+    {
+      "name": "writing-shape",
+      "description": "Take a markdown file of raw material and shape it into an article through a conversational session \u2014 drafting candidate openings, growing the piece paragraph by paragraph, arguing about format (lists, tables, callouts, quotes) at each step. Use when the user has a pile of notes, fragments, or a rough draft and wants help turning it into something publishable.",
+      "slug": "writing-shape",
+      "source_path": "writing-shape/SKILL.md",
+      "support_files": [],
+      "lines": 64
     },
     {
       "name": "zoom-out",
