@@ -48,6 +48,10 @@
       "source_path": "skills/caveman-compress/SKILL.md",
       "support_files": [
         "README.md",
+        "scripts/__init__.py",
+        "scripts/__main__.py",
+        "scripts/benchmark.py",
+        "scripts/cli.py",
         "SECURITY.md"
       ],
       "lines": 111
