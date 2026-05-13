@@ -3,8 +3,8 @@
   "upstream_revision": "63a91ecadbf4",
   "license": "MIT",
   "namespace": "julius-caveman",
-  "total": 6,
-  "skills": 6,
+  "total": 7,
+  "skills": 7,
   "agents": 0,
   "entries": [
     {
@@ -39,6 +39,18 @@
         "README.md"
       ],
       "lines": 65
+    },
+    {
+      "name": "caveman-compress",
+      "description": "Compress natural language memory files (CLAUDE.md, todos, preferences) into caveman format to save input tokens. Preserves all technical substance, code, URLs, and structure. Compressed version overwrites the original file. Human-readable backup saved as FILE.original.md. Trigger: /caveman-compress FILEPATH or \"compress memory file\"",
+      "slug": "caveman-compress",
+      "type": "skill",
+      "source_path": "skills/caveman-compress/SKILL.md",
+      "support_files": [
+        "README.md",
+        "SECURITY.md"
+      ],
+      "lines": 111
     },
     {
       "name": "caveman-help",
