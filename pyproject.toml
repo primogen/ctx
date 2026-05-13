@@ -60,6 +60,7 @@ ctx-mcp-quality = "mcp_quality:main"
 ctx-mcp-rebuild-index = "mcp_rebuild_index:main"
 ctx-wiki-graphify = "ctx.core.wiki.wiki_graphify:main"
 ctx-wiki-worker = "ctx.core.wiki.wiki_queue_worker:main"
+ctx-source-registry = "ctx.core.source_registry:main"
 # Pre-ship dedup gate: flag entity pairs at or above the given cosine
 # similarity threshold (default 0.85). Cross-type by design — finds
 # duplicates across skills, agents, and MCPs in any combination.
