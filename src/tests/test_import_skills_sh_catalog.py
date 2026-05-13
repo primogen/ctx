@@ -125,7 +125,7 @@ def test_update_wiki_tarball_adds_skills_sh_as_first_class_skill_nodes_and_pages
     graph = {
         "directed": False,
         "multigraph": False,
-        "graph": {},
+        "graph": {"export_id": "test-export-id"},
         "nodes": [
             {
                 "id": "skill:lark-doc",
@@ -217,7 +217,7 @@ def test_update_wiki_tarball_preserves_existing_skills_sh_semantic_edges(
     graph = {
         "directed": False,
         "multigraph": False,
-        "graph": {},
+        "graph": {"export_id": "test-export-id"},
         "nodes": [
             {
                 "id": "skill:lark-doc",
@@ -352,7 +352,7 @@ def test_update_wiki_tarball_removes_pruned_skills_sh_nodes_pages_and_communitie
     graph = {
         "directed": False,
         "multigraph": False,
-        "graph": {},
+        "graph": {"export_id": "test-export-id"},
         "nodes": [
             {
                 "id": "skill:skills-sh-owner-repo-good",
@@ -456,6 +456,7 @@ def test_update_wiki_tarball_removes_pruned_skills_sh_nodes_pages_and_communitie
             "semantic_sim": 0.91,
         },
     ]
+    assert "> Export ID: test-export-id" in report
     assert communities_out["communities"]["0"]["members"] == [
         "skill:curated",
         "skill:skills-sh-owner-repo-good",
