@@ -3,7 +3,7 @@
   "upstream_revision": "f304057d61d3df3c9fd992ac2b6e3833cb9325fb",
   "license": "MIT",
   "namespace": "mattpocock",
-  "total": 30,
+  "total": 31,
   "entries": [
     {
       "name": "caveman",
@@ -168,6 +168,20 @@
       "source_path": "scaffold-exercises/SKILL.md",
       "support_files": [],
       "lines": 106
+    },
+    {
+      "name": "setup-matt-pocock-skills",
+      "description": "Sets up an `## Agent skills` block in AGENTS.md/CLAUDE.md and `docs/agents/` so the engineering skills know this repo's issue tracker (GitHub or local markdown), triage label vocabulary, and domain doc layout. Run before first use of `to-issues`, `to-prd`, `triage`, `diagnose`, `tdd`, `improve-codebase-architecture`, or `zoom-out` \u2014 or if those skills appear to be missing context about the issue tracker, triage labels, or domain docs.",
+      "slug": "setup-matt-pocock-skills",
+      "source_path": "setup-matt-pocock-skills/SKILL.md",
+      "support_files": [
+        "domain.md",
+        "issue-tracker-github.md",
+        "issue-tracker-gitlab.md",
+        "issue-tracker-local.md",
+        "triage-labels.md"
+      ],
+      "lines": 121
     },
     {
       "name": "setup-pre-commit",
