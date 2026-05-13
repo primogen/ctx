@@ -20,11 +20,21 @@ def parse_frontmatter(text: str) -> dict[str, str]:
     if not match:
         return {}
     out: dict[str, str] = {}
+    pending_key: str | None = None
     for raw in match.group(1).splitlines():
+        if pending_key and raw.startswith((" ", "\t")):
+            out[pending_key] = (out[pending_key] + " " + raw.strip()).strip()
+            continue
+        pending_key = None
         if ":" not in raw:
             continue
         key, _, value = raw.partition(":")
-        out[key.strip()] = value.strip().strip('"').strip("'")
+        value = value.strip()
+        if value in {"", ">", "|"}:
+            pending_key = key.strip()
+            out[pending_key] = ""
+        else:
+            out[key.strip()] = value.strip('"').strip("'")
     return out
 
 
