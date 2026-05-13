@@ -3,7 +3,7 @@
   "upstream_revision": "f304057d61d3df3c9fd992ac2b6e3833cb9325fb",
   "license": "MIT",
   "namespace": "mattpocock",
-  "total": 29,
+  "total": 30,
   "entries": [
     {
       "name": "caveman",
@@ -125,6 +125,17 @@
       "source_path": "obsidian-vault/SKILL.md",
       "support_files": [],
       "lines": 59
+    },
+    {
+      "name": "prototype",
+      "description": "Build a throwaway prototype to flesh out a design before committing to it. Routes between two branches \u2014 a runnable terminal app for state/business-logic questions, or several radically different UI variations toggleable from one route. Use when the user wants to prototype, sanity-check a data model or state machine, mock up a UI, explore design options, or says \"prototype this\", \"let me play with it\", \"try a few designs\".",
+      "slug": "prototype",
+      "source_path": "prototype/SKILL.md",
+      "support_files": [
+        "LOGIC.md",
+        "UI.md"
+      ],
+      "lines": 30
     },
     {
       "name": "qa",
