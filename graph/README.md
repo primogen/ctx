@@ -4,13 +4,13 @@ This directory ships the pre-built ctx LLM-wiki and knowledge graph.
 
 Current snapshot:
 
-- **102,697 graph nodes**
-- **2,900,910 graph edges**
+- **102,718 graph nodes**
+- **2,911,220 graph edges**
 - **52 Louvain communities**
-- **91,433 skill entity pages**: 1,970 curated/imported skills plus 89,463 body-backed Skills.sh skills
-- **464 agent pages**
+- **91,450 skill entity pages**: 1,987 curated/imported skills plus 89,463 body-backed Skills.sh skills
+- **467 agent pages**
 - **10,787 MCP server pages**
-- **13 harness pages**
+- **14 harness pages**
 - **89,463 hydrated Skills.sh `SKILL.md` bodies**
 - **28,612 long Skills.sh bodies converted through the micro-skill gate**
 
@@ -23,7 +23,7 @@ The runtime recommendation paths use this graph in two ways:
 
 | File | Contents |
 |---|---|
-| `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the external Skills.sh catalog, 13 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
+| `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the external Skills.sh catalog, 14 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
 | `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, external catalogs, and Obsidian metadata |
 | `skills-sh-catalog.json.gz` | Compressed Skills.sh catalog for the 89,463 body-backed entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
@@ -109,17 +109,17 @@ For release-count validation, pin the exact snapshot numbers:
 
 ```bash
 python src/validate_graph_artifacts.py --deep \
-  --expected-nodes 102697 \
-  --expected-edges 2900910 \
-  --expected-semantic-edges 1682846 \
-  --expected-harness-nodes 13 \
+  --expected-nodes 102718 \
+  --expected-edges 2911220 \
+  --expected-semantic-edges 1683265 \
+  --expected-harness-nodes 14 \
   --expected-skills-sh-nodes 89463 \
   --expected-skills-sh-catalog-entries 89463 \
   --expected-skills-sh-converted 89463 \
-  --expected-skill-pages 91433 \
-  --expected-agent-pages 464 \
+  --expected-skill-pages 91450 \
+  --expected-agent-pages 467 \
   --expected-mcp-pages 10787 \
-  --expected-harness-pages 13
+  --expected-harness-pages 14
 ```
 
 Manual sanity checks:

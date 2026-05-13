@@ -13,8 +13,8 @@ agents, and MCP servers.
 ## What's in it
 
 Authoritative numbers from the shipped tarball. The curated-core snapshot
-is **13,234 nodes** (1,970 curated skills + 464 agents + 10,787 MCP servers
-+ 13 harnesses). Harness pages under `entities/harnesses/` are ingested into
+is **13,255 nodes** (1,987 curated skills + 467 agents + 10,787 MCP servers
++ 14 harnesses). Harness pages under `entities/harnesses/` are ingested into
 local rebuilds and the separate harness-catalog recommendation path. The
 tarball also carries **89,463 body-backed Skills.sh `skill` nodes**,
 matching skill pages under `entities/skills/skills-sh-*.md`. **89,463**
@@ -27,10 +27,10 @@ are omitted from the shipped tarball.
 
 | | Count |
 |---|---:|
-| Total nodes | **102,697** |
-| Curated core nodes | **13,234** (1,970 skills + 464 agents + 10,787 MCP servers + 13 harnesses) |
+| Total nodes | **102,718** |
+| Curated core nodes | **13,255** (1,987 skills + 467 agents + 10,787 MCP servers + 14 harnesses) |
 | Remote-cataloged Skills.sh skill nodes | **89,463** (`skill`, `status=remote-cataloged`, body-backed) |
-| Total edges | **2,900,910** |
+| Total edges | **2,911,220** |
 | Skills.sh incident edges | **2,605,992** |
 | Skills.sh semantic incident edges | **1,500,706** |
 | Communities | **52** (Louvain) |
@@ -170,7 +170,7 @@ raw = json.loads(
 edges_key = "links" if "links" in raw else "edges"
 G = node_link_graph(raw, edges=edges_key)
 
-# 102,697 nodes, 2,900,910 edges
+# 102,718 nodes, 2,911,220 edges
 print(G.number_of_nodes(), G.number_of_edges())
 
 # Find entities related to 'fastapi-pro' by edge weight
@@ -269,7 +269,8 @@ next run rebuilds instead of trusting mixed graph files.
 | 2026-05-04 body-backed Skills.sh prune | **2,900,834** | Removed 1,383 Skills.sh records that had no packaged `SKILL.md` body and no parseable Skills.sh prose body. Remaining Skills.sh catalog entries, graph nodes, entity pages, and converted `SKILL.md` bodies are all **89,463**. |
 | 2026-05-05 artifact hygiene refresh | **2,900,834** | Repacked `graph/wiki-graph.tar.gz` to remove transient `.lock` files from the shipped LLM-wiki. Topology unchanged. |
 | 2026-05-10 v1.0.0 release prep | **2,900,834** | Refreshed shipped HTML previews from the current export, validated their export IDs in CI, and removed stale PNG previews. Topology unchanged. |
-| 2026-05-12 book-to-skill + queue hygiene | **2,900,910** | Added `book-to-skill` as a curated skill entity (+1 node, +76 edges), restored the missing converted Skills.sh body for `skills-sh-yaklang-hack-skills-csv-formula-injection`, and repacked `graph/wiki-graph.tar.gz` to omit `.ctx/` queue state. Current tar members: **598,154**. |
+| 2026-05-13 external source overlay | **2,911,220** | Added AGENTS.md, lat.md, OptiLLM, Matt Pocock refresh deltas, and Julius caveman entities through the safe overlay path (+21 nodes, +10,310 edges) while preserving the saturated Skills.sh topology. Current tar members: **598,192**. |
+| 2026-05-12 book-to-skill + queue hygiene | **2,900,910** | Added `book-to-skill` as a curated skill entity (+1 node, +76 edges), restored the missing converted Skills.sh body for `skills-sh-yaklang-hack-skills-csv-formula-injection`, and repacked `graph/wiki-graph.tar.gz` to omit `.ctx/` queue state. Tar members: **598,154**. |
 
 The full audit history lives in `CHANGELOG.md`. The current build is
 fully reproducible from the wiki content.
