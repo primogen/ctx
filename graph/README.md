@@ -157,6 +157,37 @@ page, updates the wiki index, and attempts incremental ANN attach into
 also queues the normal incremental graph export job, so a full rebuild remains
 the reconciliation path for release artifacts.
 
+If the worker reports that incremental attach was skipped because no vector
+index exists, build the exact portable index:
+
+```bash
+ctx-wiki-graphify \
+  --wiki-dir ~/.claude/skill-wiki \
+  --incremental \
+  --graph-only \
+  --semantic-vector-index numpy-flat
+```
+
+Then drain pending queue work again:
+
+```bash
+ctx-wiki-worker --wiki ~/.claude/skill-wiki
+```
+
+Before promoting an ANN backend or changed thresholds, run the shadow gate:
+
+```bash
+ctx-incremental-shadow \
+  --index-dir ~/.claude/skill-wiki/.embedding-cache/graph/vector-index \
+  --graph ~/.claude/skill-wiki/graphify-out/graph.json \
+  --sample-size 100 \
+  --min-overlap 0.85
+```
+
+It reports precision/recall, top-k agreement, score deltas, and bad examples;
+the release gate fails when recall at the largest requested top-k is below the
+overlap floor.
+
 For release artifact rebuilds:
 
 ```bash

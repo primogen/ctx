@@ -92,6 +92,51 @@ Use `ctx-incremental-attach calibrate --graph ~/.claude/skill-wiki/graphify-out/
 to inspect the current graph's semantic and degree distributions before
 changing attach thresholds.
 
+Validate the attach quality before relying on a new ANN backend or changed
+threshold:
+
+```bash
+ctx-incremental-shadow \
+  --index-dir ~/.claude/skill-wiki/.embedding-cache/graph/vector-index \
+  --graph ~/.claude/skill-wiki/graphify-out/graph.json \
+  --sample-size 100 \
+  --min-overlap 0.85
+```
+
+The shadow gate pretends sampled existing nodes are new, compares incremental
+attach neighbors to batch graph semantic neighbors, reports precision/recall
+for top 5/10/20, score deltas, and bad examples, then exits non-zero if
+recall at the largest top-k is below the overlap floor.
+
+## Repair Incremental Attach
+
+If the worker says `incremental attach skipped (no vector index)`, build the
+persisted semantic index once:
+
+```bash
+ctx-wiki-graphify \
+  --wiki-dir ~/.claude/skill-wiki \
+  --incremental \
+  --graph-only \
+  --semantic-vector-index numpy-flat
+```
+
+`numpy-flat` is exact and portable. `--semantic-vector-index auto` keeps the
+portable exact backend at this graph size and can switch to the optional ANN
+backend only above the configured node threshold. `hnswlib` is optional and
+should be shadow-gated before release use.
+
+Then process pending entity updates:
+
+```bash
+ctx-wiki-worker --wiki ~/.claude/skill-wiki
+```
+
+That is the supported "attach pending" flow today: the queue is durable, so
+failed or skipped entity-upsert jobs remain visible to the worker and can be
+retried after the index exists. Use manual `ctx-incremental-attach attach
+--dry-run` for one-off debugging, not as the normal bulk path.
+
 ## Security and Cyber Check
 
 Run this before applying `--update-existing`, before installing a harness with
