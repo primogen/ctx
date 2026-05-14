@@ -4640,7 +4640,7 @@ def _render_harness_wizard() -> str:
         "  document.querySelectorAll('[data-select-harness]').forEach(btn => btn.addEventListener('click', () => {\n"
         "    const slug = btn.dataset.selectHarness || '';\n"
         "    cards.forEach(card => card.classList.toggle('selected', card.dataset.harnessSlug === slug));\n"
-        "    selected.innerHTML = '<pre class=\"command-box\">ctx-harness-install ' + slug + ' --dry-run\\nctx-harness-install ' + slug + '\\nctx-harness-install ' + slug + ' --update --dry-run\\nctx-scan-repo --recommend\\nctx-monitor serve</pre>';\n"
+        "    selected.innerHTML = '<pre class=\"command-box\">ctx-harness-install ' + slug + ' --dry-run\\nctx-harness-install ' + slug + '\\nctx-harness-install ' + slug + ' --update --dry-run\\nctx-scan-repo --repo . --recommend\\nctx-monitor serve</pre>';\n"
         "  }));\n"
         "  refresh();\n"
         "})();\n"

@@ -22,7 +22,7 @@ contract stabilizes.
   explicit quota acknowledgement, non-spending preflights, and a hard budget
   cap. Hook execution is verified through a JSONL sentinel written by injected
   PostToolUse and Stop hooks under the temp root.
-- `ctx-scan-repo --recommend` can scan a tiny FastAPI-like repo from the wheel.
+- `ctx-scan-repo --repo <path> --recommend` can scan a tiny FastAPI-like repo from the wheel.
 - `ctx run` can start a session with a process-local fake LiteLLM provider.
 - `ctx resume` can continue that session from the same isolated session store.
 - `--deny-tool` blocks a model-requested ctx tool call before dispatch.

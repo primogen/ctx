@@ -16,6 +16,17 @@ import pytest
 import ctx_init as ci
 
 
+def _artifact_sha256_or_lfs_oid(path: Path, *, normalize_text: bool = False) -> str:
+    data = path.read_bytes()
+    if data.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
+        for line in data.decode("utf-8").splitlines():
+            if line.startswith("oid sha256:"):
+                return line.removeprefix("oid sha256:")
+    if normalize_text:
+        data = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def test_ensure_directories_creates_standard_tree(tmp_path: Path) -> None:
     created = ci.ensure_directories(tmp_path)
     # First call should create every standard subdir.
@@ -345,6 +356,19 @@ def test_download_graph_archive_verifies_sha256(
             expected_sha256="0" * 64,
         )
     assert not bad_destination.exists()
+
+
+def test_graph_download_checksums_match_shipped_artifacts() -> None:
+    root = Path(__file__).resolve().parent.parent.parent
+    for mode, archive_name in ci._GRAPH_ARCHIVE_NAMES.items():
+        path = root / "graph" / archive_name
+        assert ci._GRAPH_ARCHIVE_SHA256[mode] == _artifact_sha256_or_lfs_oid(path)
+
+    overlay_path = root / "graph" / ci._GRAPH_ENTITY_OVERLAY_NAME
+    assert ci._GRAPH_ENTITY_OVERLAY_SHA256 == _artifact_sha256_or_lfs_oid(
+        overlay_path,
+        normalize_text=True,
+    )
 
 
 def test_custom_graph_url_requires_checksum_or_explicit_opt_out(

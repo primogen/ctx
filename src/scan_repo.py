@@ -635,7 +635,7 @@ def _print_recommendations(repo: str, profile: dict) -> None:
     """Run the shared recommender and print recommendations by entity bucket.
 
     Phase 6a UX: previously only programmatic consumers (monitor, hooks)
-    saw the manifest output. Running ``ctx-scan-repo --recommend`` now
+    saw the manifest output. Running ``ctx-scan-repo --repo . --recommend`` now
     prints the same entity buckets to the terminal so users see tooling
     recommendations surface from real repos without opening the dashboard.
     """

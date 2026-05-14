@@ -2000,6 +2000,8 @@ def test_render_harness_wizard_guides_model_choice_and_real_commands(
     assert "data-harness-slug='langgraph'" in html_out
     assert "ctx-harness-install --recommend" in html_out
     assert "ctx-harness-install langgraph --dry-run" in html_out
+    assert "ctx-scan-repo --repo . --recommend" in html_out
+    assert "ctx-scan-repo --recommend" not in html_out
     assert "--plan-on-no-fit" in html_out
     assert "ctx attachment" in html_out
     assert "data-testid='harness-command-output'" in html_out
