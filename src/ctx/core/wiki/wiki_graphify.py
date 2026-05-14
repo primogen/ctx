@@ -712,6 +712,15 @@ def build_graph(
                 flush=True,
             )
             prior_graph = None
+    if prior_graph is not None and w_adamic > 0.0:
+        prior_pairs = {_pair(str(n1), str(n2)) for n1, n2 in prior_graph.edges()}
+        if prior_pairs != set(target_edges):
+            print(
+                "graphify: edge topology changed while Adamic-Adar boost is enabled "
+                "â€” forcing full rebuild.",
+                flush=True,
+            )
+            prior_graph = None
     current_node_info: dict[str, dict] = {
         nid: {
             "label": data.get("label", nid.split(":", 1)[-1]),
