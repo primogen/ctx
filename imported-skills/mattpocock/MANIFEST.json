@@ -1,9 +1,9 @@
 {
   "upstream": "https://github.com/mattpocock/skills",
-  "upstream_revision": "f304057d61d3df3c9fd992ac2b6e3833cb9325fb",
+  "upstream_revision": "e74f0061bb67222181640effa98c675bdb2fdaa7",
   "license": "MIT",
   "namespace": "mattpocock",
-  "total": 31,
+  "total": 28,
   "entries": [
     {
       "name": "caveman",
@@ -32,17 +32,6 @@
       "lines": 117
     },
     {
-      "name": "domain-model",
-      "description": "Grilling session that challenges your plan against the existing domain model, sharpens terminology, and updates documentation (CONTEXT.md, ADRs) inline as decisions crystallise. Use when user wants to stress-test a plan against their project's language and documented decisions.",
-      "slug": "domain-model",
-      "source_path": "domain-model/SKILL.md",
-      "support_files": [
-        "ADR-FORMAT.md",
-        "CONTEXT-FORMAT.md"
-      ],
-      "lines": 81
-    },
-    {
       "name": "edit-article",
       "description": "Edit and improve articles by restructuring sections, improving clarity, and tightening prose. Use when user wants to edit, revise, or improve an article draft.",
       "slug": "edit-article",
@@ -59,17 +48,6 @@
         "scripts/block-dangerous-git.sh"
       ],
       "lines": 95
-    },
-    {
-      "name": "github-triage",
-      "description": "Triage GitHub issues through a label-based state machine. Use when user wants to create an issue, triage issues, review incoming bugs or feature requests, prepare issues for an AFK agent, or manage issue workflow.",
-      "slug": "github-triage",
-      "source_path": "github-triage/SKILL.md",
-      "support_files": [
-        "AGENT-BRIEF.md",
-        "OUT-OF-SCOPE.md"
-      ],
-      "lines": 168
     },
     {
       "name": "grill-me",
@@ -231,14 +209,6 @@
         "OUT-OF-SCOPE.md"
       ],
       "lines": 103
-    },
-    {
-      "name": "triage-issue",
-      "description": "Triage a bug or issue by exploring the codebase to find root cause, then create a GitHub issue with a TDD-based fix plan. Use when user reports a bug, wants to file an issue, mentions \"triage\", or wants to investigate and plan a fix for a problem.",
-      "slug": "triage-issue",
-      "source_path": "triage-issue/SKILL.md",
-      "support_files": [],
-      "lines": 102
     },
     {
       "name": "ubiquitous-language",

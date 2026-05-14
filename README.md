@@ -4,10 +4,10 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![PyPI](https://img.shields.io/pypi/v/claude-ctx.svg)](https://pypi.org/project/claude-ctx/)
 [![Tests](https://img.shields.io/badge/Tests-3797_collected-brightgreen.svg)](#)
-[![Graph](https://img.shields.io/badge/Graph-102%2C718_nodes_/_2.9M_edges-red.svg)](graph/)
+[![Graph](https://img.shields.io/badge/Graph-102%2C715_nodes_/_2.9M_edges-red.svg)](graph/)
 [![Docs](https://img.shields.io/badge/docs-MkDocs_Material-blue.svg)](https://stevesolun.github.io/ctx/)
 
-ctx watches what you are building, walks a **102,718-node** graph, and
+ctx watches what you are building, walks a **102,715-node** graph, and
 recommends a small, top-scored bundle of skills, agents, and MCP servers for
 the current task. If you use your own local/API model instead of Claude Code,
 ctx has a separate harness catalog flow: tell it the model and goal, review the
@@ -15,7 +15,7 @@ recommended harness, then install with dry-run/update/uninstall controls.
 
 Current shipped snapshot:
 
-- **91,450 skills**: 1,987 curated/imported skills plus **89,463 body-backed Skills.sh skills**.
+- **91,447 skills**: 1,984 curated/imported skills plus **89,463 body-backed Skills.sh skills**.
 - **467 agents**, **10,787 MCP servers**, and **14 cataloged harnesses**.
 - **2.9M graph edges** across semantic similarity, tags, slug tokens, source overlap, direct links, quality, usage, type affinity, and graph structure.
 - **89,463 hydrated `SKILL.md` bodies** in the shipped LLM-wiki; long entries are converted through the micro-skill gate instead of loading raw long prompts.
@@ -46,7 +46,7 @@ Graph-backed recommendations need the pre-built graph. By default, `ctx-init
 --graph` installs the fast runtime artifact: `graph/wiki-graph-runtime.tar.gz`
 in source checkouts, or the matching GitHub release asset from pip installs.
 It contains `graphify-out/*` plus the external Skills.sh catalog needed for
-recommendations and the 13 cataloged harness pages needed by
+recommendations and the 14 cataloged harness pages needed by
 `ctx-harness-install`:
 
 ```bash
@@ -63,7 +63,7 @@ ctx-init --graph --graph-install-mode full
 The full `wiki-graph.tar.gz` includes `external-catalogs/skills-sh/catalog.json`,
 89,463 body-backed Skills.sh skill pages under `entities/skills/skills-sh-*.md`,
 89,463 hydrated installable Skills.sh `SKILL.md` files under
-`converted/skills-sh-*/`, and 13 cataloged harness pages under
+`converted/skills-sh-*/`, and 14 cataloged harness pages under
 `entities/harnesses/`.
 
 > **Windows:** PowerShell's built-in `tar.exe` does not support

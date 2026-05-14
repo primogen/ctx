@@ -400,14 +400,14 @@ jobs:
             --min-edges 2000000 \
             --min-skills-sh-nodes 89000 \
             --min-semantic-edges 1000000 \
-            --expected-nodes 102718 \
-            --expected-edges 2911220 \
-            --expected-semantic-edges 1683265 \
+            --expected-nodes 102715 \
+            --expected-edges 2911126 \
+            --expected-semantic-edges 1683182 \
             --expected-harness-nodes 14 \
             --expected-skills-sh-nodes 89463 \
             --expected-skills-sh-catalog-entries 89463 \
             --expected-skills-sh-converted 89463 \
-            --expected-skill-pages 91450 \
+            --expected-skill-pages 91447 \
             --expected-agent-pages 467 \
             --expected-mcp-pages 10787 \
             --expected-harness-pages 14 \

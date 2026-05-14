@@ -75,7 +75,7 @@ BUILTIN_EXTERNAL_SOURCES: tuple[ExternalSourceRecord, ...] = (
     ExternalSourceRecord(
         name="mattpocock-skills",
         url="https://github.com/mattpocock/skills",
-        revision="f304057d61d3df3c9fd992ac2b6e3833cb9325fb",
+        revision="e74f0061bb67222181640effa98c675bdb2fdaa7",
         license="MIT",
         source_kind="skill-suite",
         import_mode="full",

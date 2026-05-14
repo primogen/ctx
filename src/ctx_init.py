@@ -223,8 +223,8 @@ _GRAPH_ARCHIVE_NAMES = {
     "full": _GRAPH_ARCHIVE_NAME,
 }
 _GRAPH_ARCHIVE_SHA256 = {
-    "runtime": "84634152dea0f7c8881bc717eaefcce5bfe1b97c4cee90b3202a2ee48b95dd8c",
-    "full": "a3968445d6ef9a27d5a684d30019b5730e9c40c62ba7fcd1b66e8567baa756b6",
+    "runtime": "d6249d5c1a7c2bbbc099a311300ab48ffb0df08ee3937cb4573aebb88838e66e",
+    "full": "a15da11fd2c4cb44931cd516a97e31c30bf8b5d4ce8e5215f507b9f33c73259b",
 }
 _GRAPH_RELEASE_URL = (
     "https://github.com/stevesolun/ctx/releases/download/"

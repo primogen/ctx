@@ -5,7 +5,7 @@ hide:
 
 # ctx — Skill, Agent, MCP & Harness Catalog
 
-Watches what you develop, walks a knowledge graph of **91,450 skills, 467
+Watches what you develop, walks a knowledge graph of **91,447 skills, 467
 agents, 10,787 MCP servers, and 14 cataloged harnesses**, and recommends the
 right execution bundle on the fly. The live execution bundle is skills,
 agents, and MCP servers only; custom/API/local model users get a separate
@@ -76,12 +76,12 @@ graph-based discovery:
 
 - A Karpathy 3-layer wiki at `~/.claude/skill-wiki/` is the single source
   of truth.
-- **102,718 entity pages/nodes** for the shipped skill/agent/MCP/harness
+- **102,715 entity pages/nodes** for the shipped skill/agent/MCP/harness
   inventory, including 89,463 body-backed Skills.sh skill pages
-  and 13 cataloged harness pages under `entities/harnesses/`.
+  and 14 cataloged harness pages under `entities/harnesses/`.
   Each page tracks tags, status, provenance, and usage where it applies.
-- A **knowledge graph** (102,718 nodes, 2,911,220 edges) built from a
-  13,233-node curated core plus 89,463 body-backed Skills.sh `skill`
+- A **knowledge graph** (102,715 nodes, 2,911,126 edges) built from a
+  13,252-node curated core plus 89,463 body-backed Skills.sh `skill`
   nodes. The graph has 52 Louvain communities and blends semantic cosine,
   tag overlap, and slug-token overlap; 89,463 hydrated Skills.sh bodies are
   shipped as installable `SKILL.md` files. Entries over the configured line
@@ -117,9 +117,9 @@ ones are flagged. New ones self-ingest.
 
     ---
 
-    102,718 shipped graph nodes: 13,255 curated skill/agent/MCP/harness
+    102,715 shipped graph nodes: 13,252 curated skill/agent/MCP/harness
     nodes plus 89,463 body-backed Skills.sh skill nodes. The graph has
-    2,911,220 weighted edges and 52 Louvain communities.
+    2,911,126 weighted edges and 52 Louvain communities.
     Ships pre-built in `graph/wiki-graph.tar.gz` and powers the
     graph-aware recommendations + the pre-ship `ctx-dedup-check` gate.
 
@@ -195,7 +195,7 @@ ones are flagged. New ones self-ingest.
     `ctx-incremental-attach`, `ctx-incremental-shadow`, `ctx-dedup-check`
     (pre-ship near-duplicate gate), and
     `ctx-tag-backfill` (catalog hygiene), plus a fast runtime graph artifact
-    and the full ~334 MiB wiki tarball with **102,718 nodes / 2,911,220
+    and the full ~334 MiB wiki tarball with **102,715 nodes / 2,911,126
     edges / 52 Louvain communities**.
 
     [:octicons-arrow-right-24: CHANGELOG](https://github.com/stevesolun/ctx/blob/main/CHANGELOG.md) ·
