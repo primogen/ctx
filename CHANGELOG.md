@@ -7,6 +7,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.5] - 2026-05-14
+
+### Fixed
+
+- Fixed `ctx-init --graph` for pip installs by aligning the hard-coded
+  runtime/full graph archive SHA-256 checksums with the shipped GitHub release
+  artifacts.
+- Added a regression that checks graph install checksum constants against the
+  shipped graph artifacts or their Git LFS pointer OIDs before release.
+- Fixed stale `ctx-scan-repo --recommend` examples in docs, dashboard output,
+  and scanner prose; the CLI requires `--repo`.
+
 ## [1.0.4] - 2026-05-14
 
 ### Added
@@ -1512,6 +1524,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.5]: https://github.com/stevesolun/ctx/releases/tag/v1.0.5
 [1.0.4]: https://github.com/stevesolun/ctx/releases/tag/v1.0.4
 [1.0.3]: https://github.com/stevesolun/ctx/releases/tag/v1.0.3
 [1.0.2]: https://github.com/stevesolun/ctx/releases/tag/v1.0.2

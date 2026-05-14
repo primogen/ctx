@@ -188,8 +188,8 @@ ones are flagged. New ones self-ingest.
 
     ---
 
-    **v1.0.4** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
-    3,796 tests collected. Ships console scripts including `ctx-init`,
+    **v1.0.5** — MIT, CI-matrixed (Ubuntu + Windows × Python 3.11/3.12),
+    3,797 tests collected. Ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
     skills, agents, and MCP servers, plus Harness Setup for user-owned LLMs),
     `ctx-incremental-attach`, `ctx-incremental-shadow`, `ctx-dedup-check`
