@@ -414,6 +414,48 @@ def test_main_with_graph_flag_installs_prebuilt_graph(
     assert not any(c == "wiki_graphify" for call in calls for c in call)
 
 
+def test_graph_install_copies_local_entity_overlay(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    claude = tmp_path / "home"
+    archive = _write_graph_archive(tmp_path)
+    overlay = tmp_path / "entity-overlays.jsonl"
+    overlay.write_text(
+        json.dumps({
+            "overlay_id": "test-overlay",
+            "nodes": [{"id": "harness:mirage", "type": "harness"}],
+            "edges": [
+                {
+                    "source": "harness:mirage",
+                    "target": "skill:codex-review",
+                    "weight": 0.5,
+                    "similarity_score": 0.5,
+                    "method": "manual_direct_overlay_v1",
+                    "rank": 1,
+                    "provenance": "manual_overlay_v1",
+                }
+            ],
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        ci,
+        "_find_local_graph_archive",
+        lambda _install_mode="runtime": archive,
+        raising=False,
+    )
+    monkeypatch.setattr(ci, "_find_local_graph_entity_overlay", lambda: overlay)
+
+    assert ci.build_graph(claude) == 0
+
+    installed = claude / "skill-wiki" / "graphify-out" / "entity-overlays.jsonl"
+    payload = json.loads(installed.read_text(encoding="utf-8"))
+    assert payload["overlay_id"] == "test-overlay"
+    assert payload["edges"][0]["method"] == "manual_direct_overlay_v1"
+
+
 def test_runtime_graph_install_extracts_harness_pages_after_required_files(
     tmp_path: Path,
     monkeypatch,

@@ -83,7 +83,7 @@ from ctx.utils._safe_name import is_safe_source_name
 
 _MONITOR_TOKEN = ""
 _MONITOR_MUTATIONS_ENABLED = True
-_GRAPH_CACHE_KEY: tuple[Path, float, int, int] | None = None
+_GRAPH_CACHE_KEY: tuple[Any, ...] | None = None
 _GRAPH_CACHE_VALUE: Any | None = None
 _SIDECAR_INDEX_CACHE_KEY: tuple[tuple[Path, float, int], ...] | None = None
 _SIDECAR_INDEX_CACHE_VALUE: dict[tuple[str, str], dict] | None = None
@@ -146,6 +146,7 @@ def _load_dashboard_graph() -> Any:
     global _GRAPH_CACHE_KEY, _GRAPH_CACHE_VALUE
 
     graph_path = _wiki_dir() / "graphify-out" / "graph.json"
+    overlay_path = graph_path.with_name("entity-overlays.jsonl")
     from ctx.core.graph.resolve_graph import load_graph as _lg  # type: ignore
 
     if not graph_path.exists():
@@ -154,7 +155,11 @@ def _load_dashboard_graph() -> Any:
         return _lg(graph_path)
 
     stat = graph_path.stat()
-    cache_key = (graph_path.resolve(), stat.st_mtime, stat.st_size, id(_lg))
+    overlay_key = None
+    if overlay_path.exists():
+        overlay_stat = overlay_path.stat()
+        overlay_key = (overlay_stat.st_mtime, overlay_stat.st_size)
+    cache_key = (graph_path.resolve(), stat.st_mtime, stat.st_size, id(_lg), overlay_key)
     if _GRAPH_CACHE_KEY == cache_key and _GRAPH_CACHE_VALUE is not None:
         return _GRAPH_CACHE_VALUE
 

@@ -395,6 +395,7 @@ jobs:
             graph/wiki-graph-runtime.tar.gz
             graph/skills-sh-catalog.json.gz
             graph/communities.json
+            graph/entity-overlays.jsonl
 
   release-assets:
     name: Upload graph release assets
@@ -426,6 +427,7 @@ jobs:
             graph-release-assets/wiki-graph-runtime.tar.gz \
             graph-release-assets/skills-sh-catalog.json.gz \
             graph-release-assets/communities.json \
+            graph-release-assets/entity-overlays.jsonl \
             --clobber
 
   publish:

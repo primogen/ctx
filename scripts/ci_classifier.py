@@ -31,6 +31,7 @@ DOCS_PATTERNS = (
 )
 GRAPH_ARTIFACT_PATTERNS = (
     "graph/communities.json",
+    "graph/entity-overlays.jsonl",
     "graph/skills-sh-catalog.json.gz",
     "graph/wiki-graph-runtime.tar.gz",
     "graph/wiki-graph.tar.gz",
@@ -60,6 +61,7 @@ SOURCE_PATTERNS = (
 )
 SIMILARITY_PATTERNS = (
     ".github/workflows/test.yml",
+    "graph/entity-overlays.jsonl",
     "pyproject.toml",
     "src/corpus_cache.py",
     "src/config.json",

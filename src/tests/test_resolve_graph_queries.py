@@ -132,6 +132,49 @@ class TestLoadGraph:
         assert G.number_of_nodes() == 3
         assert G.number_of_edges() == 3
 
+    def test_entity_overlay_jsonl_merges_nodes_and_edges(self, tmp_path: Path) -> None:
+        """Small entity adds should not require rewriting the packed graph tar."""
+        source = _build_simple_graph()
+        p = tmp_path / "graph.json"
+        p.write_text(json.dumps(_serialise_graph(source)), encoding="utf-8")
+        (tmp_path / "entity-overlays.jsonl").write_text(
+            json.dumps({
+                "nodes": [
+                    {
+                        "id": "harness:mirage",
+                        "type": "harness",
+                        "label": "mirage",
+                        "tags": ["harness", "sandbox"],
+                        "quality_score": 0.82,
+                    },
+                ],
+                "edges": [
+                    {
+                        "source": "harness:mirage",
+                        "target": "skill:A",
+                        "weight": 0.18,
+                        "final_weight": 0.18,
+                        "shared_tags": ["harness"],
+                    },
+                    {
+                        "source": "harness:mirage",
+                        "target": "missing:node",
+                        "weight": 0.18,
+                    },
+                ],
+            })
+            + "\n",
+            encoding="utf-8",
+        )
+
+        G = resolve_graph.load_graph(p)
+
+        assert G.nodes["harness:mirage"]["quality_score"] == 0.82
+        assert G.has_edge("harness:mirage", "skill:A")
+        assert not G.has_edge("harness:mirage", "missing:node")
+        assert G.graph["ctx_entity_overlay_nodes"] == 1
+        assert G.graph["ctx_entity_overlay_edges"] == 1
+
     def test_valid_links_key_round_trips(self, tmp_path: Path) -> None:
         """Networkx 2.x files used 'links' key — load_graph must handle it."""
         source = _build_simple_graph()

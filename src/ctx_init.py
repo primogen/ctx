@@ -214,6 +214,10 @@ def _resolve_ctx_src_dir() -> Path:
 
 _GRAPH_ARCHIVE_NAME = "wiki-graph.tar.gz"
 _GRAPH_RUNTIME_ARCHIVE_NAME = "wiki-graph-runtime.tar.gz"
+_GRAPH_ENTITY_OVERLAY_NAME = "entity-overlays.jsonl"
+_GRAPH_ENTITY_OVERLAY_SHA256 = (
+    "1a167f6a0f78ac78b6e9ecf4abdac7332b171e99187d7d72c22383bd22bead2e"
+)
 _GRAPH_ARCHIVE_NAMES = {
     "runtime": _GRAPH_RUNTIME_ARCHIVE_NAME,
     "full": _GRAPH_ARCHIVE_NAME,
@@ -283,6 +287,17 @@ def build_graph(
         else _graph_install_complete(wiki_dir)
     )
     if not force and install_complete:
+        try:
+            _install_graph_entity_overlay(
+                wiki_dir,
+                allow_release_download=graph_url is None,
+            )
+        except Exception as exc:
+            print(
+                f"  [error] graph overlay install failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
         print(f"Graph already installed at {graph_json}; use --force to refresh.")
         return 0
 
@@ -304,6 +319,10 @@ def build_graph(
         else:
             print(f"Installing pre-built graph from {archive}")
         _extract_graph_archive(archive, wiki_dir, install_mode=install_mode)
+        _install_graph_entity_overlay(
+            wiki_dir,
+            allow_release_download=graph_url is None,
+        )
     except Exception as exc:
         print(
             f"  [error] graph install failed: {type(exc).__name__}: {exc}",
@@ -339,10 +358,94 @@ def _find_local_graph_archive(install_mode: str = "runtime") -> Path | None:
     return None
 
 
+def _find_local_graph_entity_overlay() -> Path | None:
+    module_path = Path(__file__).resolve()
+    graph_dirs = (module_path.parent.parent / "graph", Path.cwd() / "graph")
+    for graph_dir in graph_dirs:
+        candidate = graph_dir / _GRAPH_ENTITY_OVERLAY_NAME
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _install_graph_entity_overlay(
+    wiki_dir: Path,
+    *,
+    allow_release_download: bool = True,
+) -> None:
+    overlay = _find_local_graph_entity_overlay()
+    temp_dir: tempfile.TemporaryDirectory[str] | None = None
+    if overlay is None and allow_release_download:
+        temp_dir = tempfile.TemporaryDirectory(prefix="ctx-graph-overlay-")
+        candidate = Path(temp_dir.name) / _GRAPH_ENTITY_OVERLAY_NAME
+        try:
+            _download_graph_archive(
+                candidate,
+                url=_release_asset_url(_GRAPH_ENTITY_OVERLAY_NAME),
+                expected_sha256=_GRAPH_ENTITY_OVERLAY_SHA256,
+            )
+        except OSError:
+            temp_dir.cleanup()
+            return
+        overlay = candidate
+    if overlay is None:
+        return
+    try:
+        _validate_graph_entity_overlay(overlay)
+        destination = wiki_dir / "graphify-out" / _GRAPH_ENTITY_OVERLAY_NAME
+        target_root = wiki_dir.resolve()
+        _ensure_path_under_root(destination.parent, target_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.is_symlink():
+            destination.unlink()
+        tmp = destination.with_name(f".{destination.name}.tmp")
+        tmp.write_bytes(overlay.read_bytes())
+        os.replace(tmp, destination)
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
+
+
+def _validate_graph_entity_overlay(path: Path) -> None:
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        payload = json.loads(line)
+        if not isinstance(payload, dict):
+            raise ValueError(f"{path} line {lineno} must contain a JSON object")
+        nodes = payload.get("nodes", [])
+        edges = payload.get("edges", [])
+        if not isinstance(nodes, list) or not isinstance(edges, list):
+            raise ValueError(f"{path} line {lineno} must contain nodes/edges lists")
+        for index, node in enumerate(nodes, 1):
+            if not isinstance(node, dict) or not isinstance(node.get("id"), str):
+                raise ValueError(f"{path} line {lineno} node {index} must contain id")
+        for index, edge in enumerate(edges, 1):
+            if not isinstance(edge, dict):
+                raise ValueError(f"{path} line {lineno} edge {index} must be an object")
+            if not isinstance(edge.get("source"), str) or not isinstance(edge.get("target"), str):
+                raise ValueError(
+                    f"{path} line {lineno} edge {index} must contain source/target"
+                )
+            for field in ("weight", "final_weight", "similarity_score"):
+                value = edge.get(field)
+                if value is None:
+                    continue
+                if not isinstance(value, int | float) or not 0 <= float(value) <= 1:
+                    raise ValueError(
+                        f"{path} line {lineno} edge {index} {field} must be 0..1"
+                    )
+
+
 def _release_graph_url(install_mode: str = "runtime") -> str:
+    return _release_asset_url(_graph_archive_name(install_mode))
+
+
+def _release_asset_url(asset_name: str) -> str:
     return _GRAPH_RELEASE_URL.format(
         version=_package_version(),
-        archive_name=_graph_archive_name(install_mode),
+        archive_name=asset_name,
     )
 
 

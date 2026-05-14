@@ -62,6 +62,9 @@ CLAUDE.md
 /graph/*-report.md
 /graph/*-report.json
 /graph/*-report.json.gz
+/graph/*.staged
+/graph/*.partial
+/graph/*.lock
 *.promotion.json
 /graph/tag-backfill.md
 /graph/tag-backfill.json

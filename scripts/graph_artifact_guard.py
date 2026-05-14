@@ -12,6 +12,13 @@ DEFAULT_ARTIFACTS = (
     "graph/skills-sh-catalog.json.gz",
 )
 
+STALE_GRAPH_PATTERNS = (
+    "*.staged",
+    "*.partial",
+    "*.lock",
+    "*.tmp",
+)
+
 
 def _run_git(
     repo: Path,
@@ -81,6 +88,30 @@ def _prune(repo: Path, *, include_lfs: bool) -> None:
             raise SystemExit(result.returncode)
 
 
+def _clean_stale_graph_files(repo: Path, *, dry_run: bool) -> None:
+    graph_dir = (repo / "graph").resolve()
+    repo = repo.resolve()
+    if not graph_dir.is_dir():
+        print("No graph directory found.")
+        return
+
+    stale_files: list[Path] = []
+    for pattern in STALE_GRAPH_PATTERNS:
+        stale_files.extend(
+            path.resolve()
+            for path in graph_dir.glob(pattern)
+            if path.is_file() and path.resolve().is_relative_to(graph_dir)
+        )
+
+    for path in sorted(set(stale_files)):
+        rel = path.relative_to(repo).as_posix()
+        if dry_run:
+            print(f"would remove: {rel}")
+        else:
+            path.unlink()
+            print(f"removed: {rel}")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -90,11 +121,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "command",
-        choices=("status", "park", "unpark", "prune"),
+        choices=("status", "park", "unpark", "prune", "clean-stale"),
         help=(
             "status shows skip-worktree state; park hides generated archives from "
             "normal Git status/stage scans; unpark re-enables release staging; "
-            "prune removes unreachable local Git/LFS objects."
+            "prune removes unreachable local Git/LFS objects; clean-stale "
+            "removes interrupted graph promotion leftovers."
         ),
     )
     parser.add_argument(
@@ -117,6 +149,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="For prune only: skip git lfs prune.",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="For clean-stale only: print stale files without deleting them.",
+    )
     return parser
 
 
@@ -133,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
         _set_skip_worktree(repo, artifacts, enabled=False)
     elif args.command == "prune":
         _prune(repo, include_lfs=not args.skip_lfs)
+    elif args.command == "clean-stale":
+        _clean_stale_graph_files(repo, dry_run=args.dry_run)
     return 0
 
 
