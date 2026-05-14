@@ -26,8 +26,9 @@ What it does:
      ``~/.claude/settings.json``.
   6. Optionally: installs the initial graph/wiki archive if missing.
      Skipped unless the wizard or ``--graph`` asks for it. Source
-     checkouts use ``graph/wiki-graph.tar.gz``; pip installs download
-     the matching release asset.
+     checkouts use ``graph/wiki-graph-runtime.tar.gz`` by default and
+     fall back to the full ``graph/wiki-graph.tar.gz`` archive; pip installs
+     download the matching release asset.
 
 Idempotent: re-running only writes what's missing. Never overwrites
 a user's config or hook settings without an explicit ``--force`` flag.
@@ -41,11 +42,13 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tarfile
 import tempfile
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
@@ -223,8 +226,8 @@ _GRAPH_ARCHIVE_NAMES = {
     "full": _GRAPH_ARCHIVE_NAME,
 }
 _GRAPH_ARCHIVE_SHA256 = {
-    "runtime": "d6249d5c1a7c2bbbc099a311300ab48ffb0df08ee3937cb4573aebb88838e66e",
-    "full": "a15da11fd2c4cb44931cd516a97e31c30bf8b5d4ce8e5215f507b9f33c73259b",
+    "runtime": "27cd757cabaf7209d864b460d14b0755e258cc9bcf93581cacf987e1a7ef1e21",
+    "full": "57974831189e6fa6c828f3dc2b6b54ebff50879dcc301ed749d20fa9cc495414",
 }
 _GRAPH_RELEASE_URL = (
     "https://github.com/stevesolun/ctx/releases/download/"
@@ -237,6 +240,7 @@ _GRAPH_REQUIRED_FILES = frozenset({
     "graphify-out/communities.json",
     "graphify-out/graph-report.md",
     "graphify-out/graph-export-manifest.json",
+    "graphify-out/dashboard-neighborhoods.sqlite3",
     "external-catalogs/skills-sh/catalog.json",
 })
 _GRAPH_MANAGED_PATHS = (
@@ -302,7 +306,7 @@ def build_graph(
         return 0
 
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
-    archive = _find_local_graph_archive(install_mode)
+    archive = None if graph_url is not None else _find_local_graph_archive(install_mode)
     try:
         if archive is None:
             temp_dir = tempfile.TemporaryDirectory(prefix="ctx-graph-download-")
@@ -317,6 +321,7 @@ def build_graph(
             print(f"Downloading pre-built graph from {url}")
             _download_graph_archive(archive, url=url, expected_sha256=expected_sha256)
         else:
+            _verify_local_graph_archive(archive, requested_install_mode=install_mode)
             print(f"Installing pre-built graph from {archive}")
         _extract_graph_archive(archive, wiki_dir, install_mode=install_mode)
         _install_graph_entity_overlay(
@@ -475,6 +480,25 @@ def _expected_graph_archive_sha256(
     )
 
 
+def _verify_local_graph_archive(archive: Path, *, requested_install_mode: str) -> None:
+    archive_mode = (
+        "full" if archive.name == _GRAPH_ARCHIVE_NAME else requested_install_mode
+    )
+    expected = _GRAPH_ARCHIVE_SHA256.get(archive_mode)
+    if expected is None:
+        return
+    hasher = hashlib.sha256()
+    with archive.open("rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            hasher.update(chunk)
+    actual = hasher.hexdigest()
+    if actual.lower() != expected.lower():
+        raise ValueError(
+            "local graph archive checksum mismatch: "
+            f"{archive} expected {expected.lower()} got {actual.lower()}"
+        )
+
+
 def _package_version() -> str:
     try:
         return package_version("claude-ctx")
@@ -610,6 +634,10 @@ def _validate_graph_install_tree(wiki_dir: Path) -> None:
     }
     if not isinstance(artifacts, dict) or artifacts != expected_artifacts:
         raise ValueError("graph export manifest artifacts map is incomplete")
+    _validate_dashboard_index_file(
+        wiki_dir / "graphify-out" / "dashboard-neighborhoods.sqlite3",
+        expected_export_id=export_id.strip(),
+    )
 
 
 def _validate_graph_json_outline(path: Path) -> None:
@@ -633,6 +661,50 @@ def _validate_graph_json_outline(path: Path) -> None:
         raise ValueError("graphify-out/graph.json is missing a nodes list")
     if '"edges"' not in outline and '"links"' not in outline:
         raise ValueError("graphify-out/graph.json is missing an edges/links list")
+
+
+def _validate_dashboard_index_file(path: Path, *, expected_export_id: str) -> None:
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        raise ValueError(f"dashboard-neighborhoods.sqlite3 is not valid SQLite: {exc}") from exc
+    try:
+        quick = conn.execute("PRAGMA quick_check").fetchone()
+        if quick is None or str(quick[0]).lower() != "ok":
+            raise ValueError("dashboard-neighborhoods.sqlite3 failed quick_check")
+        tables = {
+            str(row["name"])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        required = {"meta", "nodes", "slug_index", "neighbors"}
+        missing = sorted(required - tables)
+        if missing:
+            raise ValueError(f"dashboard-neighborhoods.sqlite3 missing tables: {missing}")
+        meta = {
+            str(row["key"]): json.loads(str(row["value"]))
+            for row in conn.execute("SELECT key,value FROM meta")
+        }
+        if meta.get("export_id") != expected_export_id:
+            raise ValueError(
+                "dashboard-neighborhoods.sqlite3 export_id mismatch: "
+                f"expected {expected_export_id}, got {meta.get('export_id') or 'missing'}",
+            )
+        nodes_count = int(meta.get("nodes_count") or 0)
+        actual_nodes = int(conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0])
+        if nodes_count != actual_nodes:
+            raise ValueError("dashboard-neighborhoods.sqlite3 nodes_count mismatch")
+        payload = conn.execute("SELECT payload FROM neighbors LIMIT 1").fetchone()
+        if payload is not None:
+            decoded = json.loads(zlib.decompress(payload["payload"]).decode("utf-8"))
+            if not isinstance(decoded, list):
+                raise ValueError("dashboard-neighborhoods.sqlite3 neighbor payload is invalid")
+    except (sqlite3.Error, json.JSONDecodeError, TypeError, ValueError, zlib.error) as exc:
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError(f"dashboard-neighborhoods.sqlite3 validation failed: {exc}") from exc
+    finally:
+        conn.close()
 
 
 def _read_json_file(path: Path) -> Any:

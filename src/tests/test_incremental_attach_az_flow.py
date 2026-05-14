@@ -116,6 +116,7 @@ def test_entity_onboarding_incremental_attach_a_to_z(
     monkeypatch.setattr(mcp_add, "check_intake", _allow_intake)
     monkeypatch.setattr(mcp_add, "record_embedding", lambda **_kwargs: None)
     monkeypatch.setattr(cm, "_claude_dir", lambda: claude)
+    monkeypatch.setattr(cm, "_dashboard_graph_index_archives", lambda: [])
 
     source = tmp_path / "SKILL.md"
     source.write_text(

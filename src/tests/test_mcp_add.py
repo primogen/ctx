@@ -30,6 +30,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from mcp_entity import McpRecord  # noqa: E402
+from ctx.core.wiki import wiki_queue  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +546,14 @@ class TestCrossSourceCanonicalKeyDedup:
         # not its own slug-based path.
         assert result2["is_new_page"] is False
         assert result2["path"] == str(first_path)
+        assert result2["slug"] == first_path.stem
         assert result2["merged_sources"] == ["awesome-mcp", "pulsemcp"]
+
+        jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki_dir))
+        assert jobs[-1].payload["slug"] == first_path.stem
+        assert jobs[-1].payload["entity_path"] == str(
+            first_path.relative_to(wiki_dir)
+        ).replace("\\", "/")
 
         # And only ONE entity file exists in the wiki.
         all_entities = list(

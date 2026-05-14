@@ -7,6 +7,30 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.6] - 2026-05-14
+
+### Fixed
+
+- Promoted Mirage, CodeGraph, and `codegraph-agentic-codebase-analysis` from
+  graph overlay-only records into first-class shipped LLM-wiki pages in
+  `graph/wiki-graph.tar.gz`; the fast runtime archive now carries the Mirage
+  harness page for custom/API/local model onboarding.
+- Regenerated graph preview HTML from the refreshed graph export and updated
+  exact graph artifact validation counts to 102,717 nodes, 2,911,162 edges,
+  91,448 skill pages, 467 agent pages, 10,787 MCP pages, and 15 harness pages.
+- Added a compact dashboard neighborhood index to the shipped runtime/full
+  graph archives so dashboard graph lookup does not parse the 604 MB
+  `graph.json` on the first request.
+- Fixed `ctx-init --graph --graph-url ...` so an explicit remote graph URL is
+  verified and downloaded instead of being silently shadowed by any local
+  source-checkout archive.
+- Fixed dashboard entity deletion queue jobs so the worker no longer fails by
+  trying to read an entity page that the dashboard already removed; deletes now
+  queue a full graph-only refresh.
+- Fixed cross-source MCP canonical merges so the queued wiki refresh and
+  canonical index use the existing target slug/path instead of the incoming
+  alias slug.
+
 ## [1.0.5] - 2026-05-14
 
 ### Fixed
@@ -1524,6 +1548,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.6]: https://github.com/stevesolun/ctx/releases/tag/v1.0.6
 [1.0.5]: https://github.com/stevesolun/ctx/releases/tag/v1.0.5
 [1.0.4]: https://github.com/stevesolun/ctx/releases/tag/v1.0.4
 [1.0.3]: https://github.com/stevesolun/ctx/releases/tag/v1.0.3

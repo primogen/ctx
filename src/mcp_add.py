@@ -294,6 +294,7 @@ def add_mcp(
 
     reject_symlink_path(target_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_slug = target_path.stem
 
     is_new_page: bool
     merged_sources: list[str]
@@ -343,12 +344,12 @@ def add_mcp(
     if review_existing and not is_new_page and not update_existing:
         review = build_update_review(
             entity_type="mcp-server",
-            slug=record.slug,
+            slug=target_slug,
             existing_text=existing_text,
             proposed_text=final_text,
         )
         return {
-            "slug": record.slug,
+            "slug": target_slug,
             "is_new_page": False,
             "merged_sources": merged_sources,
             "path": str(target_path),
@@ -366,7 +367,7 @@ def add_mcp(
         queue_job = enqueue_entity_upsert(
             wiki_path=wiki_path,
             entity_type="mcp-server",
-            slug=record.slug,
+            slug=target_slug,
             entity_path=target_path,
             content=final_text,
             action="created" if is_new_page else "updated",
@@ -387,7 +388,7 @@ def add_mcp(
                 mcp_canonical_index.upsert(
                     mcp_dir,
                     canonical,
-                    slug=record.slug,
+                    slug=target_slug,
                     relpath=relpath,
                 )
             except (OSError, ValueError) as exc:
@@ -413,10 +414,10 @@ def add_mcp(
                     file=sys.stderr,
                 )
 
-            update_index(str(wiki_path), [record.slug], subject_type="mcp-servers")
+            update_index(str(wiki_path), [target_slug], subject_type="mcp-servers")
 
             log_details = [
-                f"Slug: {record.slug}",
+                f"Slug: {target_slug}",
                 f"Path: {target_path}",
                 f"Sources: {', '.join(merged_sources) if merged_sources else 'none'}",
                 f"Tags: {', '.join(record.tags) if record.tags else 'none'}",
@@ -431,10 +432,10 @@ def add_mcp(
                 log_details.append(
                     "Warnings: " + "; ".join(f"{w.code}:{w.message}" for w in warnings)
                 )
-            append_log(str(wiki_path), "add-mcp", record.slug, log_details)
+            append_log(str(wiki_path), "add-mcp", target_slug, log_details)
 
     return {
-        "slug": record.slug,
+        "slug": target_slug,
         "is_new_page": is_new_page,
         "merged_sources": merged_sources,
         "path": str(target_path),

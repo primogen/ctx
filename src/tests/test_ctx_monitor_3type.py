@@ -79,6 +79,7 @@ def wiki_3type(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
 
     monkeypatch.setattr(_cm, "_wiki_dir", lambda: wiki)
+    monkeypatch.setattr(_cm, "_dashboard_graph_index_archives", lambda: [])
     return wiki
 
 
@@ -888,6 +889,7 @@ class TestRenderGraphSidebar:
 
     def test_graph_neighborhood_filter_tokens_include_edge_shared_tags(
         self,
+        wiki_3type,
         monkeypatch,
     ):
         graph = nx.Graph()

@@ -230,7 +230,11 @@ def _apply_entity_overlays(G: nx.Graph, graph_path: Path) -> nx.Graph:
     return G
 
 
-def load_graph(path: Path | None = None) -> nx.Graph:
+def load_graph(
+    path: Path | None = None,
+    *,
+    apply_runtime_filter: bool = True,
+) -> nx.Graph:
     """Load the knowledge graph from graph.json.
 
     Returns an empty graph on any parse or schema error rather than crashing.
@@ -260,7 +264,9 @@ def load_graph(path: Path | None = None) -> nx.Graph:
         graph = node_link_graph(data, edges=edges_key)
         graph.graph.setdefault("ctx_graph_path", str(graph_path))
         graph = _apply_entity_overlays(graph, graph_path)
-        return _filter_runtime_edges(graph, _configured_semantic_min_cosine())
+        if apply_runtime_filter:
+            return _filter_runtime_edges(graph, _configured_semantic_min_cosine())
+        return graph
     except json.JSONDecodeError as exc:
         logger.warning("graph.json is not valid JSON (%s); returning empty graph", exc)
     except UnicodeDecodeError as exc:

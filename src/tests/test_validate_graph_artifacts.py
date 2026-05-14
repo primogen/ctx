@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import gzip
 import json
+import sqlite3
 import tarfile
+import zlib
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -33,6 +35,69 @@ def _add_text(tf: tarfile.TarFile, name: str, text: str) -> None:
     info.size = len(payload)
     info.mode = 0o644
     tf.addfile(info, BytesIO(payload))
+
+
+def _add_bytes(tf: tarfile.TarFile, name: str, payload: bytes) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = len(payload)
+    info.mode = 0o644
+    tf.addfile(info, BytesIO(payload))
+
+
+def _dashboard_index_bytes(graph_dir: Path, *, export_id: str) -> bytes:
+    path = graph_dir / f"dashboard-index-{export_id}.sqlite3"
+    if path.exists():
+        path.unlink()
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE slug_index(slug TEXT,type TEXT,node_id TEXT,"
+            "PRIMARY KEY(slug,type,node_id))"
+        )
+        conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [
+                ("version", "1"),
+                ("export_id", json.dumps(export_id)),
+                ("nodes_count", "2"),
+                ("edges_count", "1"),
+                ("max_degree", "1"),
+                ("top_k", "40"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            [
+                ("skill:skills-sh-example-skill", "skills-sh-example-skill", "skill", "[]", "", None, None, 1),
+                ("harness:langgraph", "langgraph", "harness", "[]", "", None, None, 1),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO slug_index VALUES(?,?,?)",
+            [
+                ("skills-sh-example-skill", "skill", "skill:skills-sh-example-skill"),
+                ("langgraph", "harness", "harness:langgraph"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO neighbors VALUES(?,?)",
+            [
+                ("skill:skills-sh-example-skill", zlib.compress(json.dumps([{"target": "harness:langgraph"}]).encode("utf-8"))),
+                ("harness:langgraph", zlib.compress(json.dumps([{"target": "skill:skills-sh-example-skill"}]).encode("utf-8"))),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    payload = path.read_bytes()
+    path.unlink()
+    return payload
 
 
 def _write_catalog(graph_dir: Path, *, converted_path: str | None = None) -> None:
@@ -101,6 +166,11 @@ def _write_runtime_archive(
                     "counts": {"nodes": 2, "edges": 1, "communities": 1},
                 }),
             )
+        _add_bytes(
+            tf,
+            "graphify-out/dashboard-neighborhoods.sqlite3",
+            _dashboard_index_bytes(graph_dir, export_id=manifest_export_id),
+        )
         _add_text(tf, "external-catalogs/skills-sh/catalog.json", "{}")
         if include_queue:
             _add_text(tf, ".ctx/wiki-queue.sqlite3", "not a shipped artifact\n")
@@ -181,6 +251,11 @@ def _write_archive(
                     "counts": {"nodes": 2, "edges": 1, "communities": 1},
                 }),
             )
+        _add_bytes(
+            tf,
+            "./graphify-out/dashboard-neighborhoods.sqlite3",
+            _dashboard_index_bytes(graph_dir, export_id=manifest_export_id),
+        )
         _add_text(tf, "./external-catalogs/skills-sh/catalog.json", "{}")
         _add_text(tf, "./entities/skills/skills-sh-example-skill.md", "# Example\n")
         _add_text(tf, "./entities/harnesses/langgraph.md", "# LangGraph\n")
@@ -301,6 +376,161 @@ def test_validate_graph_artifacts_rejects_mixed_export_generation(
     _write_archive(tmp_path, graph_export_id="new-export", delta_export_id="old-export")
 
     with pytest.raises(GraphArtifactError, match="export_id mismatch"):
+        validate_graph_artifacts(
+            tmp_path,
+            deep=True,
+            min_nodes=2,
+            min_edges=1,
+            min_skills_sh_nodes=1,
+            min_semantic_edges=1,
+            expected_harnesses={"langgraph"},
+        )
+
+
+def test_validate_graph_artifacts_rejects_runtime_full_export_split(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path, graph_export_id="full-export")
+    runtime_graph = {
+        "graph": {"export_id": "runtime-export"},
+        "nodes": [
+            {"id": "skill:skills-sh-example-skill", "type": "skill"},
+            {"id": "harness:langgraph", "type": "harness"},
+        ],
+        "edges": [
+            {"source": "skill:skills-sh-example-skill", "target": "harness:langgraph"},
+        ],
+    }
+    _write_runtime_archive(
+        tmp_path,
+        graph=runtime_graph,
+        delta_export_id="runtime-export",
+        communities_export_id="runtime-export",
+        report_export_id="runtime-export",
+        manifest_export_id="runtime-export",
+    )
+
+    with pytest.raises(GraphArtifactError, match="runtime graph archive export_id mismatch"):
+        validate_graph_artifacts(
+            tmp_path,
+            deep=True,
+            min_nodes=2,
+            min_edges=1,
+            min_skills_sh_nodes=1,
+            min_semantic_edges=1,
+            expected_harnesses={"langgraph"},
+        )
+
+
+def test_validate_graph_artifacts_rejects_corrupt_dashboard_index(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    with tarfile.open(tmp_path / "wiki-graph-runtime.tar.gz", "w:gz") as tf:
+        graph = {
+            "graph": {"export_id": "export-test"},
+            "nodes": [
+                {"id": "skill:skills-sh-example-skill", "type": "skill"},
+                {"id": "harness:langgraph", "type": "harness"},
+            ],
+            "edges": [
+                {"source": "skill:skills-sh-example-skill", "target": "harness:langgraph"},
+            ],
+        }
+        _add_text(tf, "index.md", "# Wiki\n")
+        _add_text(tf, "graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
+        _add_text(tf, "graphify-out/graph-delta.json", json.dumps({"export_id": "export-test"}))
+        _add_text(tf, "graphify-out/communities.json", json.dumps({"export_id": "export-test"}))
+        _add_text(tf, "graphify-out/graph-report.md", "# Graph Report\n\n> Export ID: export-test\n")
+        _add_text(
+            tf,
+            "graphify-out/graph-export-manifest.json",
+            json.dumps({
+                "version": 1,
+                "export_id": "export-test",
+                "artifacts": {
+                    "graph": "graph.json",
+                    "delta": "graph-delta.json",
+                    "communities": "communities.json",
+                    "report": "graph-report.md",
+                },
+                "counts": {"nodes": 2, "edges": 1, "communities": 1},
+            }),
+        )
+        _add_text(tf, "graphify-out/dashboard-neighborhoods.sqlite3", "not sqlite\n")
+        _add_text(tf, "external-catalogs/skills-sh/catalog.json", "{}")
+        for slug in sorted(DEFAULT_HARNESSES):
+            _add_text(tf, f"entities/harnesses/{slug}.md", f"# {slug}\n")
+
+    with pytest.raises(GraphArtifactError, match="dashboard index"):
+        validate_graph_artifacts(
+            tmp_path,
+            deep=True,
+            min_nodes=2,
+            min_edges=1,
+            min_skills_sh_nodes=1,
+            min_semantic_edges=1,
+            expected_harnesses={"langgraph"},
+        )
+
+
+def test_validate_graph_artifacts_rejects_stale_dashboard_index(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path, graph_export_id="new-export", manifest_export_id="new-export")
+    with tarfile.open(tmp_path / "wiki-graph-runtime.tar.gz", "w:gz") as tf:
+        graph = {
+            "graph": {"export_id": "new-export"},
+            "nodes": [
+                {"id": "skill:skills-sh-example-skill", "type": "skill"},
+                {"id": "harness:langgraph", "type": "harness"},
+            ],
+            "edges": [
+                {"source": "skill:skills-sh-example-skill", "target": "harness:langgraph"},
+            ],
+        }
+        _add_text(tf, "index.md", "# Wiki\n")
+        _add_text(tf, "graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
+        _add_text(tf, "graphify-out/graph-delta.json", json.dumps({"export_id": "new-export"}))
+        _add_text(tf, "graphify-out/communities.json", json.dumps({"export_id": "new-export"}))
+        _add_text(tf, "graphify-out/graph-report.md", "# Graph Report\n\n> Export ID: new-export\n")
+        _add_text(
+            tf,
+            "graphify-out/graph-export-manifest.json",
+            json.dumps({
+                "version": 1,
+                "export_id": "new-export",
+                "artifacts": {
+                    "graph": "graph.json",
+                    "delta": "graph-delta.json",
+                    "communities": "communities.json",
+                    "report": "graph-report.md",
+                },
+                "counts": {"nodes": 2, "edges": 1, "communities": 1},
+            }),
+        )
+        _add_bytes(
+            tf,
+            "graphify-out/dashboard-neighborhoods.sqlite3",
+            _dashboard_index_bytes(tmp_path, export_id="old-export"),
+        )
+        _add_text(tf, "external-catalogs/skills-sh/catalog.json", "{}")
+        for slug in sorted(DEFAULT_HARNESSES):
+            _add_text(tf, f"entities/harnesses/{slug}.md", f"# {slug}\n")
+
+    with pytest.raises(GraphArtifactError, match="dashboard index export_id mismatch"):
         validate_graph_artifacts(
             tmp_path,
             deep=True,
@@ -618,17 +848,17 @@ def test_graph_only_workflow_uses_exact_release_counts() -> None:
         "--min-edges": "2000000",
         "--min-skills-sh-nodes": "89000",
         "--min-semantic-edges": "1000000",
-        "--expected-nodes": "102715",
-        "--expected-edges": "2911126",
+        "--expected-nodes": "102717",
+        "--expected-edges": "2911162",
         "--expected-semantic-edges": "1683182",
-        "--expected-harness-nodes": "14",
+        "--expected-harness-nodes": "15",
         "--expected-skills-sh-nodes": "89463",
         "--expected-skills-sh-catalog-entries": "89463",
         "--expected-skills-sh-converted": "89463",
-        "--expected-skill-pages": "91447",
+        "--expected-skill-pages": "91448",
         "--expected-agent-pages": "467",
         "--expected-mcp-pages": "10787",
-        "--expected-harness-pages": "14",
+        "--expected-harness-pages": "15",
         "--line-threshold": "180",
         "--max-stage-lines": "40",
     }

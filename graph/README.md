@@ -4,13 +4,13 @@ This directory ships the pre-built ctx LLM-wiki and knowledge graph.
 
 Current snapshot:
 
-- **102,715 graph nodes**
-- **2,911,126 graph edges**
+- **102,717 graph nodes**
+- **2,911,162 graph edges**
 - **52 Louvain communities**
-- **91,447 skill entity pages**: 1,984 curated/imported skills plus 89,463 body-backed Skills.sh skills
+- **91,448 skill entity pages**: 1,985 curated/imported skills plus 89,463 body-backed Skills.sh skills
 - **467 agent pages**
 - **10,787 MCP server pages**
-- **14 harness pages**
+- **15 harness pages**
 - **89,463 hydrated Skills.sh `SKILL.md` bodies**
 - **28,612 long Skills.sh bodies converted through the micro-skill gate**
 
@@ -23,10 +23,11 @@ The runtime recommendation paths use this graph in two ways:
 
 | File | Contents |
 |---|---|
-| `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the external Skills.sh catalog, 14 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
+| `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the external Skills.sh catalog, 15 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
 | `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, external catalogs, and Obsidian metadata |
 | `skills-sh-catalog.json.gz` | Compressed Skills.sh catalog for the 89,463 body-backed entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
+| `graphify-out/dashboard-neighborhoods.sqlite3` inside both tarballs | Compact top-neighbor index used by `ctx-monitor` so `/api/graph/<slug>.json` does not cold-parse the 604 MB NetworkX graph |
 | `viz-overview.html` | Plotly overview of the graph |
 | `viz-python.html` | Python-focused graph view |
 | `viz-security.html` | Security-focused graph view |
@@ -109,17 +110,17 @@ For release-count validation, pin the exact snapshot numbers:
 
 ```bash
 python src/validate_graph_artifacts.py --deep \
-  --expected-nodes 102715 \
-  --expected-edges 2911126 \
+  --expected-nodes 102717 \
+  --expected-edges 2911162 \
   --expected-semantic-edges 1683182 \
-  --expected-harness-nodes 14 \
+  --expected-harness-nodes 15 \
   --expected-skills-sh-nodes 89463 \
   --expected-skills-sh-catalog-entries 89463 \
   --expected-skills-sh-converted 89463 \
-  --expected-skill-pages 91447 \
+  --expected-skill-pages 91448 \
   --expected-agent-pages 467 \
   --expected-mcp-pages 10787 \
-  --expected-harness-pages 14
+  --expected-harness-pages 15
 ```
 
 Manual sanity checks:

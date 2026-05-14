@@ -7,7 +7,10 @@ import argparse
 import gzip
 import json
 import re
+import sqlite3
 import tarfile
+import tempfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
@@ -23,7 +26,9 @@ DEFAULT_HARNESSES = {
     "langgraph",
     "litellm",
     "mastra",
+    "mirage",
     "openai-agents-sdk",
+    "optillm",
     "pydantic-ai",
     "semantic-kernel",
     "text-to-cad",
@@ -56,7 +61,31 @@ _GRAPH_RUNTIME_REQUIRED_NAMES = {
     "graphify-out/communities.json",
     "graphify-out/graph-report.md",
     "graphify-out/graph-export-manifest.json",
+    "graphify-out/dashboard-neighborhoods.sqlite3",
     "external-catalogs/skills-sh/catalog.json",
+}
+_DASHBOARD_INDEX_REQUIRED_TABLES = {"meta", "nodes", "slug_index", "neighbors"}
+_DASHBOARD_INDEX_REQUIRED_META = {
+    "export_id",
+    "nodes_count",
+    "edges_count",
+    "max_degree",
+    "top_k",
+}
+_DASHBOARD_INDEX_REQUIRED_COLUMNS = {
+    "meta": {"key", "value"},
+    "nodes": {
+        "id",
+        "label",
+        "type",
+        "tags",
+        "description",
+        "quality_score",
+        "usage_score",
+        "degree",
+    },
+    "slug_index": {"slug", "type", "node_id"},
+    "neighbors": {"source", "payload"},
 }
 
 
@@ -100,6 +129,84 @@ def _require_real_file(path: Path) -> None:
         prefix = f.read(len(GIT_LFS_POINTER_PREFIX))
     if prefix == GIT_LFS_POINTER_PREFIX:
         raise GraphArtifactError(f"{path} is a Git LFS pointer, not hydrated content")
+
+
+def _copy_tar_member_to_path(
+    tf: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    target: Path,
+) -> None:
+    source = tf.extractfile(member)
+    if source is None:
+        raise GraphArtifactError(f"{member.name} could not be read")
+    try:
+        with target.open("wb") as out:
+            while chunk := source.read(1024 * 1024):
+                out.write(chunk)
+    finally:
+        source.close()
+
+
+def _validate_dashboard_index(
+    path: Path,
+    *,
+    expected_export_id: str,
+    context: str,
+) -> None:
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        raise GraphArtifactError(f"{context} dashboard index is not valid SQLite: {exc}") from exc
+    try:
+        quick = conn.execute("PRAGMA quick_check").fetchone()
+        if quick is None or str(quick[0]).lower() != "ok":
+            raise GraphArtifactError(f"{context} dashboard index quick_check failed: {quick}")
+        tables = {
+            str(row["name"])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        missing_tables = sorted(_DASHBOARD_INDEX_REQUIRED_TABLES - tables)
+        if missing_tables:
+            raise GraphArtifactError(
+                f"{context} dashboard index missing tables: {missing_tables}",
+            )
+        for table, expected_columns in _DASHBOARD_INDEX_REQUIRED_COLUMNS.items():
+            columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+            missing_columns = sorted(expected_columns - columns)
+            if missing_columns:
+                raise GraphArtifactError(
+                    f"{context} dashboard index table {table} missing columns: "
+                    f"{missing_columns}",
+                )
+        meta_rows = conn.execute("SELECT key,value FROM meta").fetchall()
+        meta = {str(row["key"]): json.loads(str(row["value"])) for row in meta_rows}
+        missing_meta = sorted(_DASHBOARD_INDEX_REQUIRED_META - set(meta))
+        if missing_meta:
+            raise GraphArtifactError(
+                f"{context} dashboard index missing meta keys: {missing_meta}",
+            )
+        if meta.get("export_id") != expected_export_id:
+            raise GraphArtifactError(
+                f"{context} dashboard index export_id mismatch: expected "
+                f"{expected_export_id}, got {meta.get('export_id') or 'missing'}",
+            )
+        nodes_count = int(meta.get("nodes_count") or 0)
+        if nodes_count != int(conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]):
+            raise GraphArtifactError(f"{context} dashboard index nodes_count mismatch")
+        if nodes_count > 0 and int(conn.execute("SELECT COUNT(*) FROM slug_index").fetchone()[0]) == 0:
+            raise GraphArtifactError(f"{context} dashboard index slug_index is empty")
+        payload = conn.execute("SELECT payload FROM neighbors LIMIT 1").fetchone()
+        if payload is not None:
+            decoded = json.loads(zlib.decompress(payload["payload"]).decode("utf-8"))
+            if not isinstance(decoded, list):
+                raise GraphArtifactError(
+                    f"{context} dashboard index neighbor payload is not a list",
+                )
+    except (sqlite3.Error, json.JSONDecodeError, ValueError, TypeError, zlib.error) as exc:
+        raise GraphArtifactError(f"{context} dashboard index validation failed: {exc}") from exc
+    finally:
+        conn.close()
 
 
 def _safe_tar_name(raw_name: str) -> str:
@@ -252,7 +359,7 @@ def validate_graph_artifacts(
         _require_real_file(path)
 
     expected_harnesses = DEFAULT_HARNESSES if expected_harnesses is None else expected_harnesses
-    _validate_runtime_graph_archive(
+    runtime_export_id = _validate_runtime_graph_archive(
         runtime_tarball,
         expected_harnesses=expected_harnesses,
     )
@@ -289,6 +396,7 @@ def validate_graph_artifacts(
     export_ids: dict[str, str] = {}
     manifest: dict[str, Any] | None = None
     archive_communities: dict[str, Any] | None = None
+    dashboard_index_path: Path | None = None
 
     with tarfile.open(tarball, "r:gz") as tf:
         for member in tf:
@@ -353,6 +461,11 @@ def validate_graph_artifacts(
                 if f is None:
                     raise GraphArtifactError(f"{member.name} could not be read")
                 _record_export_id(export_ids, name, _export_id_from_report(f.read()))
+            elif member.isfile() and name == "graphify-out/dashboard-neighborhoods.sqlite3":
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite3")
+                tmp.close()
+                dashboard_index_path = Path(tmp.name)
+                _copy_tar_member_to_path(tf, member, dashboard_index_path)
             elif member.isfile() and deep and name.startswith("converted/skills-sh-"):
                 if name.endswith("/SKILL.md") or "/references/" in name:
                     f = tf.extractfile(member)
@@ -370,11 +483,26 @@ def validate_graph_artifacts(
     if missing_required:
         raise GraphArtifactError(f"wiki graph archive is missing: {missing_required}")
     manifest_export_id = _validate_graph_export_manifest(manifest, names)
+    if runtime_export_id != manifest_export_id:
+        raise GraphArtifactError(
+            "runtime graph archive export_id mismatch: expected "
+            f"{manifest_export_id}, got {runtime_export_id}",
+        )
     _record_export_id(
         export_ids,
         "graphify-out/graph-export-manifest.json",
         manifest_export_id,
     )
+    if dashboard_index_path is None:
+        raise GraphArtifactError("graphify-out/dashboard-neighborhoods.sqlite3 is missing")
+    try:
+        _validate_dashboard_index(
+            dashboard_index_path,
+            expected_export_id=manifest_export_id,
+            context="full archive",
+        )
+    finally:
+        dashboard_index_path.unlink(missing_ok=True)
     if "graphify-out/graph.json" not in export_ids:
         raise GraphArtifactError("graphify-out/graph.json is missing export_id")
     _validate_export_ids(export_ids, expected=manifest_export_id)
@@ -461,10 +589,12 @@ def _validate_runtime_graph_archive(
     tarball: Path,
     *,
     expected_harnesses: set[str],
-) -> None:
+    expected_export_id: str | None = None,
+) -> str:
     names: set[str] = set()
     export_ids: dict[str, str] = {}
     manifest: dict[str, Any] | None = None
+    dashboard_index_path: Path | None = None
     with tarfile.open(tarball, "r:gz") as tf:
         for member in tf:
             name = _safe_tar_name(member.name)
@@ -506,6 +636,11 @@ def _validate_runtime_graph_archive(
                 if f is None:
                     raise GraphArtifactError(f"{member.name} could not be read")
                 _record_export_id(export_ids, name, _export_id_from_report(f.read()))
+            elif member.isfile() and name == "graphify-out/dashboard-neighborhoods.sqlite3":
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite3")
+                tmp.close()
+                dashboard_index_path = Path(tmp.name)
+                _copy_tar_member_to_path(tf, member, dashboard_index_path)
 
     missing_required = sorted(_GRAPH_RUNTIME_REQUIRED_NAMES - names)
     if missing_required:
@@ -527,9 +662,27 @@ def _validate_runtime_graph_archive(
         "graphify-out/graph-export-manifest.json",
         manifest_export_id,
     )
+    if dashboard_index_path is None:
+        raise GraphArtifactError(
+            "runtime graph archive is missing dashboard-neighborhoods.sqlite3",
+        )
+    try:
+        _validate_dashboard_index(
+            dashboard_index_path,
+            expected_export_id=manifest_export_id,
+            context="runtime archive",
+        )
+    finally:
+        dashboard_index_path.unlink(missing_ok=True)
     if "graphify-out/graph.json" not in export_ids:
         raise GraphArtifactError("runtime graph.json is missing export_id")
     _validate_export_ids(export_ids, expected=manifest_export_id)
+    if expected_export_id is not None and manifest_export_id != expected_export_id:
+        raise GraphArtifactError(
+            "runtime graph archive export_id mismatch: expected "
+            f"{expected_export_id}, got {manifest_export_id}",
+        )
+    return manifest_export_id
 
 
 def _validate_root_communities(

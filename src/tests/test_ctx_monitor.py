@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import sqlite3
+import tarfile
 import threading
+import time
 import urllib.error
 import urllib.request
+import zlib
 from pathlib import Path
 
 import pytest
@@ -21,6 +26,7 @@ def fake_claude(tmp_path: Path, monkeypatch) -> Path:
     claude = tmp_path / ".claude"
     (claude / "skill-quality").mkdir(parents=True)
     monkeypatch.setattr(cm, "_claude_dir", lambda: claude)
+    monkeypatch.setattr(cm, "_dashboard_graph_index_archives", lambda: [])
     return claude
 
 
@@ -1254,7 +1260,10 @@ def test_graph_neighborhood_rejects_unsafe_slug() -> None:
     assert result == {"nodes": [], "edges": [], "center": None}
 
 
-def test_graph_neighborhood_supports_mcp_nodes(monkeypatch) -> None:
+def test_graph_neighborhood_supports_mcp_nodes(
+    fake_claude: Path,
+    monkeypatch,
+) -> None:
     import networkx as nx
     import sys
 
@@ -1274,7 +1283,10 @@ def test_graph_neighborhood_supports_mcp_nodes(monkeypatch) -> None:
     assert result["nodes"][0]["data"]["type"] == "mcp-server"
 
 
-def test_graph_neighborhood_resolves_partial_slug(monkeypatch) -> None:
+def test_graph_neighborhood_resolves_partial_slug(
+    fake_claude: Path,
+    monkeypatch,
+) -> None:
     import networkx as nx
 
     G = nx.Graph()
@@ -1307,6 +1319,7 @@ def test_graph_neighborhood_resolves_partial_slug(monkeypatch) -> None:
 
 
 def test_graph_neighborhood_sizes_nodes_by_score_usage_and_popularity(
+    fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import networkx as nx
@@ -1430,7 +1443,464 @@ def test_graph_helpers_reuse_graph_loaded_from_same_file(
     assert calls == [graph_file]
 
 
-def test_graph_neighborhood_empty_when_graph_absent(monkeypatch) -> None:
+def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_path = fake_claude / "skill-wiki" / "graphify-out" / "dashboard-neighborhoods.sqlite3"
+    index_path.parent.mkdir(parents=True)
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE slug_index(slug TEXT,type TEXT,node_id TEXT,"
+            "PRIMARY KEY(slug,type,node_id))"
+        )
+        conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [
+                ("max_degree", "10"),
+                ("export_id", json.dumps("test-export")),
+                ("nodes_count", "2"),
+                ("edges_count", "1"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            [
+                ("skill:python-patterns", "python-patterns", "skill", '["python"]', "", 0.9, 0.1, 10),
+                ("skill:fastapi-pro", "fastapi-pro", "skill", '["python","api"]', "", 0.8, 0.0, 4),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO slug_index VALUES(?,?,?)",
+            [
+                ("python-patterns", "skill", "skill:python-patterns"),
+                ("fastapi-pro", "skill", "skill:fastapi-pro"),
+            ],
+        )
+        payload = zlib.compress(json.dumps([
+            {
+                "target": "skill:fastapi-pro",
+                "weight": 0.8,
+                "shared_tags": ["python"],
+                "reasons": ["semantic"],
+            }
+        ]).encode("utf-8"))
+        conn.execute("INSERT INTO neighbors VALUES(?,?)", ("skill:python-patterns", payload))
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        cm,
+        "_load_dashboard_graph",
+        lambda: (_ for _ in ()).throw(AssertionError("full graph loaded")),
+    )
+
+    result = cm._graph_neighborhood("python-patterns", entity_type="skill")
+
+    assert result["center"] == "skill:python-patterns"
+    assert [node["data"]["id"] for node in result["nodes"]] == [
+        "skill:python-patterns",
+        "skill:fastapi-pro",
+    ]
+    assert result["edges"][0]["data"]["shared_tags"] == ["python"]
+    assert cm._graph_stats() == {"nodes": 2, "edges": 1, "available": True}
+    assert cm._wiki_stats() == {
+        "skills": 2,
+        "agents": 0,
+        "mcps": 0,
+        "harnesses": 0,
+        "total": 2,
+        "split_known": True,
+    }
+
+
+def test_graph_index_honors_requested_type_on_exact_slug(
+    fake_claude: Path,
+) -> None:
+    index_path = fake_claude / "skill-wiki" / "graphify-out" / "dashboard-neighborhoods.sqlite3"
+    index_path.parent.mkdir(parents=True)
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE slug_index(slug TEXT,type TEXT,node_id TEXT,"
+            "PRIMARY KEY(slug,type,node_id))"
+        )
+        conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [("max_degree", "1"), ("top_k", "40")],
+        )
+        conn.executemany(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            [
+                ("skill:github", "github", "skill", "[]", "", None, None, 0),
+                ("mcp-server:github", "github", "mcp-server", "[]", "", None, None, 0),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO slug_index VALUES(?,?,?)",
+            [
+                ("github", "skill", "skill:github"),
+                ("github", "mcp-server", "mcp-server:github"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO neighbors VALUES(?,?)",
+            [
+                ("skill:github", zlib.compress(b"[]")),
+                ("mcp-server:github", zlib.compress(b"[]")),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = cm._graph_neighborhood("github", entity_type="skill")
+
+    assert result["center"] == "skill:github"
+
+
+def test_graph_index_matches_fuzzy_slug_resolution(
+    fake_claude: Path,
+) -> None:
+    index_path = fake_claude / "skill-wiki" / "graphify-out" / "dashboard-neighborhoods.sqlite3"
+    index_path.parent.mkdir(parents=True)
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE slug_index(slug TEXT,type TEXT,node_id TEXT,"
+            "PRIMARY KEY(slug,type,node_id))"
+        )
+        conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany("INSERT INTO meta VALUES(?,?)", [("max_degree", "1"), ("top_k", "40")])
+        conn.execute(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            ("skill:github-actions", "GitHub Actions", "skill", '["ci"]', "", None, None, 0),
+        )
+        conn.execute(
+            "INSERT INTO slug_index VALUES(?,?,?)",
+            ("github-actions", "skill", "skill:github-actions"),
+        )
+        conn.execute("INSERT INTO neighbors VALUES(?,?)", ("skill:github-actions", zlib.compress(b"[]")))
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = cm._graph_neighborhood("git hub", entity_type="skill")
+
+    assert result["center"] == "skill:github-actions"
+    assert result["resolved"]["slug"] == "github-actions"
+
+
+def test_entity_subgraph_script_json_escapes_script_end_tag() -> None:
+    graph_html = cm._render_entity_subgraph_svg(
+        center="skill:evil",
+        node_by_id={
+            "skill:evil": {
+                "label": "</script><script>alert(1)</script>",
+                "type": "skill",
+            },
+        },
+        edges=[],
+        sidecar_by_id={},
+    )
+
+    assert "</script><script>alert(1)</script>" not in graph_html
+    assert "<\\/script>" in graph_html
+
+
+def test_graph_page_initial_query_escapes_script_end_tag() -> None:
+    html_out = cm._render_graph("</script><script>alert(1)</script>")
+
+    assert "const initial = \"<\\/script>" in html_out
+    assert "const initial = \"</script>" not in html_out
+
+
+def test_graph_neighborhood_extracts_missing_dashboard_index_from_archive(
+    fake_claude: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = tmp_path / "dashboard-neighborhoods.sqlite3"
+    conn = sqlite3.connect(seed)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE slug_index(slug TEXT,type TEXT,node_id TEXT,"
+            "PRIMARY KEY(slug,type,node_id))"
+        )
+        conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [
+                ("max_degree", "10"),
+                ("export_id", json.dumps("archive-export")),
+                ("nodes_count", "1"),
+                ("edges_count", "0"),
+                ("top_k", "40"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            ("skill:python-patterns", "python-patterns", "skill", '["python"]', "", 0.9, 0.1, 10),
+        )
+        conn.execute(
+            "INSERT INTO slug_index VALUES(?,?,?)",
+            ("python-patterns", "skill", "skill:python-patterns"),
+        )
+        conn.execute(
+            "INSERT INTO neighbors VALUES(?,?)",
+            ("skill:python-patterns", zlib.compress(b"[]")),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    manifest = fake_claude / "skill-wiki" / "graphify-out" / "graph-export-manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"version": 1, "export_id": "archive-export"}),
+        encoding="utf-8",
+    )
+
+    archive = tmp_path / "wiki-graph-runtime.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(seed, arcname="./graphify-out/dashboard-neighborhoods.sqlite3")
+
+    monkeypatch.setattr(cm, "_dashboard_graph_index_archives", lambda: [archive])
+    monkeypatch.setattr(
+        cm,
+        "_load_dashboard_graph",
+        lambda: (_ for _ in ()).throw(AssertionError("full graph loaded")),
+    )
+
+    result = cm._graph_neighborhood("python-patterns", entity_type="skill")
+
+    assert result["center"] == "skill:python-patterns"
+    assert (fake_claude / "skill-wiki" / "graphify-out" / "dashboard-neighborhoods.sqlite3").is_file()
+
+
+def test_dashboard_index_extraction_skips_archive_export_mismatch(
+    fake_claude: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True)
+    (graph_dir / "graph-export-manifest.json").write_text(
+        json.dumps({"version": 1, "export_id": "local-export"}),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "graph-export-manifest.json"
+    manifest.write_text(
+        json.dumps({"version": 1, "export_id": "archive-export"}),
+        encoding="utf-8",
+    )
+    seed = tmp_path / "dashboard-neighborhoods.sqlite3"
+    seed.write_bytes(b"should-not-be-extracted")
+    archive = tmp_path / "wiki-graph-runtime.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(manifest, arcname="./graphify-out/graph-export-manifest.json")
+        tar.add(seed, arcname="./graphify-out/dashboard-neighborhoods.sqlite3")
+
+    monkeypatch.setattr(cm, "_dashboard_graph_index_archives", lambda: [archive])
+    monkeypatch.setattr(
+        cm,
+        "_dashboard_index_matches_manifest",
+        lambda path: (_ for _ in ()).throw(
+            AssertionError(f"should not validate extracted index: {path}"),
+        ),
+    )
+
+    assert cm._ensure_dashboard_graph_index() is None
+    assert not (graph_dir / "dashboard-neighborhoods.sqlite3").exists()
+
+
+def test_dashboard_index_extraction_skips_installed_graph_report(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True)
+    (graph_dir / "graph-export-manifest.json").write_text(
+        json.dumps({"version": 1, "export_id": "local-export"}),
+        encoding="utf-8",
+    )
+    (graph_dir / "graph-report.md").write_text(
+        "> Nodes: 12 | Edges: 34 | Communities: 2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cm,
+        "_dashboard_graph_index_archives",
+        lambda: (_ for _ in ()).throw(AssertionError("archive scan should be skipped")),
+    )
+
+    assert cm._ensure_dashboard_graph_index() is None
+
+
+def test_graph_neighborhood_bypasses_archive_index_when_runtime_overlays_exist(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import networkx as nx
+
+    overlay = fake_claude / "skill-wiki" / "graphify-out" / "entity-overlays.jsonl"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text('{"source":"test"}\n', encoding="utf-8")
+    monkeypatch.setattr(
+        cm,
+        "_dashboard_graph_index_archives",
+        lambda: (_ for _ in ()).throw(AssertionError("archive index should be bypassed")),
+    )
+    G = nx.Graph()
+    G.add_node("skill:local-overlay", label="local-overlay", type="skill", tags=["local"])
+    monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
+
+    result = cm._graph_neighborhood("local-overlay", entity_type="skill")
+
+    assert result["center"] == "skill:local-overlay"
+
+
+def test_graph_neighborhood_rejects_stale_dashboard_index(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import networkx as nx
+
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True)
+    (graph_dir / "graph-export-manifest.json").write_text(
+        json.dumps({"version": 1, "export_id": "new-export"}),
+        encoding="utf-8",
+    )
+    index_path = graph_dir / "dashboard-neighborhoods.sqlite3"
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE slug_index(slug TEXT,type TEXT,node_id TEXT,"
+            "PRIMARY KEY(slug,type,node_id))"
+        )
+        conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany("INSERT INTO meta VALUES(?,?)", [("export_id", json.dumps("old-export"))])
+        conn.commit()
+    finally:
+        conn.close()
+
+    G = nx.Graph()
+    G.add_node("skill:fallback", label="fallback", type="skill", tags=[])
+    monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
+
+    result = cm._graph_neighborhood("fallback", entity_type="skill")
+
+    assert result["center"] == "skill:fallback"
+    assert not index_path.exists()
+
+
+def test_graph_neighborhood_rejects_orphan_dashboard_index_without_manifest(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import networkx as nx
+
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True)
+    index_path = graph_dir / "dashboard-neighborhoods.sqlite3"
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.executemany("INSERT INTO meta VALUES(?,?)", [("export_id", json.dumps("old-export"))])
+        conn.commit()
+    finally:
+        conn.close()
+
+    G = nx.Graph()
+    G.add_node("skill:fallback", label="fallback", type="skill", tags=[])
+    monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
+
+    result = cm._graph_neighborhood("fallback", entity_type="skill")
+
+    assert result["center"] == "skill:fallback"
+    assert not index_path.exists()
+
+
+def test_graph_index_node_size_uses_live_sidecar_when_scores_missing(
+    fake_claude: Path,
+) -> None:
+    _write_sidecar(fake_claude, "python-patterns", {
+        "slug": "python-patterns",
+        "subject_type": "skill",
+        "grade": "A",
+        "score": 1.0,
+        "signals": {"telemetry": {"score": 1.0}},
+    })
+    index_path = fake_claude / "skill-wiki" / "graphify-out" / "dashboard-neighborhoods.sqlite3"
+    index_path.parent.mkdir(parents=True)
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE slug_index(slug TEXT,type TEXT,node_id TEXT,"
+            "PRIMARY KEY(slug,type,node_id))"
+        )
+        conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany("INSERT INTO meta VALUES(?,?)", [("max_degree", "1"), ("top_k", "40")])
+        conn.execute(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            ("skill:python-patterns", "python-patterns", "skill", "[]", "", None, None, 0),
+        )
+        conn.execute(
+            "INSERT INTO slug_index VALUES(?,?,?)",
+            ("python-patterns", "skill", "skill:python-patterns"),
+        )
+        conn.execute("INSERT INTO neighbors VALUES(?,?)", ("skill:python-patterns", zlib.compress(b"[]")))
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = cm._graph_neighborhood("python-patterns", entity_type="skill")
+    node = result["nodes"][0]["data"]
+
+    assert node["size_signal"] > 0.7
+    assert "quality 1.000" in node["size_reason"]
+    assert "usage 1.000" in node["size_reason"]
+
+
+def test_graph_neighborhood_empty_when_graph_absent(
+    fake_claude: Path,
+    monkeypatch,
+) -> None:
     # Force load_graph to raise so the helper returns the empty shape
     # deterministically, independent of whether the user's graph is built.
     import ctx_monitor as cm_mod
@@ -1469,6 +1939,22 @@ def test_render_home_shows_stat_grid_even_with_no_sessions(fake_claude: Path) ->
         assert f"grade-{grade}" in html_out
     # Empty-state copy kicks in when there are no sessions / audit entries.
     assert "No sessions recorded" in html_out or "Recent sessions" in html_out
+
+
+def test_render_home_defers_sidecar_grade_scan(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_scan() -> dict[str, int]:
+        raise AssertionError("home page should not synchronously scan sidecars")
+
+    monkeypatch.setattr(cm, "_grade_distribution", fail_scan)
+
+    html_out = cm._render_home()
+
+    assert "/api/grades.json" in html_out
+    assert "home-sidecar-count" in html_out
+    assert "data-home-grade='A'" in html_out
 
 
 def test_render_skills_emits_sidebar_filters(fake_claude: Path) -> None:
@@ -1679,6 +2165,58 @@ def test_entity_upsert_api_writes_wiki_page_and_queues_graph_refresh(
         server.server_close()
 
 
+def test_entity_upsert_api_requires_confirmation_for_existing_page(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entity_path = (
+        fake_claude / "skill-wiki" / "entities" / "agents" / "custom-reviewer.md"
+    )
+    entity_path.parent.mkdir(parents=True)
+    entity_path.write_text(
+        "---\ntitle: Custom Reviewer\ntype: agent\ntags: [python]\n"
+        "---\n# Custom Reviewer\n\nOriginal body.\n",
+        encoding="utf-8",
+    )
+    server, thread, port = _serve_monitor(monkeypatch)
+    try:
+        status, payload = _post_json(
+            port,
+            "/api/entity/upsert",
+            {
+                "slug": "custom-reviewer",
+                "entity_type": "agent",
+                "title": "Custom Reviewer",
+                "body": "# Custom Reviewer\n\nReplacement body.\n",
+            },
+            token="test-token",
+        )
+        assert status == 400
+        assert payload["ok"] is False
+        assert "confirm_update=true" in payload["detail"]
+        assert "Original body." in entity_path.read_text(encoding="utf-8")
+
+        status, payload = _post_json(
+            port,
+            "/api/entity/upsert",
+            {
+                "slug": "custom-reviewer",
+                "entity_type": "agent",
+                "title": "Custom Reviewer",
+                "body": "# Custom Reviewer\n\nReplacement body.\n",
+                "confirm_update": "true",
+            },
+            token="test-token",
+        )
+        assert status == 200
+        assert payload["ok"] is True
+        assert "Replacement body." in entity_path.read_text(encoding="utf-8")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_entity_delete_api_removes_wiki_page_and_queues_graph_refresh(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1710,15 +2248,32 @@ def test_entity_delete_api_removes_wiki_page_and_queues_graph_refresh(
             wiki_queue.queue_db_path(fake_claude / "skill-wiki"),
             limit=10,
         )
-        assert [job.kind for job in jobs[:2]] == [
-            wiki_queue.GRAPH_EXPORT_JOB,
-            wiki_queue.ENTITY_UPSERT_JOB,
-        ]
-        assert jobs[1].payload["action"] == "delete"
+        assert [job.kind for job in jobs] == [wiki_queue.ENTITY_UPSERT_JOB]
+        assert jobs[0].payload["action"] == "delete"
     finally:
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_sidecar_cache_invalidates_on_file_rewrite(fake_claude: Path) -> None:
+    cm._SIDECAR_INDEX_CACHE_KEY = None
+    cm._SIDECAR_INDEX_CACHE_VALUE = None
+    path = fake_claude / "skill-quality" / "alpha.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"slug": "alpha", "subject_type": "skill", "grade": "A"}),
+        encoding="utf-8",
+    )
+    assert cm._all_sidecars()[0]["grade"] == "A"
+
+    path.write_text(
+        json.dumps({"slug": "alpha", "subject_type": "skill", "grade": "F"}),
+        encoding="utf-8",
+    )
+    os.utime(path, (time.time() + 2.0, time.time() + 2.0))
+
+    assert cm._all_sidecars()[0]["grade"] == "F"
 
 
 def test_render_kpi_empty_state(fake_claude: Path) -> None:
