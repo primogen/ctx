@@ -10,14 +10,20 @@ surface. The important distinction is install behavior:
   model: runtime, tools, access boundaries, memory, verification, and approval
   policy. Adding one never executes upstream setup commands.
 
-After adding any entity, rebuild the graph when you want it to participate in
-recommendations:
+After adding any entity, drain the durable wiki queue when you want the local
+runtime graph to see it immediately:
 
 ```bash
-python scripts/graph_artifact_guard.py park
-ctx-wiki-graphify
+ctx-wiki-worker --wiki ~/.claude/skill-wiki --limit 1
 ctx-scan-repo --repo . --recommend
 ```
+
+If a persisted semantic vector index exists, that worker pass also runs a
+best-effort incremental attach into `graphify-out/entity-overlays.jsonl` so the
+new entity can connect to existing graph nodes without a full all-pairs
+semantic rebuild. The wiki page remains the source of truth; if incremental
+attach is skipped or fails, the worker still queues the normal incremental
+graph export job.
 
 ## Updating the Graph and LLM Wiki
 
@@ -35,12 +41,17 @@ the update is treated like a release step.
    `python scripts/graph_artifact_guard.py park`. This keeps background Git
    integrations from repeatedly LFS-cleaning the full wiki tarball while it is
    still changing.
-5. Rebuild the curated wiki graph with `ctx-wiki-graphify`.
-6. Repack `graph/wiki-graph.tar.gz` through the artifact promotion path:
+5. Drain the wiki queue for local runtime use:
+   `ctx-wiki-worker --wiki ~/.claude/skill-wiki --limit 1`. This updates the
+   wiki index, attempts incremental ANN graph attach when a vector index exists,
+   and queues the normal incremental graph export.
+6. Rebuild the curated wiki graph with `ctx-wiki-graphify` before shipping
+   release artifacts or when you need a full graph/export reconciliation.
+7. Repack `graph/wiki-graph.tar.gz` through the artifact promotion path:
    write a staged tarball, validate it, atomically promote it, and keep the
    generated `*.promotion.json` metadata with the previous/current hashes.
    Never commit local review reports or raw caches.
-7. Refresh the Skills.sh catalog overlay when shipping catalog coverage.
+8. Refresh the Skills.sh catalog overlay when shipping catalog coverage.
    This adds remote-cataloged first-class `skill` nodes under the
    `skills-sh-` prefix, skill pages under `entities/skills/`, install
    commands, duplicate hints, and metadata-only quality/security signals:
@@ -51,10 +62,10 @@ the update is treated like a release step.
      --wiki-tar graph/wiki-graph.tar.gz \
      --update-wiki-tar
    ```
-8. Refresh published counts with `python src/update_repo_stats.py`.
-9. Verify the changed entity can be recommended through
+9. Refresh published counts with `python src/update_repo_stats.py`.
+10. Verify the changed entity can be recommended through
    `ctx-scan-repo --repo . --recommend` or `ctx__recommend_bundle`.
-10. Unpark and stage the graph artifacts once the release candidate is final:
+11. Unpark and stage the graph artifacts once the release candidate is final:
     `python scripts/graph_artifact_guard.py unpark`, then `git add` the graph
     artifacts intentionally. Run `python scripts/graph_artifact_guard.py prune`
     after interrupted Git/LFS runs or after release staging.
@@ -63,6 +74,68 @@ The durable wiki worker drains `entity-upsert`, `graph-export`,
 `catalog-refresh`, `tar-refresh`, and `artifact-promotion` jobs. Use
 `ctx-wiki-worker --wiki ~/.claude/skill-wiki --limit 1` for a controlled
 single-job drain, or omit `--limit` to drain the ready queue.
+
+For a manual attach dry-run against an existing vector index:
+
+```bash
+ctx-incremental-attach attach \
+  --index-dir ~/.claude/skill-wiki/.embedding-cache/graph/vector-index \
+  --overlay ~/.claude/skill-wiki/graphify-out/entity-overlays.jsonl \
+  --node-id skill:fastapi-review \
+  --type skill \
+  --label fastapi-review \
+  --text-file ~/.claude/skill-wiki/entities/skills/fastapi-review.md \
+  --dry-run
+```
+
+Use `ctx-incremental-attach calibrate --graph ~/.claude/skill-wiki/graphify-out/graph.json`
+to inspect the current graph's semantic and degree distributions before
+changing attach thresholds.
+
+Validate the attach quality before relying on a new ANN backend or changed
+threshold:
+
+```bash
+ctx-incremental-shadow \
+  --index-dir ~/.claude/skill-wiki/.embedding-cache/graph/vector-index \
+  --graph ~/.claude/skill-wiki/graphify-out/graph.json \
+  --sample-size 100 \
+  --min-overlap 0.85
+```
+
+The shadow gate pretends sampled existing nodes are new, compares incremental
+attach neighbors to batch graph semantic neighbors, reports precision/recall
+for top 5/10/20, score deltas, and bad examples, then exits non-zero if
+recall at the largest top-k is below the overlap floor.
+
+## Repair Incremental Attach
+
+If the worker says `incremental attach skipped (no vector index)`, build the
+persisted semantic index once:
+
+```bash
+ctx-wiki-graphify \
+  --wiki-dir ~/.claude/skill-wiki \
+  --incremental \
+  --graph-only \
+  --semantic-vector-index numpy-flat
+```
+
+`numpy-flat` is exact and portable. `--semantic-vector-index auto` keeps the
+portable exact backend at this graph size and can switch to the optional ANN
+backend only above the configured node threshold. `hnswlib` is optional and
+should be shadow-gated before release use.
+
+Then process pending entity updates:
+
+```bash
+ctx-wiki-worker --wiki ~/.claude/skill-wiki
+```
+
+That is the supported "attach pending" flow today: the queue is durable, so
+failed or skipped entity-upsert jobs remain visible to the worker and can be
+retried after the index exists. Use manual `ctx-incremental-attach attach
+--dry-run` for one-off debugging, not as the normal bulk path.
 
 ## Security and Cyber Check
 
@@ -97,8 +170,9 @@ Use this flow for every entity type:
 3. Keep the current entity by doing nothing, or re-run with `--skip-existing`
    in batch jobs where you do not want reviews.
 4. Apply the replacement only after review with `--update-existing`.
-5. Rebuild the graph with `ctx-wiki-graphify` when the update should affect
-   recommendations.
+5. Drain the queue with `ctx-wiki-worker --wiki ~/.claude/skill-wiki --limit 1`
+   for immediate local recommendation use, or rebuild with `ctx-wiki-graphify`
+   when the update should be reconciled into shipped graph artifacts.
 
 Examples:
 
@@ -142,7 +216,6 @@ results:
 
 ```bash
 ctx-wiki-worker --wiki ~/.claude/skill-wiki --limit 1
-ctx-wiki-graphify
 ctx-scan-repo --repo . --recommend
 ```
 

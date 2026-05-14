@@ -169,6 +169,38 @@ class TestBuildGraphIncludesMcp:
         graph, _ = wg.build_graph(incremental=False)
         assert graph.has_edge("skill:github-ops", "mcp-server:github")
 
+    def test_build_graph_threads_semantic_vector_index_options(
+        self,
+        tmp_wiki: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import ctx_config
+        from ctx.core.graph import semantic_edges
+
+        _make_entity_md(
+            tmp_wiki / "entities" / "skills" / "alpha.md",
+            slug="alpha", etype="skill", tags=["python"],
+        )
+        captured: dict[str, object] = {}
+
+        def _fake_semantic_edges(*args, **kwargs):
+            captured.update(kwargs)
+            return {}
+
+        monkeypatch.setattr(ctx_config.cfg, "graph_edge_weight_semantic", 1.0)
+        monkeypatch.setattr(
+            semantic_edges, "compute_semantic_edges", _fake_semantic_edges,
+        )
+
+        wg.build_graph(
+            incremental=True,
+            semantic_vector_index="numpy-flat",
+            ann_enabled_above_nodes=7,
+        )
+
+        assert captured["vector_index_kind"] == "numpy-flat"
+        assert captured["ann_enabled_above_nodes"] == 7
+
     def test_existing_skill_agent_layouts_still_work(self, tmp_wiki: Path) -> None:
         # No MCP file present — should not error on missing dir or
         # produce spurious nodes.

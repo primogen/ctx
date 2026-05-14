@@ -14,7 +14,6 @@ Usage:
 
 import argparse
 import json
-import math
 import os
 import re
 from collections import Counter, defaultdict
@@ -27,6 +26,14 @@ from networkx.algorithms.community import (
     louvain_communities,
 )
 
+from ctx.core.graph.edge_scoring import (
+    SLUG_STOP as _EDGE_SLUG_STOP,
+    adamic_adar_scores as _shared_adamic_adar_scores,
+    canonical_pair,
+    pairs_from_index,
+    slug_tokens,
+    type_affinity_score,
+)
 from ctx.core.entity_types import (
     RELATED_SECTION_FOR_ENTITY_TYPE,
     entity_page_path,
@@ -137,12 +144,6 @@ def _related_section_header(entity_type: str) -> str:
     return RELATED_SECTION_FOR_ENTITY_TYPE.get(entity_type, "## Related")
 
 
-SLUG_STOP: frozenset[str] = frozenset({
-    "a", "an", "the", "and", "of", "for", "to", "with",
-    "skill", "agent", "expert", "pro", "core",
-})
-
-
 def _strip_frontmatter(content: str) -> str:
     """Return the markdown body with the YAML frontmatter removed."""
     parts = content.split("---", 2)
@@ -232,14 +233,11 @@ def _load_full_body(meta: dict, slug: str, entity_type: str) -> str:
 
 def _slug_tokens(slug: str) -> list[str]:
     """Return the >=3-char non-stopword tokens from a slug."""
-    return [
-        t for t in slug.lower().split("-")
-        if len(t) >= 3 and t not in SLUG_STOP
-    ]
+    return slug_tokens(slug)
 
 
 def _pair(n1: str, n2: str) -> tuple[str, str]:
-    return (n1, n2) if n1 <= n2 else (n2, n1)
+    return canonical_pair(n1, n2)
 
 
 def _source_keys(meta: dict) -> list[str]:
@@ -320,22 +318,7 @@ def _graph_scoring_signature(config: object) -> dict[str, float | int | str]:
 
 
 def _type_affinity_score(left: str, right: str) -> float:
-    if left == right:
-        return 0.35
-    pair = frozenset((left, right))
-    if pair == frozenset(("skill", "agent")):
-        return 1.0
-    if pair == frozenset(("skill", "mcp-server")):
-        return 0.9
-    if pair == frozenset(("skill", "harness")):
-        return 0.75
-    if pair == frozenset(("agent", "mcp-server")):
-        return 0.65
-    if pair == frozenset(("agent", "harness")):
-        return 0.7
-    if pair == frozenset(("mcp-server", "harness")):
-        return 0.6
-    return 0.4
+    return type_affinity_score(left, right)
 
 
 def _mean_present(*values: float | None) -> float:
@@ -399,24 +382,7 @@ def _adamic_adar_scores(
     nodes: list[str],
     pairs: set[tuple[str, str]],
 ) -> dict[tuple[str, str], float]:
-    base = nx.Graph()
-    base.add_nodes_from(nodes)
-    base.add_edges_from(pairs)
-    pair_lookup = set(pairs)
-    scores: dict[tuple[str, str], float] = defaultdict(float)
-    max_common_degree = 200
-    for common in base.nodes:
-        neighbors = sorted(base.neighbors(common))
-        degree = len(neighbors)
-        if degree < 2 or degree > max_common_degree:
-            continue
-        contribution = 1.0 / math.log(degree)
-        for i, n1 in enumerate(neighbors):
-            for n2 in neighbors[i + 1:]:
-                pair = _pair(n1, n2)
-                if pair in pair_lookup:
-                    scores[pair] += contribution
-    return {pair: min(score, 1.0) for pair, score in scores.items()}
+    return _shared_adamic_adar_scores(nodes, pairs)
 
 
 def _pairs_from_index(
@@ -436,23 +402,14 @@ def _pairs_from_index(
       - ``shared_keys[pair]`` is the concrete list of shared keys,
         for edge attribution in the rendered graph.
     """
-    counts: dict[tuple[str, str], int] = defaultdict(int)
-    shared: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for key, node_ids in index.items():
-        if len(node_ids) > dense_threshold:
-            continue
-        sorted_ids = sorted(node_ids)
-        for i, n1 in enumerate(sorted_ids):
-            for n2 in sorted_ids[i + 1:]:
-                pair = (n1, n2)
-                counts[pair] += 1
-                shared[pair].append(key)
-    return counts, shared
+    return pairs_from_index(index, dense_threshold=dense_threshold)
 
 
 def build_graph(
     *, incremental: bool = True,
     persist_semantic_cache: bool = True,
+    semantic_vector_index: str = "off",
+    ann_enabled_above_nodes: int = 250_000,
     _affected_out: set[str] | None = None,
 ) -> tuple[nx.Graph, dict[str, dict]]:
     """Build a networkx graph from all entity pages.
@@ -596,6 +553,8 @@ def build_graph(
             incremental=incremental,
             persist_cache=persist_semantic_cache,
             affected_out=semantic_affected,
+            vector_index_kind=semantic_vector_index,
+            ann_enabled_above_nodes=ann_enabled_above_nodes,
         )
     else:
         sem_pairs = {}
@@ -750,6 +709,15 @@ def build_graph(
             print(
                 "graphify: graph scoring config changed since prior export — "
                 "forcing full rebuild.",
+                flush=True,
+            )
+            prior_graph = None
+    if prior_graph is not None and w_adamic > 0.0:
+        prior_pairs = {_pair(str(n1), str(n2)) for n1, n2 in prior_graph.edges()}
+        if prior_pairs != set(target_edges):
+            print(
+                "graphify: edge topology changed while Adamic-Adar boost is enabled "
+                "â€” forcing full rebuild.",
                 flush=True,
             )
             prior_graph = None
@@ -1688,6 +1656,21 @@ def main() -> None:
         "--full", dest="incremental", action="store_false",
         help="Force a full top-K recompute for every node",
     )
+    parser.add_argument(
+        "--semantic-vector-index",
+        choices=["off", "auto", "numpy-flat", "hnswlib"],
+        default="off",
+        help=(
+            "Optional vector-index backend for incremental semantic recompute "
+            "(default: off; full rebuilds stay exact)"
+        ),
+    )
+    parser.add_argument(
+        "--ann-enabled-above-nodes",
+        type=int,
+        default=250_000,
+        help="Node threshold where --semantic-vector-index auto may use ANN",
+    )
     args = parser.parse_args()
 
     if args.wiki_dir is not None:
@@ -1697,6 +1680,8 @@ def main() -> None:
     G, entities = build_graph(
         incremental=args.incremental,
         persist_semantic_cache=not args.dry_run,
+        semantic_vector_index=args.semantic_vector_index,
+        ann_enabled_above_nodes=args.ann_enabled_above_nodes,
         _affected_out=affected,
     )
     communities = detect_communities(G)
@@ -1716,3 +1701,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+SLUG_STOP = _EDGE_SLUG_STOP

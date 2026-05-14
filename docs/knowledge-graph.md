@@ -233,6 +233,67 @@ vendor its code or assets.
 After you add a skill, agent, MCP server, or harness entity page:
 
 ```bash
+ctx-wiki-worker --wiki ~/.claude/skill-wiki --limit 1
+```
+
+The `entity-upsert` worker path validates the queued page hash, updates the
+wiki index, and, when a persisted semantic vector index exists, runs a
+best-effort ANN attach into `graphify-out/entity-overlays.jsonl`. That overlay
+lets the runtime resolver connect a new or updated entity to existing graph
+neighbors without recomputing global all-pairs similarity. The worker still
+queues the normal incremental `graph-export` job, and the entity markdown page
+remains the source of truth.
+
+For manual review or debugging:
+
+```bash
+ctx-incremental-attach calibrate \
+  --graph ~/.claude/skill-wiki/graphify-out/graph.json
+
+ctx-incremental-attach attach \
+  --index-dir ~/.claude/skill-wiki/.embedding-cache/graph/vector-index \
+  --overlay ~/.claude/skill-wiki/graphify-out/entity-overlays.jsonl \
+  --node-id skill:fastapi-review \
+  --type skill \
+  --label fastapi-review \
+  --text-file ~/.claude/skill-wiki/entities/skills/fastapi-review.md \
+  --dry-run
+```
+
+Shadow-gate a persisted index before trusting a new ANN backend, changed
+thresholds, or a large attach workflow:
+
+```bash
+ctx-incremental-shadow \
+  --index-dir ~/.claude/skill-wiki/.embedding-cache/graph/vector-index \
+  --graph ~/.claude/skill-wiki/graphify-out/graph.json \
+  --sample-size 100 \
+  --min-overlap 0.85
+```
+
+The shadow command pretends sampled existing nodes are new, compares the
+incremental attach result to batch graph semantic neighbors, and reports
+precision, recall, top-5/top-10/top-20 agreement, score deltas, and bad
+examples. A failing gate means either tune thresholds or use a full graph
+rebuild before shipping.
+
+If the vector index is missing, rebuild it without repacking artifacts:
+
+```bash
+ctx-wiki-graphify \
+  --wiki-dir ~/.claude/skill-wiki \
+  --incremental \
+  --graph-only \
+  --semantic-vector-index numpy-flat
+```
+
+Then drain pending entity-upsert work with `ctx-wiki-worker --wiki
+~/.claude/skill-wiki`. This is the current repair path for "build index" and
+"attach pending" without adding another command surface.
+
+Before publishing graph artifacts, run the full rebuild/export path:
+
+```bash
 ctx-wiki-graphify          # rebuild entity graph + communities
 ```
 

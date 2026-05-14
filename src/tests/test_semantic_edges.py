@@ -64,6 +64,7 @@ from ctx.core.graph.semantic_edges import (  # noqa: E402
     _state_topk_from_pairs,
     _topk_pairs,
     _topk_pairs_subset,
+    _topk_pairs_subset_with_optional_index,
     compute_semantic_edges,
 )
 
@@ -412,6 +413,102 @@ class TestTopKPairsSubset:
         ids = ["a", "b"]
         assert _topk_pairs_subset(vecs, ids, [0], top_k=1, min_cosine=0.999)
         assert not _topk_pairs_subset(vecs, ids, [0], top_k=1, min_cosine=1.1)
+
+
+class TestTopKPairsSubsetWithOptionalIndex:
+    def test_numpy_flat_matches_exact_subset_and_filters_self(self) -> None:
+        vecs = np.array(
+            [
+                [1.0, 0.0],
+                [0.9, 0.1],
+                [0.0, 1.0],
+            ],
+            dtype="float32",
+        )
+        ids = ["a", "b", "c"]
+        hashes = ["ha", "hb", "hc"]
+
+        exact = _topk_pairs_subset(_l2_normalize(vecs), ids, [0], top_k=1, min_cosine=0.0)
+        indexed = _topk_pairs_subset_with_optional_index(
+            _l2_normalize(vecs),
+            ids,
+            hashes,
+            [0],
+            top_k=1,
+            min_cosine=0.0,
+            vector_index_kind="numpy-flat",
+            model_id="model-a",
+            ann_enabled_above_nodes=1,
+            cache_dir=Path(),
+            persist_index=False,
+        )
+
+        assert indexed == {("a", "b"): pytest.approx(exact[("a", "b")])}
+        assert ("a", "a") not in indexed
+
+    def test_vector_index_unavailable_falls_back_to_exact_subset(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        vecs = np.array([[1.0, 0.0], [0.99, 0.01]], dtype="float32")
+        ids = ["a", "b"]
+        hashes = ["ha", "hb"]
+
+        from ctx.core.graph import vector_index
+
+        monkeypatch.setattr(vector_index, "_import_hnswlib", lambda: None)
+
+        result = _topk_pairs_subset_with_optional_index(
+            vecs,
+            ids,
+            hashes,
+            [0],
+            top_k=1,
+            min_cosine=0.0,
+            vector_index_kind="hnswlib",
+            model_id="model-a",
+            ann_enabled_above_nodes=1,
+            cache_dir=Path(),
+            persist_index=False,
+        )
+
+        assert result == _topk_pairs_subset(vecs, ids, [0], top_k=1, min_cosine=0.0)
+
+    def test_numpy_flat_persists_and_reuses_vector_index(self, tmp_path: Path) -> None:
+        vecs = _l2_normalize(np.array([[1.0, 0.0], [0.99, 0.01]], dtype="float32"))
+        ids = ["a", "b"]
+        hashes = ["ha", "hb"]
+
+        first = _topk_pairs_subset_with_optional_index(
+            vecs,
+            ids,
+            hashes,
+            [0],
+            top_k=1,
+            min_cosine=0.0,
+            vector_index_kind="numpy-flat",
+            model_id="model-a",
+            ann_enabled_above_nodes=1,
+            cache_dir=tmp_path,
+            persist_index=True,
+        )
+        second = _topk_pairs_subset_with_optional_index(
+            vecs,
+            ids,
+            hashes,
+            [1],
+            top_k=1,
+            min_cosine=0.0,
+            vector_index_kind="numpy-flat",
+            model_id="model-a",
+            ann_enabled_above_nodes=1,
+            cache_dir=tmp_path,
+            persist_index=True,
+        )
+
+        assert (tmp_path / "vector-index" / "vector-index.meta.json").is_file()
+        assert first == {("a", "b"): pytest.approx(0.9999, abs=1e-4)}
+        assert second == {("a", "b"): pytest.approx(0.9999, abs=1e-4)}
 
 
 # ===========================================================================
@@ -1148,6 +1245,8 @@ class TestComputeSemanticEdgesIncrementalPath:
                     cache_dir=tmp_path,
                     incremental=True,
                     affected_out=affected_out,
+                    vector_index_kind="numpy-flat",
+                    ann_enabled_above_nodes=1,
                 )
 
     def test_incremental_reuses_unchanged_pairs(self, tmp_path: Path) -> None:
