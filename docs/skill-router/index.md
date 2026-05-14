@@ -30,7 +30,7 @@ ctx/
 
 ## Flow
 
-1. `ctx-scan-repo --recommend` scans the repository and produces stack signals.
+1. `ctx-scan-repo --repo . --recommend` scans the repository and produces stack signals.
 2. The shared resolver scores graph/wiki entities by tags, categories, semantic
    edges, usage, quality, and configured gates.
 3. The resolver returns a capped manifest: what to load, what to unload, and why.

@@ -52,7 +52,7 @@ The router has three halves:
 ## Startup Flow
 
 1. Read the shipped graph/wiki metadata and local user overrides.
-2. Run `ctx-scan-repo --recommend` for the active repo.
+2. Run `ctx-scan-repo --repo . --recommend` for the active repo.
 3. Resolve a load/unload manifest with the shared recommendation engine.
 4. Present changes with reasons and require confirmation unless the user enabled
    automatic mode.
@@ -208,7 +208,7 @@ traceability, but packaged runtime archives must omit those backups.
 
 ### Full Scan
 
-Triggers: repo open, repo switch, `ctx-scan-repo --recommend`, or explicit user
+Triggers: repo open, repo switch, `ctx-scan-repo --repo . --recommend`, or explicit user
 request.
 
 1. Read wiki orientation and local overrides.
