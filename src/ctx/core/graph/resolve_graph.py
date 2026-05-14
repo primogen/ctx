@@ -23,6 +23,12 @@ from pathlib import Path
 import networkx as nx
 from networkx.readwrite import node_link_graph
 
+from ctx.core.graph.entity_overlays import (
+    active_overlay_records,
+    merge_edge_attrs,
+    merge_node_attrs,
+)
+
 logger = logging.getLogger(__name__)
 
 WIKI_DIR = Path(os.path.expanduser("~/.claude/skill-wiki"))
@@ -163,6 +169,7 @@ def _apply_entity_overlays(G: nx.Graph, graph_path: Path) -> nx.Graph:
         logger.warning("graph entity overlay unreadable (%s); ignoring", exc)
         return G
 
+    records: list[dict] = []
     for lineno, line in enumerate(lines, 1):
         line = line.strip()
         if not line:
@@ -179,7 +186,9 @@ def _apply_entity_overlays(G: nx.Graph, graph_path: Path) -> nx.Graph:
         if not isinstance(payload, dict):
             logger.warning("graph entity overlay line %s is not an object; skipping", lineno)
             continue
+        records.append(payload)
 
+    for payload in active_overlay_records(records):
         nodes = payload.get("nodes", [])
         if isinstance(nodes, list):
             for node in nodes:
@@ -189,6 +198,8 @@ def _apply_entity_overlays(G: nx.Graph, graph_path: Path) -> nx.Graph:
                 if not isinstance(node_id, str) or not node_id:
                     continue
                 attrs = {key: value for key, value in node.items() if key != "id"}
+                if node_id in G:
+                    attrs = merge_node_attrs(G.nodes[node_id], attrs)
                 G.add_node(node_id, **attrs)
                 applied_nodes += 1
 
@@ -208,6 +219,8 @@ def _apply_entity_overlays(G: nx.Graph, graph_path: Path) -> nx.Graph:
                     for key, value in edge.items()
                     if key not in {"source", "target"}
                 }
+                if G.has_edge(source, target):
+                    attrs = merge_edge_attrs(G.edges[source, target], attrs)
                 G.add_edge(source, target, **attrs)
                 applied_edges += 1
 

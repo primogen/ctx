@@ -175,6 +175,92 @@ class TestLoadGraph:
         assert G.graph["ctx_entity_overlay_nodes"] == 1
         assert G.graph["ctx_entity_overlay_edges"] == 1
 
+    def test_entity_overlay_duplicate_attach_key_is_idempotent(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        source = _build_simple_graph()
+        p = tmp_path / "graph.json"
+        p.write_text(json.dumps(_serialise_graph(source)), encoding="utf-8")
+        record = {
+            "attach_key": "ann:v1:model:harness:mirage:hash-a",
+            "replace_scope": "ann:v1:model:harness:mirage",
+            "nodes": [{"id": "harness:mirage", "type": "harness"}],
+            "edges": [
+                {
+                    "source": "harness:mirage",
+                    "target": "skill:A",
+                    "weight": 0.18,
+                    "final_weight": 0.18,
+                },
+            ],
+        }
+        (tmp_path / "entity-overlays.jsonl").write_text(
+            json.dumps(record) + "\n" + json.dumps(record) + "\n",
+            encoding="utf-8",
+        )
+
+        G = resolve_graph.load_graph(p)
+
+        assert G.has_edge("harness:mirage", "skill:A")
+        assert G.graph["ctx_entity_overlay_nodes"] == 1
+        assert G.graph["ctx_entity_overlay_edges"] == 1
+
+    def test_entity_overlay_replace_scope_supersedes_stale_content(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        source = _build_simple_graph()
+        p = tmp_path / "graph.json"
+        p.write_text(json.dumps(_serialise_graph(source)), encoding="utf-8")
+        stale = {
+            "attach_key": "ann:v1:model:harness:mirage:old",
+            "replace_scope": "ann:v1:model:harness:mirage",
+            "nodes": [{"id": "harness:mirage", "type": "harness"}],
+            "edges": [{"source": "harness:mirage", "target": "skill:A", "weight": 0.1}],
+        }
+        fresh = {
+            "attach_key": "ann:v1:model:harness:mirage:new",
+            "replace_scope": "ann:v1:model:harness:mirage",
+            "nodes": [{"id": "harness:mirage", "type": "harness"}],
+            "edges": [{"source": "harness:mirage", "target": "skill:B", "weight": 0.2}],
+        }
+        (tmp_path / "entity-overlays.jsonl").write_text(
+            json.dumps(stale) + "\n" + json.dumps(fresh) + "\n",
+            encoding="utf-8",
+        )
+
+        G = resolve_graph.load_graph(p)
+
+        assert not G.has_edge("harness:mirage", "skill:A")
+        assert G.has_edge("harness:mirage", "skill:B")
+
+    def test_entity_overlay_does_not_lower_existing_edge(self, tmp_path: Path) -> None:
+        source = _build_simple_graph()
+        p = tmp_path / "graph.json"
+        p.write_text(json.dumps(_serialise_graph(source)), encoding="utf-8")
+        (tmp_path / "entity-overlays.jsonl").write_text(
+            json.dumps({
+                "attach_key": "manual:weak",
+                "nodes": [],
+                "edges": [
+                    {
+                        "source": "skill:A",
+                        "target": "skill:B",
+                        "weight": 0.1,
+                        "shared_tags": ["overlay"],
+                    },
+                ],
+            })
+            + "\n",
+            encoding="utf-8",
+        )
+
+        G = resolve_graph.load_graph(p)
+
+        assert G.edges["skill:A", "skill:B"]["weight"] == 1.0
+        assert G.edges["skill:A", "skill:B"]["shared_tags"] == ["python", "overlay"]
+
     def test_valid_links_key_round_trips(self, tmp_path: Path) -> None:
         """Networkx 2.x files used 'links' key — load_graph must handle it."""
         source = _build_simple_graph()
