@@ -65,6 +65,7 @@ _NAMESPACE = f"ctx{TOOL_SEPARATOR}"
 _FILE_SIGNATURE_SAMPLE_BYTES = 64 * 1024
 
 FileSignature = tuple[int, int, str]
+GraphSignature = tuple[FileSignature | None, FileSignature | None]
 
 
 @dataclass(frozen=True)
@@ -112,7 +113,7 @@ class CtxCoreToolbox:
         self._bound_session_id = str(bound_session_id or "").strip() or None
         self._graph: Any | None = None       # networkx.Graph
         self._pages: list[Any] | None = None  # list[SkillPage]
-        self._graph_signature: FileSignature | None = None
+        self._graph_signature: GraphSignature | None = None
         self._pages_signature: tuple[int, int, int] | None = None
         self._semantic_signature: tuple[FileSignature | None, ...] | None = None
 
@@ -678,7 +679,7 @@ def _file_signature(path: Path) -> FileSignature | None:
     )
 
 
-def _graph_file_signature(path: Path) -> tuple[FileSignature | None, FileSignature | None]:
+def _graph_file_signature(path: Path) -> GraphSignature:
     return (
         _file_signature(path),
         _file_signature(path.with_name("entity-overlays.jsonl")),
