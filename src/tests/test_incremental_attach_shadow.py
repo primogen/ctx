@@ -44,6 +44,8 @@ def test_shadow_indexed_subset_matches_batch_semantic_candidates() -> None:
         vector_index_kind="numpy-flat",
         model_id="model-a",
         ann_enabled_above_nodes=1,
+        cache_dir=Path(),
+        persist_index=False,
     )
 
     assert indexed == batch

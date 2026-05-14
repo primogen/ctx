@@ -439,6 +439,8 @@ class TestTopKPairsSubsetWithOptionalIndex:
             vector_index_kind="numpy-flat",
             model_id="model-a",
             ann_enabled_above_nodes=1,
+            cache_dir=Path(),
+            persist_index=False,
         )
 
         assert indexed == {("a", "b"): pytest.approx(exact[("a", "b")])}
@@ -466,9 +468,47 @@ class TestTopKPairsSubsetWithOptionalIndex:
             vector_index_kind="hnswlib",
             model_id="model-a",
             ann_enabled_above_nodes=1,
+            cache_dir=Path(),
+            persist_index=False,
         )
 
         assert result == _topk_pairs_subset(vecs, ids, [0], top_k=1, min_cosine=0.0)
+
+    def test_numpy_flat_persists_and_reuses_vector_index(self, tmp_path: Path) -> None:
+        vecs = _l2_normalize(np.array([[1.0, 0.0], [0.99, 0.01]], dtype="float32"))
+        ids = ["a", "b"]
+        hashes = ["ha", "hb"]
+
+        first = _topk_pairs_subset_with_optional_index(
+            vecs,
+            ids,
+            hashes,
+            [0],
+            top_k=1,
+            min_cosine=0.0,
+            vector_index_kind="numpy-flat",
+            model_id="model-a",
+            ann_enabled_above_nodes=1,
+            cache_dir=tmp_path,
+            persist_index=True,
+        )
+        second = _topk_pairs_subset_with_optional_index(
+            vecs,
+            ids,
+            hashes,
+            [1],
+            top_k=1,
+            min_cosine=0.0,
+            vector_index_kind="numpy-flat",
+            model_id="model-a",
+            ann_enabled_above_nodes=1,
+            cache_dir=tmp_path,
+            persist_index=True,
+        )
+
+        assert (tmp_path / "vector-index" / "vector-index.meta.json").is_file()
+        assert first == {("a", "b"): pytest.approx(0.9999, abs=1e-4)}
+        assert second == {("a", "b"): pytest.approx(0.9999, abs=1e-4)}
 
 
 # ===========================================================================

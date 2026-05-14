@@ -768,6 +768,8 @@ def compute_semantic_edges(
             vector_index_kind=vector_index_kind,
             model_id=model_id,
             ann_enabled_above_nodes=ann_enabled_above_nodes,
+            cache_dir=cache_dir,
+            persist_index=persist_cache,
         )
         reused_pairs = _reuse_prior_pairs(
             prior_state, unchanged, min_cosine,
@@ -891,6 +893,8 @@ def _topk_pairs_subset_with_optional_index(
     vector_index_kind: str,
     model_id: str,
     ann_enabled_above_nodes: int,
+    cache_dir: Path,
+    persist_index: bool,
     chunk_size: int = 1024,
 ) -> dict[tuple[str, str], float]:
     """Incremental subset lookup, optionally routed through vector_index."""
@@ -905,17 +909,39 @@ def _topk_pairs_subset_with_optional_index(
     from ctx.core.graph.vector_index import (  # noqa: PLC0415
         VectorIndexUnavailable,
         build_vector_index,
+        content_fingerprint,
+        load_vector_index,
     )
 
     try:
-        index = build_vector_index(
-            kind=vector_index_kind,
-            model_id=model_id,
-            node_ids=node_ids,
-            content_hashes=content_hashes,
-            vectors=vecs,
-            ann_enabled_above_nodes=ann_enabled_above_nodes,
+        index_dir = cache_dir / "vector-index"
+        fingerprint = content_fingerprint(node_ids, content_hashes)
+        index = (
+            load_vector_index(
+                index_dir,
+                expected_model_id=model_id,
+                expected_content_fingerprint=fingerprint,
+            )
+            if persist_index
+            else None
         )
+        if (
+            index is not None
+            and vector_index_kind != "auto"
+            and index.meta.index_kind != vector_index_kind
+        ):
+            index = None
+        if index is None:
+            index = build_vector_index(
+                kind=vector_index_kind,
+                model_id=model_id,
+                node_ids=node_ids,
+                content_hashes=content_hashes,
+                vectors=vecs,
+                ann_enabled_above_nodes=ann_enabled_above_nodes,
+            )
+            if persist_index:
+                index.save(index_dir)
     except (OSError, ValueError, VectorIndexUnavailable) as exc:
         _logger.warning(
             "semantic_edges: vector index unavailable (%s); falling back to exact subset",
