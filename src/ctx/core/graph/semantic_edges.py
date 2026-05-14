@@ -37,10 +37,11 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Iterable, Sequence
 
 if TYPE_CHECKING:
     import numpy as np
+    from ctx.core.graph.vector_index import Neighbor
 
 _logger = logging.getLogger(__name__)
 
@@ -578,6 +579,8 @@ def compute_semantic_edges(
     incremental: bool = True,
     persist_cache: bool = True,
     affected_out: set[str] | None = None,
+    vector_index_kind: str = "off",
+    ann_enabled_above_nodes: int = 250_000,
 ) -> dict[tuple[str, str], float]:
     """Build the semantic-similarity edge map.
 
@@ -609,6 +612,12 @@ def compute_semantic_edges(
             incident semantic edges were recomputed. Callers that patch
             an existing graph must use this before the new top-K state
             replaces the old one.
+        vector_index_kind: Optional incremental lookup backend. ``off``
+            preserves the exact matrix subset path; ``numpy-flat``,
+            ``hnswlib``, or ``auto`` use ``vector_index`` only for the
+            changed-row incremental recompute path.
+        ann_enabled_above_nodes: Node-count threshold where ``auto`` may
+            use the optional ANN backend when installed.
 
     Returns:
         ``{(node_id_low, node_id_high): cosine}`` with node IDs
@@ -740,6 +749,7 @@ def compute_semantic_edges(
     vecs = np.vstack([v for v in row_vecs if v is not None]).astype("float32")
     vecs = _l2_normalize(vecs)
     node_ids = [n.node_id for n in node_list]
+    content_hashes = [_content_hash(n.text) for n in node_list]
 
     # ── Top-K pass (incremental or full) ──────────────────────────────
     if prior_state is not None and unchanged:
@@ -748,9 +758,16 @@ def compute_semantic_edges(
         recompute_indices = [
             i for i, nid in enumerate(node_ids) if nid in need_recompute
         ]
-        fresh_pairs = _topk_pairs_subset(
-            vecs, node_ids, recompute_indices,
-            top_k=top_k, min_cosine=min_cosine,
+        fresh_pairs = _topk_pairs_subset_with_optional_index(
+            vecs,
+            node_ids,
+            content_hashes,
+            recompute_indices,
+            top_k=top_k,
+            min_cosine=min_cosine,
+            vector_index_kind=vector_index_kind,
+            model_id=model_id,
+            ann_enabled_above_nodes=ann_enabled_above_nodes,
         )
         reused_pairs = _reuse_prior_pairs(
             prior_state, unchanged, min_cosine,
@@ -861,6 +878,89 @@ def _topk_pairs_subset(
                 if existing is None or score > existing:
                     out[pair] = score
     return out
+
+
+def _topk_pairs_subset_with_optional_index(
+    vecs: "np.ndarray",
+    node_ids: list[str],
+    content_hashes: list[str],
+    subset_indices: list[int],
+    *,
+    top_k: int,
+    min_cosine: float,
+    vector_index_kind: str,
+    model_id: str,
+    ann_enabled_above_nodes: int,
+    chunk_size: int = 1024,
+) -> dict[tuple[str, str], float]:
+    """Incremental subset lookup, optionally routed through vector_index."""
+    if vector_index_kind == "off":
+        return _topk_pairs_subset(
+            vecs, node_ids, subset_indices,
+            top_k=top_k, min_cosine=min_cosine, chunk_size=chunk_size,
+        )
+    if not subset_indices:
+        return {}
+
+    from ctx.core.graph.vector_index import (  # noqa: PLC0415
+        VectorIndexUnavailable,
+        build_vector_index,
+    )
+
+    try:
+        index = build_vector_index(
+            kind=vector_index_kind,
+            model_id=model_id,
+            node_ids=node_ids,
+            content_hashes=content_hashes,
+            vectors=vecs,
+            ann_enabled_above_nodes=ann_enabled_above_nodes,
+        )
+    except (OSError, ValueError, VectorIndexUnavailable) as exc:
+        _logger.warning(
+            "semantic_edges: vector index unavailable (%s); falling back to exact subset",
+            exc,
+        )
+        return _topk_pairs_subset(
+            vecs, node_ids, subset_indices,
+            top_k=top_k, min_cosine=min_cosine, chunk_size=chunk_size,
+        )
+
+    out: dict[tuple[str, str], float] = {}
+    effective_k = min(top_k + 1, vecs.shape[0])
+    for chunk_start in range(0, len(subset_indices), chunk_size):
+        chunk_indices = subset_indices[chunk_start : chunk_start + chunk_size]
+        rows = index.query(
+            vecs[chunk_indices],
+            top_k=effective_k,
+            min_score=min_cosine,
+        )
+        query_node_ids = [node_ids[i] for i in chunk_indices]
+        _merge_neighbor_rows(out, query_node_ids, rows, top_k=top_k)
+    return out
+
+
+def _merge_neighbor_rows(
+    out: dict[tuple[str, str], float],
+    query_node_ids: Sequence[str],
+    rows: Sequence[Sequence["Neighbor"]],
+    *,
+    top_k: int,
+) -> None:
+    for src_id, neighbors in zip(query_node_ids, rows, strict=True):
+        emitted = 0
+        for neighbor in neighbors:
+            dst_id = neighbor.node_id
+            if dst_id == src_id:
+                continue
+            score = float(neighbor.score)
+            pair = (src_id, dst_id) if src_id < dst_id else (dst_id, src_id)
+            existing = out.get(pair)
+            if existing is None or score > existing:
+                out[pair] = score
+            emitted += 1
+            if emitted >= top_k:
+                break
 
 
 def _reuse_prior_pairs(

@@ -91,7 +91,7 @@ class NumpyFlatVectorIndex:
                 candidate_idx = np.argpartition(-query_scores, limit - 1)[:limit]
                 candidate_idx = candidate_idx[np.argsort(-query_scores[candidate_idx])]
             neighbors = [
-                Neighbor(self.node_ids[int(index)], round(float(query_scores[int(index)]), 6))
+                Neighbor(self.node_ids[int(index)], float(query_scores[int(index)]))
                 for index in candidate_idx
                 if float(query_scores[int(index)]) >= min_score
             ]
@@ -148,7 +148,7 @@ class HnswlibVectorIndex(NumpyFlatVectorIndex):
                     continue
                 score = 1.0 - float(distance)
                 if score >= min_score:
-                    neighbors.append(Neighbor(node_id, round(score, 6)))
+                    neighbors.append(Neighbor(node_id, score))
                 if len(neighbors) >= top_k:
                     break
             rows.append(neighbors)

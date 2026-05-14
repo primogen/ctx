@@ -408,6 +408,8 @@ def _pairs_from_index(
 def build_graph(
     *, incremental: bool = True,
     persist_semantic_cache: bool = True,
+    semantic_vector_index: str = "off",
+    ann_enabled_above_nodes: int = 250_000,
     _affected_out: set[str] | None = None,
 ) -> tuple[nx.Graph, dict[str, dict]]:
     """Build a networkx graph from all entity pages.
@@ -551,6 +553,8 @@ def build_graph(
             incremental=incremental,
             persist_cache=persist_semantic_cache,
             affected_out=semantic_affected,
+            vector_index_kind=semantic_vector_index,
+            ann_enabled_above_nodes=ann_enabled_above_nodes,
         )
     else:
         sem_pairs = {}
@@ -1643,6 +1647,21 @@ def main() -> None:
         "--full", dest="incremental", action="store_false",
         help="Force a full top-K recompute for every node",
     )
+    parser.add_argument(
+        "--semantic-vector-index",
+        choices=["off", "auto", "numpy-flat", "hnswlib"],
+        default="off",
+        help=(
+            "Optional vector-index backend for incremental semantic recompute "
+            "(default: off; full rebuilds stay exact)"
+        ),
+    )
+    parser.add_argument(
+        "--ann-enabled-above-nodes",
+        type=int,
+        default=250_000,
+        help="Node threshold where --semantic-vector-index auto may use ANN",
+    )
     args = parser.parse_args()
 
     if args.wiki_dir is not None:
@@ -1652,6 +1671,8 @@ def main() -> None:
     G, entities = build_graph(
         incremental=args.incremental,
         persist_semantic_cache=not args.dry_run,
+        semantic_vector_index=args.semantic_vector_index,
+        ann_enabled_above_nodes=args.ann_enabled_above_nodes,
         _affected_out=affected,
     )
     communities = detect_communities(G)
