@@ -14,6 +14,7 @@ custom-harness Python imports.
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,10 @@ def test_ctx_has_version() -> None:
     assert isinstance(ctx.__version__, str)
     assert ctx.__version__  # non-empty
     assert ctx.__version__ == data["project"]["version"]
+    source_init = (root / "src" / "__init__.py").read_text(encoding="utf-8")
+    match = re.search(r'^__version__ = "([^"]+)"$', source_init, re.MULTILINE)
+    assert match
+    assert match.group(1) == data["project"]["version"]
 
 
 def test_every_subpackage_has_docstring() -> None:
