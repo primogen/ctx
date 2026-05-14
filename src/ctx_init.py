@@ -216,7 +216,7 @@ _GRAPH_ARCHIVE_NAME = "wiki-graph.tar.gz"
 _GRAPH_RUNTIME_ARCHIVE_NAME = "wiki-graph-runtime.tar.gz"
 _GRAPH_ENTITY_OVERLAY_NAME = "entity-overlays.jsonl"
 _GRAPH_ENTITY_OVERLAY_SHA256 = (
-    "1a167f6a0f78ac78b6e9ecf4abdac7332b171e99187d7d72c22383bd22bead2e"
+    "12556f40a8f86fdb10b87bb656a1ef03cb5bd1e5e24dd03a6c5d5eb452bf01cc"
 )
 _GRAPH_ARCHIVE_NAMES = {
     "runtime": _GRAPH_RUNTIME_ARCHIVE_NAME,

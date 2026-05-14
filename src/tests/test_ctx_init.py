@@ -16,12 +16,14 @@ import pytest
 import ctx_init as ci
 
 
-def _artifact_sha256_or_lfs_oid(path: Path) -> str:
+def _artifact_sha256_or_lfs_oid(path: Path, *, normalize_text: bool = False) -> str:
     data = path.read_bytes()
     if data.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
         for line in data.decode("utf-8").splitlines():
             if line.startswith("oid sha256:"):
                 return line.removeprefix("oid sha256:")
+    if normalize_text:
+        data = data.replace(b"\r\n", b"\n")
     return hashlib.sha256(data).hexdigest()
 
 
@@ -363,7 +365,10 @@ def test_graph_download_checksums_match_shipped_artifacts() -> None:
         assert ci._GRAPH_ARCHIVE_SHA256[mode] == _artifact_sha256_or_lfs_oid(path)
 
     overlay_path = root / "graph" / ci._GRAPH_ENTITY_OVERLAY_NAME
-    assert ci._GRAPH_ENTITY_OVERLAY_SHA256 == _artifact_sha256_or_lfs_oid(overlay_path)
+    assert ci._GRAPH_ENTITY_OVERLAY_SHA256 == _artifact_sha256_or_lfs_oid(
+        overlay_path,
+        normalize_text=True,
+    )
 
 
 def test_custom_graph_url_requires_checksum_or_explicit_opt_out(
