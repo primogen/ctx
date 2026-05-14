@@ -66,6 +66,15 @@ def _write_mcp_sidecar(claude: Path, slug: str, body: dict) -> None:
     (mcp_dir / f"{slug}.json").write_text(json.dumps(body), encoding="utf-8")
 
 
+def _write_graph_manifest(claude: Path, export_id: str) -> None:
+    graph_dir = claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    (graph_dir / "graph-export-manifest.json").write_text(
+        json.dumps({"version": 1, "export_id": export_id}),
+        encoding="utf-8",
+    )
+
+
 def test_read_jsonl_skips_non_object_lines(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     path.write_text(
@@ -1447,8 +1456,9 @@ def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _write_graph_manifest(fake_claude, "test-export")
     index_path = fake_claude / "skill-wiki" / "graphify-out" / "dashboard-neighborhoods.sqlite3"
-    index_path.parent.mkdir(parents=True)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(index_path)
     try:
         conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -1525,8 +1535,9 @@ def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
 def test_graph_index_honors_requested_type_on_exact_slug(
     fake_claude: Path,
 ) -> None:
+    _write_graph_manifest(fake_claude, "test-export")
     index_path = fake_claude / "skill-wiki" / "graphify-out" / "dashboard-neighborhoods.sqlite3"
-    index_path.parent.mkdir(parents=True)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(index_path)
     try:
         conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -1541,7 +1552,7 @@ def test_graph_index_honors_requested_type_on_exact_slug(
         conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
         conn.executemany(
             "INSERT INTO meta VALUES(?,?)",
-            [("max_degree", "1"), ("top_k", "40")],
+            [("max_degree", "1"), ("top_k", "40"), ("export_id", json.dumps("test-export"))],
         )
         conn.executemany(
             "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
@@ -1576,8 +1587,9 @@ def test_graph_index_honors_requested_type_on_exact_slug(
 def test_graph_index_matches_fuzzy_slug_resolution(
     fake_claude: Path,
 ) -> None:
+    _write_graph_manifest(fake_claude, "test-export")
     index_path = fake_claude / "skill-wiki" / "graphify-out" / "dashboard-neighborhoods.sqlite3"
-    index_path.parent.mkdir(parents=True)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(index_path)
     try:
         conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -1590,7 +1602,10 @@ def test_graph_index_matches_fuzzy_slug_resolution(
             "PRIMARY KEY(slug,type,node_id))"
         )
         conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
-        conn.executemany("INSERT INTO meta VALUES(?,?)", [("max_degree", "1"), ("top_k", "40")])
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [("max_degree", "1"), ("top_k", "40"), ("export_id", json.dumps("test-export"))],
+        )
         conn.execute(
             "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
             ("skill:github-actions", "GitHub Actions", "skill", '["ci"]', "", None, None, 0),
@@ -1854,6 +1869,7 @@ def test_graph_neighborhood_rejects_orphan_dashboard_index_without_manifest(
 def test_graph_index_node_size_uses_live_sidecar_when_scores_missing(
     fake_claude: Path,
 ) -> None:
+    _write_graph_manifest(fake_claude, "test-export")
     _write_sidecar(fake_claude, "python-patterns", {
         "slug": "python-patterns",
         "subject_type": "skill",
@@ -1862,7 +1878,7 @@ def test_graph_index_node_size_uses_live_sidecar_when_scores_missing(
         "signals": {"telemetry": {"score": 1.0}},
     })
     index_path = fake_claude / "skill-wiki" / "graphify-out" / "dashboard-neighborhoods.sqlite3"
-    index_path.parent.mkdir(parents=True)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(index_path)
     try:
         conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -1875,7 +1891,10 @@ def test_graph_index_node_size_uses_live_sidecar_when_scores_missing(
             "PRIMARY KEY(slug,type,node_id))"
         )
         conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
-        conn.executemany("INSERT INTO meta VALUES(?,?)", [("max_degree", "1"), ("top_k", "40")])
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [("max_degree", "1"), ("top_k", "40"), ("export_id", json.dumps("test-export"))],
+        )
         conn.execute(
             "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
             ("skill:python-patterns", "python-patterns", "skill", "[]", "", None, None, 0),
