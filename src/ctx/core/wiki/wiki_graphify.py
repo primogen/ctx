@@ -14,7 +14,6 @@ Usage:
 
 import argparse
 import json
-import math
 import os
 import re
 from collections import Counter, defaultdict
@@ -27,6 +26,14 @@ from networkx.algorithms.community import (
     louvain_communities,
 )
 
+from ctx.core.graph.edge_scoring import (
+    SLUG_STOP as _EDGE_SLUG_STOP,
+    adamic_adar_scores as _shared_adamic_adar_scores,
+    canonical_pair,
+    pairs_from_index,
+    slug_tokens,
+    type_affinity_score,
+)
 from ctx.core.entity_types import (
     RELATED_SECTION_FOR_ENTITY_TYPE,
     entity_page_path,
@@ -137,12 +144,6 @@ def _related_section_header(entity_type: str) -> str:
     return RELATED_SECTION_FOR_ENTITY_TYPE.get(entity_type, "## Related")
 
 
-SLUG_STOP: frozenset[str] = frozenset({
-    "a", "an", "the", "and", "of", "for", "to", "with",
-    "skill", "agent", "expert", "pro", "core",
-})
-
-
 def _strip_frontmatter(content: str) -> str:
     """Return the markdown body with the YAML frontmatter removed."""
     parts = content.split("---", 2)
@@ -232,14 +233,11 @@ def _load_full_body(meta: dict, slug: str, entity_type: str) -> str:
 
 def _slug_tokens(slug: str) -> list[str]:
     """Return the >=3-char non-stopword tokens from a slug."""
-    return [
-        t for t in slug.lower().split("-")
-        if len(t) >= 3 and t not in SLUG_STOP
-    ]
+    return slug_tokens(slug)
 
 
 def _pair(n1: str, n2: str) -> tuple[str, str]:
-    return (n1, n2) if n1 <= n2 else (n2, n1)
+    return canonical_pair(n1, n2)
 
 
 def _source_keys(meta: dict) -> list[str]:
@@ -320,22 +318,7 @@ def _graph_scoring_signature(config: object) -> dict[str, float | int | str]:
 
 
 def _type_affinity_score(left: str, right: str) -> float:
-    if left == right:
-        return 0.35
-    pair = frozenset((left, right))
-    if pair == frozenset(("skill", "agent")):
-        return 1.0
-    if pair == frozenset(("skill", "mcp-server")):
-        return 0.9
-    if pair == frozenset(("skill", "harness")):
-        return 0.75
-    if pair == frozenset(("agent", "mcp-server")):
-        return 0.65
-    if pair == frozenset(("agent", "harness")):
-        return 0.7
-    if pair == frozenset(("mcp-server", "harness")):
-        return 0.6
-    return 0.4
+    return type_affinity_score(left, right)
 
 
 def _mean_present(*values: float | None) -> float:
@@ -399,24 +382,7 @@ def _adamic_adar_scores(
     nodes: list[str],
     pairs: set[tuple[str, str]],
 ) -> dict[tuple[str, str], float]:
-    base = nx.Graph()
-    base.add_nodes_from(nodes)
-    base.add_edges_from(pairs)
-    pair_lookup = set(pairs)
-    scores: dict[tuple[str, str], float] = defaultdict(float)
-    max_common_degree = 200
-    for common in base.nodes:
-        neighbors = sorted(base.neighbors(common))
-        degree = len(neighbors)
-        if degree < 2 or degree > max_common_degree:
-            continue
-        contribution = 1.0 / math.log(degree)
-        for i, n1 in enumerate(neighbors):
-            for n2 in neighbors[i + 1:]:
-                pair = _pair(n1, n2)
-                if pair in pair_lookup:
-                    scores[pair] += contribution
-    return {pair: min(score, 1.0) for pair, score in scores.items()}
+    return _shared_adamic_adar_scores(nodes, pairs)
 
 
 def _pairs_from_index(
@@ -436,18 +402,7 @@ def _pairs_from_index(
       - ``shared_keys[pair]`` is the concrete list of shared keys,
         for edge attribution in the rendered graph.
     """
-    counts: dict[tuple[str, str], int] = defaultdict(int)
-    shared: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for key, node_ids in index.items():
-        if len(node_ids) > dense_threshold:
-            continue
-        sorted_ids = sorted(node_ids)
-        for i, n1 in enumerate(sorted_ids):
-            for n2 in sorted_ids[i + 1:]:
-                pair = (n1, n2)
-                counts[pair] += 1
-                shared[pair].append(key)
-    return counts, shared
+    return pairs_from_index(index, dense_threshold=dense_threshold)
 
 
 def build_graph(
@@ -1716,3 +1671,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+SLUG_STOP = _EDGE_SLUG_STOP
