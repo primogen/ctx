@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 WIKI_DIR = Path(os.path.expanduser("~/.claude/skill-wiki"))
 GRAPH_PATH = WIKI_DIR / "graphify-out" / "graph.json"
 GRAPH_EXPORT_MANIFEST = "graph-export-manifest.json"
+GRAPH_ENTITY_OVERLAYS = "entity-overlays.jsonl"
 
 # A valid node-link graph dict must have "nodes" and either "links" or "edges"
 # (networkx >= 3.0 uses "edges"; older versions used "links").
@@ -143,6 +144,79 @@ def _filter_runtime_edges(G: nx.Graph, min_cosine: float | None) -> nx.Graph:
     return sub
 
 
+def _apply_entity_overlays(G: nx.Graph, graph_path: Path) -> nx.Graph:
+    """Merge small append-only entity graph overlays beside graph.json.
+
+    The shipped graph tarball is intentionally heavyweight. Hot-path entity
+    adds should not rewrite it just to expose one new skill/MCP/agent/harness
+    to recommendations. Each JSONL row may contain ``nodes`` and ``edges``
+    arrays in node-link shape; invalid rows are skipped with a warning.
+    """
+    overlay_path = graph_path.with_name(GRAPH_ENTITY_OVERLAYS)
+    if not overlay_path.is_file():
+        return G
+
+    applied_nodes = applied_edges = 0
+    try:
+        lines = overlay_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        logger.warning("graph entity overlay unreadable (%s); ignoring", exc)
+        return G
+
+    for lineno, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "graph entity overlay line %s is invalid JSON (%s); skipping",
+                lineno,
+                exc,
+            )
+            continue
+        if not isinstance(payload, dict):
+            logger.warning("graph entity overlay line %s is not an object; skipping", lineno)
+            continue
+
+        nodes = payload.get("nodes", [])
+        if isinstance(nodes, list):
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                node_id = node.get("id")
+                if not isinstance(node_id, str) or not node_id:
+                    continue
+                attrs = {key: value for key, value in node.items() if key != "id"}
+                G.add_node(node_id, **attrs)
+                applied_nodes += 1
+
+        edges = payload.get("edges", [])
+        if isinstance(edges, list):
+            for edge in edges:
+                if not isinstance(edge, dict):
+                    continue
+                source = edge.get("source")
+                target = edge.get("target")
+                if not isinstance(source, str) or not isinstance(target, str):
+                    continue
+                if source not in G or target not in G:
+                    continue
+                attrs = {
+                    key: value
+                    for key, value in edge.items()
+                    if key not in {"source", "target"}
+                }
+                G.add_edge(source, target, **attrs)
+                applied_edges += 1
+
+    G.graph["ctx_entity_overlay_path"] = str(overlay_path)
+    G.graph["ctx_entity_overlay_nodes"] = applied_nodes
+    G.graph["ctx_entity_overlay_edges"] = applied_edges
+    return G
+
+
 def load_graph(path: Path | None = None) -> nx.Graph:
     """Load the knowledge graph from graph.json.
 
@@ -172,6 +246,7 @@ def load_graph(path: Path | None = None) -> nx.Graph:
         edges_key = "links" if "links" in data else "edges"
         graph = node_link_graph(data, edges=edges_key)
         graph.graph.setdefault("ctx_graph_path", str(graph_path))
+        graph = _apply_entity_overlays(graph, graph_path)
         return _filter_runtime_edges(graph, _configured_semantic_min_cosine())
     except json.JSONDecodeError as exc:
         logger.warning("graph.json is not valid JSON (%s); returning empty graph", exc)

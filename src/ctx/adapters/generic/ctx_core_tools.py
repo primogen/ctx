@@ -583,7 +583,7 @@ class CtxCoreToolbox:
 
     def _ensure_graph(self) -> Any:
         graph_path = self._graph_file_path()
-        signature = _file_signature(graph_path) if graph_path is not None else None
+        signature = _graph_file_signature(graph_path) if graph_path is not None else None
         if self._graph is not None and signature == self._graph_signature:
             return self._graph
         from ctx.core.graph.resolve_graph import load_graph  # noqa: PLC0415
@@ -675,6 +675,13 @@ def _file_signature(path: Path) -> FileSignature | None:
         stat.st_mtime_ns,
         stat.st_size,
         _file_content_fingerprint(path, stat.st_size),
+    )
+
+
+def _graph_file_signature(path: Path) -> tuple[FileSignature | None, FileSignature | None]:
+    return (
+        _file_signature(path),
+        _file_signature(path.with_name("entity-overlays.jsonl")),
     )
 
 
