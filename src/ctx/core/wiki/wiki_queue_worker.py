@@ -12,6 +12,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
 
+from ctx.core.graph.incremental_attach import attach_entity
 from ctx.core.wiki.artifact_promotion import promote_staged_artifact
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_sync import update_index
@@ -24,6 +25,7 @@ _ENTITY_SUBJECT_TYPES = {
     "mcp-server": "mcp-servers",
     "harness": "harnesses",
 }
+_DEFAULT_ATTACH_MIN_FINAL_WEIGHT = 0.03
 MaintenanceHandler = Callable[[Path, dict[str, Any]], str]
 
 
@@ -137,13 +139,20 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
         )
 
     update_index(str(wiki_path), [slug], subject_type=subject_type)
+    attach_message = _try_incremental_attach(
+        wiki_path=wiki_path,
+        entity_type=entity_type,
+        slug=slug,
+        entity_path=entity_path,
+        text=text,
+    )
     wiki_queue.enqueue_maintenance_job(
         wiki_path,
         kind=wiki_queue.GRAPH_EXPORT_JOB,
         payload={"graph_only": True, "incremental": True},
         source="entity-upsert",
     )
-    return f"refreshed {subject_type} index for {slug}"
+    return f"refreshed {subject_type} index for {slug}; {attach_message}"
 
 
 def _resolve_entity_path(wiki_path: Path, raw_path: str) -> Path:
@@ -156,6 +165,77 @@ def _resolve_entity_path(wiki_path: Path, raw_path: str) -> Path:
         raise ValueError(f"entity_path escapes wiki root: {raw_path}")
     reject_symlink_path(candidate)
     return candidate
+
+
+def _try_incremental_attach(
+    *,
+    wiki_path: Path,
+    entity_type: str,
+    slug: str,
+    entity_path: Path,
+    text: str,
+) -> str:
+    index_dir = _semantic_vector_index_dir(wiki_path)
+    if not (index_dir / "vector-index.meta.json").is_file():
+        return "incremental attach skipped (no vector index)"
+    try:
+        result = attach_entity(
+            index_dir=index_dir,
+            overlay_path=wiki_path / "graphify-out" / "entity-overlays.jsonl",
+            node_id=f"{entity_type}:{slug}",
+            entity_type=entity_type,
+            label=slug,
+            tags=_extract_frontmatter_tags(text),
+            text=text,
+            vector_json=None,
+            model_id=None,
+            top_k=int(cfg.graph_semantic_top_k),
+            min_score=float(cfg.graph_semantic_min_cosine),
+            min_final_weight=_DEFAULT_ATTACH_MIN_FINAL_WEIGHT,
+        )
+    except Exception as exc:  # noqa: BLE001 - attach is derived, not source of truth.
+        return f"incremental attach skipped ({exc})"
+    status = result.get("status", "unknown")
+    return f"incremental attach {status}"
+
+
+def _semantic_vector_index_dir(wiki_path: Path) -> Path:
+    configured = Path(cfg.graph_semantic_cache_dir).expanduser()
+    default_cache = Path(os.path.expanduser("~/.claude/skill-wiki/.embedding-cache/graph"))
+    try:
+        wiki_resolved = Path(wiki_path).expanduser().resolve()
+        cfg_wiki_resolved = Path(cfg.wiki_dir).expanduser().resolve()
+        configured_resolved = configured.resolve()
+        default_resolved = default_cache.resolve()
+    except OSError:
+        return configured / "vector-index"
+    if wiki_resolved != cfg_wiki_resolved and configured_resolved == default_resolved:
+        return Path(wiki_path) / ".embedding-cache" / "graph" / "vector-index"
+    return configured / "vector-index"
+
+
+def _extract_frontmatter_tags(text: str) -> list[str]:
+    if not text.startswith("---"):
+        return []
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return []
+    try:
+        import yaml  # type: ignore[import-untyped]  # noqa: PLC0415
+
+        parsed = yaml.safe_load(parts[1]) or {}
+    except Exception:  # noqa: BLE001 - malformed metadata just means no tag hint.
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    tags = parsed.get("tags")
+    if isinstance(tags, str):
+        values: list[Any] = tags.split(",")
+    elif isinstance(tags, list):
+        values = list(tags)
+    else:
+        return []
+    return [str(tag).strip() for tag in values if str(tag).strip()]
 
 
 def _required_string(payload: dict[str, Any], key: str) -> str:
