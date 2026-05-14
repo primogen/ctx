@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import networkx as nx
 import numpy as np
 
+from ctx.core.graph.incremental_shadow import main, run_shadow_validation
 from ctx.core.graph.semantic_edges import (
     _l2_normalize,
     _topk_pairs,
     _topk_pairs_subset_with_optional_index,
 )
+from ctx.core.graph.vector_index import build_vector_index
 from ctx.core.wiki import wiki_graphify as wg
 
 
@@ -49,6 +52,93 @@ def test_shadow_indexed_subset_matches_batch_semantic_candidates() -> None:
     )
 
     assert indexed == batch
+
+
+def test_shadow_validation_reports_topk_overlap(tmp_path: Path) -> None:
+    index_dir = tmp_path / "vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:alpha", "skill:beta", "skill:gamma"],
+        content_hashes=["ha", "hb", "hc"],
+        vectors=np.asarray(
+            [[1.0, 0.0], [0.95, 0.05], [0.0, 1.0]],
+            dtype="float32",
+        ),
+    ).save(index_dir)
+
+    report = run_shadow_validation(
+        index_dir=index_dir,
+        node_ids=["skill:alpha"],
+        top_ks=(1, 2),
+        min_score=0.5,
+        min_overlap=0.85,
+    )
+
+    assert report["gate_passed"] is True
+    assert report["baseline"] == "exact-vector-topk"
+    assert report["metrics"]["top_1"]["recall"] == 1.0
+    assert report["score_deltas"]["max_abs"] == 0.0
+    assert report["bad_examples"] == []
+
+
+def test_shadow_validation_can_gate_against_graph_baseline(tmp_path: Path) -> None:
+    index_dir = tmp_path / "vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:alpha", "skill:expected", "skill:actual"],
+        content_hashes=["ha", "he", "hc"],
+        vectors=np.asarray(
+            [[1.0, 0.0], [0.0, 1.0], [0.97, 0.03]],
+            dtype="float32",
+        ),
+    ).save(index_dir)
+    graph = nx.Graph()
+    graph.add_edge("skill:alpha", "skill:expected", semantic_sim=0.9)
+
+    report = run_shadow_validation(
+        index_dir=index_dir,
+        graph=graph,
+        node_ids=["skill:alpha"],
+        top_ks=(1,),
+        min_score=0.5,
+        min_final_weight=0.03,
+        min_overlap=0.85,
+    )
+
+    assert report["gate_passed"] is False
+    assert report["metrics"]["top_1"]["recall"] == 0.0
+    assert report["bad_examples"][0]["missing"] == ["skill:expected"]
+
+
+def test_shadow_cli_returns_nonzero_when_gate_fails(tmp_path: Path, capsys) -> None:
+    index_dir = tmp_path / "vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:alpha", "skill:beta"],
+        content_hashes=["ha", "hb"],
+        vectors=np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype="float32"),
+    ).save(index_dir)
+    graph = nx.Graph()
+    graph.add_edge("skill:alpha", "skill:beta", semantic_sim=0.9)
+    graph_path = tmp_path / "graph.json"
+    from networkx.readwrite import node_link_data
+
+    graph_path.write_text(json.dumps(node_link_data(graph, edges="edges")), encoding="utf-8")
+
+    rc = main([
+        "--index-dir", str(index_dir),
+        "--graph", str(graph_path),
+        "--node", "skill:alpha",
+        "--top-k", "1",
+        "--min-score", "0.95",
+        "--json",
+    ])
+
+    assert rc == 2
+    assert '"gate_passed": false' in capsys.readouterr().out
 
 
 def test_shadow_incremental_graph_matches_full_graph(

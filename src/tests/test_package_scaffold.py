@@ -49,6 +49,7 @@ _EXPECTED_CONSOLE_SCRIPTS: tuple[str, ...] = (
     "ctx-harness-add",
     "ctx-harness-install",
     "ctx-incremental-attach",
+    "ctx-incremental-shadow",
     "ctx-init",
     "ctx-install-hooks",
     "ctx-lifecycle",
