@@ -147,6 +147,19 @@ The PowerShell commands should print nothing.
 After adding or updating skills, agents, MCP servers, or harnesses:
 
 ```bash
+ctx-wiki-worker --wiki ~/.claude/skill-wiki --limit 1
+ctx-scan-repo --repo . --recommend
+```
+
+The worker path is the fast local update path. It validates the queued entity
+page, updates the wiki index, and attempts incremental ANN attach into
+`graphify-out/entity-overlays.jsonl` when the semantic vector index exists. It
+also queues the normal incremental graph export job, so a full rebuild remains
+the reconciliation path for release artifacts.
+
+For release artifact rebuilds:
+
+```bash
 python scripts/graph_artifact_guard.py park
 ctx-wiki-graphify
 python src/validate_graph_artifacts.py --deep

@@ -208,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     attach.add_argument("--label", help="Display label; defaults to the slug part of --node-id")
     attach.add_argument("--tag", action="append", default=[], help="Entity tag; repeatable")
     attach.add_argument("--text", help="Entity text to embed and hash")
+    attach.add_argument("--text-file", help="Read entity text from a UTF-8 file")
     attach.add_argument(
         "--vector-json",
         help="Precomputed vector JSON for tests/advanced callers; skips embedding",
@@ -240,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
                 entity_type=args.entity_type,
                 label=args.label or _slug_label(args.node_id),
                 tags=list(args.tag or []),
-                text=args.text,
+                text=_resolve_text_input(args.text, args.text_file),
                 vector_json=args.vector_json,
                 model_id=args.model_id,
                 top_k=args.top_k,
@@ -259,6 +260,18 @@ def main(argv: list[str] | None = None) -> int:
             print(result["status"])
         return 0
     return 1
+
+
+def _resolve_text_input(text: str | None, text_file: str | None) -> str | None:
+    if text and text_file:
+        raise ValueError("use only one of --text or --text-file")
+    if not text_file:
+        return text
+    path = Path(text_file).expanduser()
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"cannot read --text-file {path}") from exc
 
 
 def _read_index_meta(index_dir: Path) -> dict[str, Any]:

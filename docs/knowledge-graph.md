@@ -233,6 +233,36 @@ vendor its code or assets.
 After you add a skill, agent, MCP server, or harness entity page:
 
 ```bash
+ctx-wiki-worker --wiki ~/.claude/skill-wiki --limit 1
+```
+
+The `entity-upsert` worker path validates the queued page hash, updates the
+wiki index, and, when a persisted semantic vector index exists, runs a
+best-effort ANN attach into `graphify-out/entity-overlays.jsonl`. That overlay
+lets the runtime resolver connect a new or updated entity to existing graph
+neighbors without recomputing global all-pairs similarity. The worker still
+queues the normal incremental `graph-export` job, and the entity markdown page
+remains the source of truth.
+
+For manual review or debugging:
+
+```bash
+ctx-incremental-attach calibrate \
+  --graph ~/.claude/skill-wiki/graphify-out/graph.json
+
+ctx-incremental-attach attach \
+  --index-dir ~/.claude/skill-wiki/.embedding-cache/graph/vector-index \
+  --overlay ~/.claude/skill-wiki/graphify-out/entity-overlays.jsonl \
+  --node-id skill:fastapi-review \
+  --type skill \
+  --label fastapi-review \
+  --text-file ~/.claude/skill-wiki/entities/skills/fastapi-review.md \
+  --dry-run
+```
+
+Before publishing graph artifacts, run the full rebuild/export path:
+
+```bash
 ctx-wiki-graphify          # rebuild entity graph + communities
 ```
 

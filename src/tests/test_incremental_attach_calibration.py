@@ -110,6 +110,8 @@ def test_main_attach_dry_run_outputs_overlay_without_writing(tmp_path, capsys) -
         vectors=np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype="float32"),
     ).save(index_dir)
     overlay = tmp_path / "entity-overlays.jsonl"
+    text_file = tmp_path / "new-python.md"
+    text_file.write_text("new python testing helper", encoding="utf-8")
 
     rc = main([
         "attach",
@@ -119,7 +121,7 @@ def test_main_attach_dry_run_outputs_overlay_without_writing(tmp_path, capsys) -
         "--label", "new-python",
         "--type", "skill",
         "--tag", "python",
-        "--text", "new python testing helper",
+        "--text-file", str(text_file),
         "--model-id", "model-a",
         "--vector-json", "[1.0, 0.0]",
         "--top-k", "1",
