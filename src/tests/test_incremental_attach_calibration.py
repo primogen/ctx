@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import networkx as nx
+import numpy as np
 import pytest
 from networkx.readwrite import node_link_data
 
@@ -9,6 +10,8 @@ from ctx.core.graph.incremental_attach import (
     main,
     render_calibration_markdown,
 )
+from ctx.core.graph.resolve_graph import load_graph
+from ctx.core.graph.vector_index import build_vector_index
 
 
 def test_calibrate_attach_defaults_uses_existing_graph_distributions() -> None:
@@ -95,3 +98,97 @@ def test_main_calibrate_outputs_json(tmp_path, capsys) -> None:
     output = capsys.readouterr().out
     assert '"node_count": 2' in output
     assert '"recommended_min_semantic_score": 0.8' in output
+
+
+def test_main_attach_dry_run_outputs_overlay_without_writing(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:python-testing", "skill:ruby-testing"],
+        content_hashes=["ha", "hb"],
+        vectors=np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype="float32"),
+    ).save(index_dir)
+    overlay = tmp_path / "entity-overlays.jsonl"
+
+    rc = main([
+        "attach",
+        "--index-dir", str(index_dir),
+        "--overlay", str(overlay),
+        "--node-id", "skill:new-python",
+        "--label", "new-python",
+        "--type", "skill",
+        "--tag", "python",
+        "--text", "new python testing helper",
+        "--model-id", "model-a",
+        "--vector-json", "[1.0, 0.0]",
+        "--top-k", "1",
+        "--min-score", "0.5",
+        "--dry-run",
+    ])
+
+    assert rc == 0
+    assert not overlay.exists()
+    output = capsys.readouterr().out
+    assert '"attach_key": "ann:v1:model-a:skill:new-python:' in output
+    assert '"target": "skill:python-testing"' in output
+
+
+def test_main_attach_writes_idempotent_overlay_used_by_resolver(tmp_path) -> None:
+    index_dir = tmp_path / "vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:python-testing", "skill:ruby-testing"],
+        content_hashes=["ha", "hb"],
+        vectors=np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype="float32"),
+    ).save(index_dir)
+    graph = nx.Graph()
+    graph.add_node("skill:python-testing", type="skill", label="python-testing")
+    graph.add_node("skill:ruby-testing", type="skill", label="ruby-testing")
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(__import__("json").dumps(node_link_data(graph, edges="edges")))
+    overlay = tmp_path / "entity-overlays.jsonl"
+    args = [
+        "attach",
+        "--index-dir", str(index_dir),
+        "--overlay", str(overlay),
+        "--node-id", "skill:new-python",
+        "--label", "new-python",
+        "--type", "skill",
+        "--tag", "python",
+        "--text", "new python testing helper",
+        "--model-id", "model-a",
+        "--vector-json", "[1.0, 0.0]",
+        "--top-k", "1",
+        "--min-score", "0.5",
+    ]
+
+    assert main(args) == 0
+    assert main(args) == 0
+    loaded = load_graph(graph_path)
+
+    assert overlay.read_text(encoding="utf-8").count("\n") == 1
+    assert loaded.has_edge("skill:new-python", "skill:python-testing")
+    assert loaded.edges["skill:new-python", "skill:python-testing"]["semantic_sim"] == pytest.approx(1.0)
+
+    changed_args = [
+        "attach",
+        "--index-dir", str(index_dir),
+        "--overlay", str(overlay),
+        "--node-id", "skill:new-python",
+        "--label", "new-python",
+        "--type", "skill",
+        "--tag", "python",
+        "--text", "updated ruby testing helper",
+        "--model-id", "model-a",
+        "--vector-json", "[0.0, 1.0]",
+        "--top-k", "1",
+        "--min-score", "0.5",
+    ]
+    assert main(changed_args) == 0
+    loaded_after_change = load_graph(graph_path)
+
+    assert overlay.read_text(encoding="utf-8").count("\n") == 2
+    assert loaded_after_change.has_edge("skill:new-python", "skill:ruby-testing")
+    assert not loaded_after_change.has_edge("skill:new-python", "skill:python-testing")
