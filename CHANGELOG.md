@@ -7,7 +7,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
-## [1.0.4] - 2026-05-11
+## [1.0.4] - 2026-05-14
 
 ### Added
 
@@ -15,12 +15,22 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   local LLM. It interviews model, intent, runtime, access, verification, and
   privacy constraints, then emits real `ctx-harness-install --recommend`
   commands with the no-fit custom harness PRD path.
+- Added the ANN-backed incremental graph attach workflow:
+  `ctx-incremental-attach`, `ctx-incremental-shadow`, persistent vector-index
+  artifacts, entity overlay records, and a shadow-mode release gate for
+  comparing incremental attach output against batch graph edges.
+- Added A-Z regression coverage for skill add/update/delete, MCP add, harness
+  add, dry-run attach, missing vector-index fallback, queued attach recovery,
+  and dashboard graph display from entity overlays.
 
 ### Changed
 
 - Polished the ctx monitor with a more instrumented dashboard visual system,
   interactive graph/wiki subgraph controls, draggable navigation, and a
   dashboard Config page for important ctx settings.
+- Wired wiki queue entity-upsert jobs to use the incremental attach path when
+  a compatible vector index is present, while keeping wiki page writes as the
+  source of truth if attach is unavailable.
 
 ### Fixed
 
@@ -28,6 +38,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fast dashboard load times on large catalogs.
 - Kept graph edge filtering compatible with the existing dashboard sidebar
   selectors while using the newer 3D graph renderer.
+- Fixed stale release notes for the untagged 1.0.4 line so the package,
+  changelog, docs, and public install story describe the same behavior.
 
 ## [1.0.3] - 2026-05-11
 
@@ -1500,6 +1512,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.4]: https://github.com/stevesolun/ctx/releases/tag/v1.0.4
 [1.0.3]: https://github.com/stevesolun/ctx/releases/tag/v1.0.3
 [1.0.2]: https://github.com/stevesolun/ctx/releases/tag/v1.0.2
 [1.0.1]: https://github.com/stevesolun/ctx/releases/tag/v1.0.1
