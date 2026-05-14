@@ -96,6 +96,9 @@ embeddings = [
     "sentence-transformers>=2,<4",
     "torch>=2,<3",
 ]
+ann = [
+    "hnswlib>=0.8,<0.9; platform_python_implementation == 'CPython'",
+]
 harness = [
     # LiteLLM is the substrate for the model-agnostic harness
     # (ctx.adapters.generic.providers). Every remote provider —
