@@ -6,14 +6,50 @@ import builtins
 import hashlib
 import io
 import json
+import sqlite3
 import sys
 import tarfile
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
 import networkx as nx
 import pytest
 import ctx_init as ci
+
+
+def _write_dashboard_index(path: Path, *, export_id: str = "test-export") -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE slug_index(slug TEXT,type TEXT,node_id TEXT,"
+            "PRIMARY KEY(slug,type,node_id))"
+        )
+        conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [
+                ("export_id", json.dumps(export_id)),
+                ("nodes_count", "1"),
+                ("edges_count", "0"),
+                ("max_degree", "1"),
+                ("top_k", "40"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            ("skill:current", "current", "skill", "[]", "", None, None, 0),
+        )
+        conn.execute("INSERT INTO slug_index VALUES(?,?,?)", ("current", "skill", "skill:current"))
+        conn.execute("INSERT INTO neighbors VALUES(?,?)", ("skill:current", zlib.compress(b"[]")))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _artifact_sha256_or_lfs_oid(path: Path, *, normalize_text: bool = False) -> str:
@@ -299,6 +335,7 @@ def _write_graph_archive(tmp_path: Path) -> Path:
         }),
         encoding="utf-8",
     )
+    _write_dashboard_index(graph_out / "dashboard-neighborhoods.sqlite3")
     external = source / "external-catalogs" / "skills-sh"
     external.mkdir(parents=True)
     (external / "catalog.json").write_text("{}", encoding="utf-8")
@@ -316,6 +353,12 @@ def _write_graph_archive(tmp_path: Path) -> Path:
 
 def _tar_text(tf: tarfile.TarFile, name: str, text: str) -> None:
     payload = text.encode("utf-8")
+    info = tarfile.TarInfo(name)
+    info.size = len(payload)
+    tf.addfile(info, io.BytesIO(payload))
+
+
+def _tar_bytes(tf: tarfile.TarFile, name: str, payload: bytes) -> None:
     info = tarfile.TarInfo(name)
     info.size = len(payload)
     tf.addfile(info, io.BytesIO(payload))
@@ -371,6 +414,14 @@ def test_graph_download_checksums_match_shipped_artifacts() -> None:
     )
 
 
+def test_local_graph_archive_checksum_is_verified(tmp_path: Path) -> None:
+    archive = tmp_path / "wiki-graph-runtime.tar.gz"
+    archive.write_bytes(b"not the shipped runtime archive")
+
+    with pytest.raises(ValueError, match="local graph archive checksum mismatch"):
+        ci._verify_local_graph_archive(archive, requested_install_mode="runtime")
+
+
 def test_custom_graph_url_requires_checksum_or_explicit_opt_out(
     tmp_path: Path,
     monkeypatch,
@@ -392,6 +443,44 @@ def test_custom_graph_url_requires_checksum_or_explicit_opt_out(
     assert rc == 1
 
 
+def test_custom_graph_url_bypasses_local_archive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    archive = _write_graph_archive(tmp_path)
+    archive_bytes = archive.read_bytes()
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        ci,
+        "_find_local_graph_archive",
+        lambda _mode: (_ for _ in ()).throw(
+            AssertionError("explicit graph_url must not use local archive")
+        ),
+    )
+
+    def fake_download(destination: Path, **kwargs: object) -> None:
+        calls.append(dict(kwargs))
+        destination.write_bytes(archive_bytes)
+
+    monkeypatch.setattr(ci, "_download_graph_archive", fake_download)
+    monkeypatch.setattr(ci, "_install_graph_entity_overlay", lambda *_a, **_k: None)
+
+    rc = ci.build_graph(
+        tmp_path / "home",
+        graph_url="https://example.invalid/custom-wiki-graph.tar.gz",
+        graph_sha256=hashlib.sha256(archive_bytes).hexdigest(),
+    )
+
+    assert rc == 0
+    assert calls == [
+        {
+            "url": "https://example.invalid/custom-wiki-graph.tar.gz",
+            "expected_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+        }
+    ]
+
+
 def test_main_with_graph_flag_installs_prebuilt_graph(
     tmp_path: Path,
     monkeypatch,
@@ -406,6 +495,7 @@ def test_main_with_graph_flag_installs_prebuilt_graph(
         lambda _install_mode="runtime": archive,
         raising=False,
     )
+    monkeypatch.setattr(ci, "_verify_local_graph_archive", lambda *_a, **_k: None)
     monkeypatch.setattr(
         ci,
         "_download_graph_archive",
@@ -471,6 +561,7 @@ def test_graph_install_copies_local_entity_overlay(
         raising=False,
     )
     monkeypatch.setattr(ci, "_find_local_graph_entity_overlay", lambda: overlay)
+    monkeypatch.setattr(ci, "_verify_local_graph_archive", lambda *_a, **_k: None)
 
     assert ci.build_graph(claude) == 0
 
@@ -520,6 +611,13 @@ def test_runtime_graph_install_extracts_harness_pages_after_required_files(
                 },
             }),
         )
+        index_path = tmp_path / "runtime-dashboard-neighborhoods.sqlite3"
+        _write_dashboard_index(index_path)
+        _tar_bytes(
+            tf,
+            "graphify-out/dashboard-neighborhoods.sqlite3",
+            index_path.read_bytes(),
+        )
         _tar_text(tf, "external-catalogs/skills-sh/catalog.json", "{}")
         _tar_text(tf, "index.md", "# Wiki\n")
         _tar_text(tf, "entities/harnesses/text-to-cad.md", "# Text to CAD\n")
@@ -531,6 +629,7 @@ def test_runtime_graph_install_extracts_harness_pages_after_required_files(
         "_find_local_graph_archive",
         lambda _install_mode="runtime": archive,
     )
+    monkeypatch.setattr(ci, "_verify_local_graph_archive", lambda *_a, **_k: None)
 
     assert ci.build_graph(claude) == 0
     assert (
@@ -562,6 +661,7 @@ def test_graph_install_rejects_incomplete_archive(
         "_find_local_graph_archive",
         lambda _install_mode="runtime": archive,
     )
+    monkeypatch.setattr(ci, "_verify_local_graph_archive", lambda *_a, **_k: None)
 
     assert ci.build_graph(claude) == 1
     assert not (claude / "skill-wiki" / "graphify-out" / "graph.json").exists()
@@ -604,6 +704,7 @@ def test_graph_install_validation_does_not_parse_full_graph_json(
         }),
         encoding="utf-8",
     )
+    _write_dashboard_index(graph_out / "dashboard-neighborhoods.sqlite3")
     external = wiki / "external-catalogs" / "skills-sh"
     external.mkdir(parents=True)
     (external / "catalog.json").write_text("{}", encoding="utf-8")
@@ -634,6 +735,7 @@ def test_graph_install_force_prunes_stale_generated_files(
         "_find_local_graph_archive",
         lambda _install_mode="runtime": archive,
     )
+    monkeypatch.setattr(ci, "_verify_local_graph_archive", lambda *_a, **_k: None)
 
     assert ci.main([
         "--graph",
@@ -662,6 +764,7 @@ def test_graph_install_rejects_path_traversal_archive(
         "_find_local_graph_archive",
         lambda _install_mode="runtime": archive,
     )
+    monkeypatch.setattr(ci, "_verify_local_graph_archive", lambda *_a, **_k: None)
 
     assert ci.build_graph(claude) == 1
     assert not (tmp_path / "evil.txt").exists()

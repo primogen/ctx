@@ -154,6 +154,44 @@ def test_process_next_entity_upsert_does_not_fail_when_incremental_attach_fails(
     assert "incremental attach skipped (embedding backend missing)" in result.message
 
 
+def test_process_next_entity_delete_queues_full_graph_refresh(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    entity_path = wiki / "entities" / "skills" / "deleted.md"
+    queued = wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="deleted",
+        entity_path=entity_path,
+        content="",
+        action="delete",
+        source="test",
+        now=10.0,
+    )
+    update_index = MagicMock()
+    monkeypatch.setattr(wiki_queue_worker, "update_index", update_index)
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.job_id == queued.id
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert result.message == "queued full graph refresh for deleted skills entity deleted"
+    update_index.assert_not_called()
+    jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
+    assert [job.kind for job in jobs] == [
+        wiki_queue.ENTITY_UPSERT_JOB,
+        wiki_queue.GRAPH_EXPORT_JOB,
+    ]
+    assert jobs[1].payload == {
+        "graph_only": True,
+        "incremental": False,
+        "source": "entity-delete",
+    }
+
+
 def test_process_next_retries_hash_mismatch(
     tmp_path: Path,
     monkeypatch: Any,

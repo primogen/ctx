@@ -39,6 +39,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     claude = tmp_path / ".claude"
     (claude / "skill-quality").mkdir(parents=True)
     monkeypatch.setattr(cm, "_claude_dir", lambda: claude)
+    monkeypatch.setattr(cm, "_dashboard_graph_index_archives", lambda: [])
     return claude
 
 

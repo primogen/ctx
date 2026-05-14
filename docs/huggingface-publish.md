@@ -36,7 +36,7 @@ current process, and clear it after the upload.
 ```powershell
 python -m pip install --upgrade huggingface_hub
 git lfs install
-git lfs pull --include="graph/wiki-graph.tar.gz,graph/wiki-graph-runtime.tar.gz,graph/skills-sh-catalog.json.gz"
+git lfs pull --include="graph/wiki-graph.tar.gz,graph/wiki-graph-runtime.tar.gz"
 
 $secureToken = Read-Host "HF write token" -AsSecureString
 $tokenPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)

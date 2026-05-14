@@ -1,11 +1,11 @@
 # Matt Pocock Skills
 
 Local mirror of [mattpocock/skills](https://github.com/mattpocock/skills), pinned
-at `f304057d61d3df3c9fd992ac2b6e3833cb9325fb`.
+at `e74f0061bb67222181640effa98c675bdb2fdaa7`.
 
-This directory contains 31 ctx-staged entries: 28 current upstream skills plus
-3 legacy aliases (`domain-model`, `github-triage`, `triage-issue`) kept so older
-ctx graph/wiki references do not break.
+This directory contains 28 ctx-staged entries from the current upstream skill
+directories. Removed upstream aliases are not retained here; ctx graph/wiki
+artifacts should prune stale alias nodes during the next artifact refresh.
 
 Run `python imported-skills/mattpocock/build_manifest.py` after edits, then
 `python src/import_mattpocock_skills.py --dry-run` before installing.
@@ -47,9 +47,3 @@ Writing/personal/misc:
 - `writing-beats`
 - `writing-fragments`
 - `writing-shape`
-
-## Legacy Aliases
-
-- `domain-model` -> superseded upstream by `grill-with-docs`
-- `github-triage` -> superseded upstream by `triage`
-- `triage-issue` -> superseded upstream by `triage`

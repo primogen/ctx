@@ -64,9 +64,12 @@ import math
 import os
 import re
 import secrets
+import sqlite3
 import sys
+import tarfile
 import threading
 import time
+import zlib
 from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
@@ -90,6 +93,7 @@ _SIDECAR_INDEX_CACHE_VALUE: dict[tuple[str, str], dict] | None = None
 _WIKI_INDEX_LIMIT_PER_TYPE = 500
 _GRAPH_REPORT_RE = re.compile(r"Nodes:\s*([\d,]+)\s*\|\s*Edges:\s*([\d,]+)")
 _MAX_POST_BODY_BYTES = 64 * 1024
+_DASHBOARD_INDEX_MEMBER = "graphify-out/dashboard-neighborhoods.sqlite3"
 
 
 # ─── Data sources ────────────────────────────────────────────────────────────
@@ -163,7 +167,10 @@ def _load_dashboard_graph() -> Any:
     if _GRAPH_CACHE_KEY == cache_key and _GRAPH_CACHE_VALUE is not None:
         return _GRAPH_CACHE_VALUE
 
-    graph = _lg(graph_path)
+    try:
+        graph = _lg(graph_path, apply_runtime_filter=False)
+    except TypeError:
+        graph = _lg(graph_path)
     _GRAPH_CACHE_KEY = cache_key
     _GRAPH_CACHE_VALUE = graph
     return graph
@@ -437,6 +444,8 @@ def _queue_entity_refresh(
         action=action,
         source="ctx-monitor",
     )
+    if action == "delete":
+        return
     wiki_queue.enqueue_maintenance_job(
         wiki,
         kind=wiki_queue.GRAPH_EXPORT_JOB,
@@ -455,6 +464,21 @@ def _upsert_wiki_entity(payload: dict[str, Any]) -> tuple[bool, str]:
             if isinstance(existing_detail, dict)
             else None
         )
+        confirm_update = str(payload.get("confirm_update", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+        if existing_detail is not None and not confirm_update:
+            return (
+                False,
+                f"existing {requested_type}:{requested_slug} found; review before "
+                "replacing. Benefit: keeps the catalog current. Risk: a lower-quality "
+                "manual edit can degrade recommendations. Resubmit with "
+                "confirm_update=true to apply.",
+            )
         slug, entity_type, content = _entity_content_from_payload(
             payload,
             existing=existing_meta if isinstance(existing_meta, dict) else None,
@@ -845,8 +869,8 @@ def _render_entity_subgraph_svg(
             ),
         })
 
-    nodes_json = json.dumps(node_payload)
-    edges_json = json.dumps(edge_payload)
+    nodes_json = _json_for_script(node_payload)
+    edges_json = _json_for_script(edge_payload)
 
     return (
         "<div data-testid='entity-subgraph-graph' "
@@ -1566,6 +1590,11 @@ def _sidecar_files() -> list[Path]:
 
 def _sidecar_index_cache_key() -> tuple[tuple[Path, float, int], ...]:
     keys: list[tuple[Path, float, int]] = []
+    for path in _sidecar_files():
+        stat = path.stat()
+        keys.append((path.resolve(), stat.st_mtime, stat.st_size))
+    if keys:
+        return tuple(keys)
     for root in (_sidecar_dir(), _sidecar_dir() / "mcp"):
         if not root.is_dir():
             continue
@@ -1595,12 +1624,7 @@ def _sidecar_index() -> dict[tuple[str, str], dict]:
 
 
 def _all_sidecars() -> list[dict]:
-    out: list[dict] = []
-    for p in _sidecar_files():
-        sidecar = _read_sidecar_file(p)
-        if sidecar is not None:
-            out.append(sidecar)
-    return out
+    return list(_sidecar_index().values())
 
 
 # ─── Aggregations ────────────────────────────────────────────────────────────
@@ -1724,6 +1748,11 @@ def _grade_distribution() -> dict[str, int]:
         if g in dist:
             dist[g] += 1
     return dist
+
+
+def _grade_distribution_payload() -> dict[str, Any]:
+    grades = _grade_distribution()
+    return {"grades": grades, "total": sum(grades.values())}
 
 
 def _session_detail(session_id: str) -> dict:
@@ -2257,6 +2286,407 @@ def _graph_node_size(
     }
 
 
+def _dashboard_graph_index_path() -> Path:
+    return _wiki_dir() / "graphify-out" / "dashboard-neighborhoods.sqlite3"
+
+
+def _dashboard_graph_manifest_export_id() -> str | None:
+    manifest_path = _wiki_dir() / "graphify-out" / "graph-export-manifest.json"
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    export_id = data.get("export_id") if isinstance(data, dict) else None
+    if not isinstance(export_id, str) or not export_id.strip():
+        return None
+    return export_id.strip()
+
+
+def _dashboard_index_meta(index_path: Path) -> dict[str, Any] | None:
+    try:
+        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        rows = conn.execute("SELECT key,value FROM meta").fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    try:
+        return {str(key): json.loads(str(value)) for key, value in rows}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _dashboard_index_matches_manifest(index_path: Path) -> bool:
+    manifest_export_id = _dashboard_graph_manifest_export_id()
+    if manifest_export_id is None:
+        return False
+    meta = _dashboard_index_meta(index_path)
+    if meta is None:
+        return False
+    return meta.get("export_id") == manifest_export_id
+
+
+def _dashboard_graph_has_runtime_overlays() -> bool:
+    overlay = _wiki_dir() / "graphify-out" / "entity-overlays.jsonl"
+    try:
+        return overlay.is_file() and overlay.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _dashboard_graph_index_archives() -> list[Path]:
+    module_root = Path(__file__).resolve().parent.parent
+    roots = (module_root,)
+    names = ("wiki-graph-runtime.tar.gz", "wiki-graph.tar.gz")
+    seen: set[Path] = set()
+    archives: list[Path] = []
+    for root in roots:
+        for name in names:
+            candidate = (root / "graph" / name).resolve()
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate.is_file():
+                archives.append(candidate)
+    return archives
+
+
+def _archive_graph_export_id(archive: Path) -> str | None:
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            try:
+                member = tar.getmember("./graphify-out/graph-export-manifest.json")
+            except KeyError:
+                member = tar.getmember("graphify-out/graph-export-manifest.json")
+            source = tar.extractfile(member)
+            if source is None:
+                return None
+            try:
+                data = json.loads(source.read().decode("utf-8", errors="replace"))
+            finally:
+                source.close()
+    except (KeyError, OSError, tarfile.TarError, json.JSONDecodeError):
+        return None
+    export_id = data.get("export_id") if isinstance(data, dict) else None
+    return export_id.strip() if isinstance(export_id, str) and export_id.strip() else None
+
+
+def _ensure_dashboard_graph_index() -> Path | None:
+    target = _dashboard_graph_index_path()
+    if target.is_file():
+        if _dashboard_index_matches_manifest(target):
+            return target
+        try:
+            target.unlink()
+        except OSError:
+            return None
+    if (_wiki_dir() / "graphify-out" / "graph-report.md").is_file():
+        return None
+
+    archives = _dashboard_graph_index_archives()
+    if not archives:
+        return None
+    if _dashboard_graph_manifest_export_id() is None:
+        return None
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with file_lock(target):
+            if target.is_file():
+                if _dashboard_index_matches_manifest(target):
+                    return target
+                try:
+                    target.unlink()
+                except OSError:
+                    return None
+            for archive in archives:
+                archive_export_id = _archive_graph_export_id(archive)
+                manifest_export_id = _dashboard_graph_manifest_export_id()
+                if manifest_export_id and archive_export_id and archive_export_id != manifest_export_id:
+                    continue
+                try:
+                    with tarfile.open(archive, "r:gz") as tar:
+                        try:
+                            member = tar.getmember(f"./{_DASHBOARD_INDEX_MEMBER}")
+                        except KeyError:
+                            member = tar.getmember(_DASHBOARD_INDEX_MEMBER)
+                        if not member.isfile():
+                            continue
+                        source = tar.extractfile(member)
+                        if source is None:
+                            continue
+                        tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+                        try:
+                            with tmp.open("wb") as out:
+                                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                                    out.write(chunk)
+                            if not _dashboard_index_matches_manifest(tmp):
+                                continue
+                            os.replace(tmp, target)
+                            return target
+                        finally:
+                            source.close()
+                            if tmp.exists():
+                                tmp.unlink()
+                except (KeyError, OSError, tarfile.TarError):
+                    continue
+    except TimeoutError:
+        return None
+    return target if target.is_file() else None
+
+
+def _index_node_size(
+    *,
+    slug: str,
+    entity_type: str,
+    quality: Any,
+    usage: Any,
+    degree: int,
+    max_degree: int,
+) -> dict[str, Any]:
+    quality_value = _unit_score(quality)
+    usage_value = _unit_score(usage)
+    if quality_value is None or usage_value is None:
+        sidecar_quality, sidecar_usage = _sidecar_score_inputs(slug, entity_type)
+        quality_value = quality_value if quality_value is not None else sidecar_quality
+        usage_value = usage_value if usage_value is not None else sidecar_usage
+    q = 0.35 if quality_value is None else quality_value
+    u = 0.0 if usage_value is None else usage_value
+    popularity = (
+        math.log1p(max(0, degree)) / math.log1p(max(1, max_degree))
+        if max_degree > 0
+        else 0.0
+    )
+    signal = max(0.0, min(1.0, 0.45 * q + 0.35 * u + 0.20 * popularity))
+    return {
+        "node_size": round(8.0 + signal * 16.0, 2),
+        "size_signal": round(signal, 4),
+        "size_reason": f"quality {q:.3f}; usage {u:.3f}; popularity {popularity:.3f}",
+    }
+
+
+def _resolve_index_center(
+    conn: sqlite3.Connection,
+    raw_query: str,
+    entity_type: str | None,
+) -> tuple[str | None, dict[str, str] | None, list[str]]:
+    raw_query = str(raw_query or "").strip()
+    if not raw_query or "/" in raw_query or "\\" in raw_query or ".." in raw_query:
+        return None, None, []
+    normalized_query = _slugish(raw_query)
+    if not normalized_query or not _is_safe_slug(normalized_query):
+        return None, None, []
+
+    entity_types = (
+        (entity_type,)
+        if entity_type is not None
+        else _DASHBOARD_ENTITY_TYPES
+    )
+    candidates = []
+    for candidate in (raw_query, normalized_query):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    for current_type in entity_types:
+        for candidate_slug in candidates:
+            row = conn.execute(
+                "SELECT node_id FROM slug_index WHERE slug=? AND type=? LIMIT 1",
+                (candidate_slug, current_type),
+            ).fetchone()
+            if row is not None:
+                return str(row["node_id"]), None, [candidate_slug]
+
+    where = ""
+    params: list[Any] = []
+    if entity_type is not None:
+        where = "WHERE s.type=?"
+        params.append(entity_type)
+    rows = conn.execute(
+        "SELECT s.slug,s.type,s.node_id,n.label,n.tags,n.degree "
+        "FROM slug_index s JOIN nodes n ON n.id=s.node_id "
+        f"{where}",
+        params,
+    )
+    matches: list[tuple[tuple[int, int, int], str, str]] = []
+    query_tokens = set(normalized_query.split("-"))
+    for row in rows:
+        node_slug = str(row["slug"] or "")
+        label = str(row["label"] or node_slug)
+        haystacks = {_slugish(node_slug), _slugish(label)}
+        try:
+            tags = json.loads(row["tags"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            tags = []
+        if isinstance(tags, list):
+            haystacks.update(_slugish(str(tag)) for tag in tags[:12])
+        rank = None
+        if normalized_query in haystacks:
+            rank = 0
+        elif any(h.startswith(normalized_query) for h in haystacks):
+            rank = 1
+        elif any(normalized_query in h for h in haystacks):
+            rank = 2
+        elif query_tokens and all(
+            any(token in h for h in haystacks) for token in query_tokens
+        ):
+            rank = 3
+        if rank is None:
+            continue
+        try:
+            degree = int(row["degree"] or 0)
+        except (TypeError, ValueError):
+            degree = 0
+        matches.append(((rank, len(node_slug), -degree), str(row["node_id"]), node_slug))
+
+    matches.sort(key=lambda item: item[0])
+    suggestions: list[str] = []
+    for _, _node_id, suggestion in matches[:8]:
+        if suggestion not in suggestions:
+            suggestions.append(suggestion)
+    if not matches:
+        return None, None, suggestions
+    center = matches[0][1]
+    return (
+        center,
+        {"query": raw_query, "slug": _graph_slug_from_node_id(center), "id": center},
+        suggestions,
+    )
+
+
+def _graph_neighborhood_from_index(
+    slug: str,
+    *,
+    hops: int,
+    limit: int,
+    entity_type: str | None,
+) -> dict | None:
+    index_path = _ensure_dashboard_graph_index()
+    if index_path is None or not index_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    conn.row_factory = sqlite3.Row
+    try:
+        meta = {
+            row["key"]: json.loads(row["value"])
+            for row in conn.execute("SELECT key,value FROM meta")
+        }
+        max_degree = int(meta.get("max_degree") or 1)
+        top_k = int(meta.get("top_k") or 0)
+        if hops > 1 or (top_k > 0 and limit > top_k):
+            return None
+
+        center, resolved, suggestions = _resolve_index_center(conn, slug, entity_type)
+        if center is None:
+            return {"nodes": [], "edges": [], "center": None, "suggestions": suggestions}
+
+        nodes_out: dict[str, dict[str, Any]] = {}
+        edges_out: list[dict[str, Any]] = []
+        emitted_edges: set[tuple[str, str]] = set()
+        frontier = [center]
+        seen = {center}
+
+        def add_node(node_id: str, depth: int) -> None:
+            if node_id in nodes_out:
+                return
+            row = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
+            if row is None:
+                return
+            tags = json.loads(row["tags"] or "[]")
+            degree = int(row["degree"] or 0)
+            node_type = str(row["type"] or _graph_type_from_node_id(node_id))
+            node_slug = _graph_slug_from_node_id(node_id)
+            size_data = _index_node_size(
+                slug=node_slug,
+                entity_type=node_type,
+                quality=row["quality_score"],
+                usage=row["usage_score"],
+                degree=degree,
+                max_degree=max_degree,
+            )
+            nodes_out[node_id] = {
+                "data": {
+                    "id": node_id,
+                    "label": row["label"] or node_slug,
+                    "type": node_type,
+                    "depth": depth,
+                    "degree": degree,
+                    "tags": tags[:6],
+                    "description": row["description"] or "",
+                    "quality_score": row["quality_score"],
+                    "usage_score": row["usage_score"],
+                    "filter_tokens": [node_id, row["label"], node_slug, *tags],
+                    **size_data,
+                },
+            }
+
+        add_node(center, 0)
+        for depth in range(1, hops + 1):
+            next_frontier: list[str] = []
+            for node_id in frontier:
+                row = conn.execute(
+                    "SELECT payload FROM neighbors WHERE source=?",
+                    (node_id,),
+                ).fetchone()
+                if row is None:
+                    continue
+                neighbors = json.loads(zlib.decompress(row["payload"]).decode("utf-8"))
+                for edge in neighbors:
+                    if len(nodes_out) >= limit:
+                        break
+                    other = str(edge.get("target") or "")
+                    if not other:
+                        continue
+                    add_node(other, depth)
+                    edge_a, edge_b = sorted((node_id, other))
+                    edge_key = (edge_a, edge_b)
+                    if edge_key not in emitted_edges and other in nodes_out:
+                        emitted_edges.add(edge_key)
+                        shared_tags = list(edge.get("shared_tags") or [])[:4]
+                        for current in (node_id, other):
+                            tokens = nodes_out[current]["data"].setdefault(
+                                "filter_tokens", []
+                            )
+                            tokens.extend(shared_tags)
+                        edges_out.append({
+                            "data": {
+                                "id": f"{edge_key[0]}__{edge_key[1]}",
+                                "source": node_id,
+                                "target": other,
+                                "weight": edge.get("weight", 1),
+                                "shared_tags": shared_tags,
+                                "reasons": edge.get("reasons", []),
+                                "semantic": edge.get("semantic"),
+                                "tag_sim": edge.get("tag_sim"),
+                                "slug_token_sim": edge.get("slug_token_sim"),
+                                "source_overlap": edge.get("source_overlap"),
+                            },
+                        })
+                    if other not in seen:
+                        seen.add(other)
+                        next_frontier.append(other)
+                if len(nodes_out) >= limit:
+                    break
+            frontier = next_frontier
+            if len(nodes_out) >= limit:
+                break
+        return {
+            "nodes": list(nodes_out.values()),
+            "edges": edges_out,
+            "center": center,
+            "resolved": resolved or {"source": "dashboard-index"},
+            "suggestions": [],
+        }
+    except (OSError, sqlite3.Error, json.JSONDecodeError, zlib.error, KeyError, TypeError):
+        return None
+    finally:
+        conn.close()
+
+
 def _graph_neighborhood(
     slug: str,
     hops: int = 1,
@@ -2271,6 +2701,16 @@ def _graph_neighborhood(
     """
     if "/" in slug or "\\" in slug or ".." in slug:
         return {"nodes": [], "edges": [], "center": None}
+    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
+    if not _dashboard_graph_has_runtime_overlays():
+        indexed = _graph_neighborhood_from_index(
+            slug,
+            hops=hops,
+            limit=limit,
+            entity_type=normalized_entity_type,
+        )
+        if indexed is not None:
+            return indexed
     try:
         G = _load_dashboard_graph()
     except Exception:  # noqa: BLE001 — graph is advisory; blank on error
@@ -2279,7 +2719,6 @@ def _graph_neighborhood(
         return {"nodes": [], "edges": [], "center": None}
 
     center = None
-    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
     if entity_type is not None and normalized_entity_type is None:
         return {"nodes": [], "edges": [], "center": None}
     center, resolved, suggestions = _resolve_graph_center(
@@ -2409,6 +2848,25 @@ def _graph_stats() -> dict:
             }
     except OSError:
         pass
+
+    index_path = _ensure_dashboard_graph_index()
+    if index_path is not None and index_path.is_file():
+        try:
+            conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+            try:
+                meta = {
+                    row[0]: json.loads(row[1])
+                    for row in conn.execute("SELECT key,value FROM meta")
+                }
+                return {
+                    "nodes": int(meta.get("nodes_count") or 0),
+                    "edges": int(meta.get("edges_count") or 0),
+                    "available": int(meta.get("nodes_count") or 0) > 0,
+                }
+            finally:
+                conn.close()
+        except (OSError, sqlite3.Error, ValueError, TypeError, json.JSONDecodeError):
+            pass
     try:
         G = _load_dashboard_graph()
     except Exception:  # noqa: BLE001
@@ -2420,6 +2878,33 @@ def _graph_stats() -> dict:
     }
 
 
+def _wiki_stats_from_dashboard_index() -> dict[str, int] | None:
+    index_path = _dashboard_graph_index_path()
+    if not index_path.is_file() or not _dashboard_index_matches_manifest(index_path):
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+        try:
+            rows = {
+                str(row[0]): int(row[1])
+                for row in conn.execute("SELECT type,COUNT(*) FROM nodes GROUP BY type")
+            }
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return None
+
+    stats = {
+        "skills": rows.get("skill", 0),
+        "agents": rows.get("agent", 0),
+        "mcps": rows.get("mcp-server", 0),
+        "harnesses": rows.get("harness", 0),
+    }
+    stats["total"] = sum(stats.values())
+    stats["split_known"] = True
+    return stats
+
+
 def _wiki_stats() -> dict:
     """Entity counts across all dashboard-supported entity types.
 
@@ -2429,7 +2914,22 @@ def _wiki_stats() -> dict:
     individual counts for the dashboard entity-type detail
     line.
     """
+    indexed = _wiki_stats_from_dashboard_index()
+    if indexed is not None:
+        return indexed
+
     base = _wiki_dir() / "entities"
+    graph_out = _wiki_dir() / "graphify-out"
+    if graph_out.is_dir() and (graph_out / "graph-report.md").is_file():
+        graph_stats = _graph_stats()
+        return {
+            "skills": 0,
+            "agents": 0,
+            "mcps": 0,
+            "harnesses": 0,
+            "total": int(graph_stats.get("nodes") or 0),
+            "split_known": False,
+        }
     skills = len(list((base / "skills").glob("*.md"))) if (base / "skills").is_dir() else 0
     agents = len(list((base / "agents").glob("*.md"))) if (base / "agents").is_dir() else 0
     mcp_dir = base / "mcp-servers"
@@ -2441,12 +2941,12 @@ def _wiki_stats() -> dict:
         "mcps": mcps,
         "harnesses": harnesses,
         "total": skills + agents + mcps + harnesses,
+        "split_known": True,
     }
 
 
 def _render_home() -> str:
     sessions = _summarize_sessions()
-    grades = _grade_distribution()
     recent = sessions[:10]
     gstats = _graph_stats()
     wstats = _wiki_stats()
@@ -2455,6 +2955,13 @@ def _render_home() -> str:
         if _audit_log_path().exists() else 0
     manifest = _read_manifest()
     recent_audit = _read_jsonl(_audit_log_path(), limit=10)
+    if wstats.get("split_known", True):
+        wiki_detail = (
+            f"{wstats['skills']:,} skills · {wstats['agents']:,} agents · "
+            f"{wstats['mcps']:,} MCPs · {wstats['harnesses']:,} harnesses"
+        )
+    else:
+        wiki_detail = "entity split unavailable; install the current graph index"
 
     rows = []
     for s in recent:
@@ -2486,14 +2993,13 @@ def _render_home() -> str:
         + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Currently loaded</div>"
         f"<div style='font-size:1.6rem; font-weight:600;'>{len(manifest.get('load', []))}</div>"
         f"<a href='/loaded'>manage →</a></div>"
-        + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Sidecars</div>"
-        f"<div style='font-size:1.6rem; font-weight:600;'>{sum(grades.values())}</div>"
-        f"<a href='/skills'>browse →</a></div>"
+        + "<div class='card'><div class='muted' style='font-size:0.8rem;'>Sidecars</div>"
+        "<div id='home-sidecar-count' style='font-size:1.6rem; font-weight:600;'>...</div>"
+        "<a href='/skills'>browse →</a></div>"
         + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Wiki entities</div>"
         f"<div style='font-size:1.6rem; font-weight:600;'>{wstats['total']:,}</div>"
         f"<span class='muted' style='font-size:0.75rem;'>"
-        f"{wstats['skills']:,} skills · {wstats['agents']:,} agents · "
-        f"{wstats['mcps']:,} MCPs · {wstats['harnesses']:,} harnesses</span></div>"
+        f"{html.escape(wiki_detail)}</span></div>"
         + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Knowledge graph</div>"
         f"<div style='font-size:1.6rem; font-weight:600;'>{gstats['nodes']}</div>"
         f"<span class='muted' style='font-size:0.75rem;'>{gstats['edges']:,} edges</span>"
@@ -2514,11 +3020,31 @@ def _render_home() -> str:
         # ── Grade distribution ────────────────────────────────────────
         "<div class='card'><strong>Skill quality grades:</strong> "
         + "".join(
-            f"<span class='pill grade-{g}'>{g}: {n}</span> "
-            for g, n in grades.items()
+            f"<span class='pill grade-{g}' data-home-grade='{g}'>{g}: ...</span> "
+            for g in ("A", "B", "C", "D", "F")
         )
-        + f"<span class='muted'> · total {sum(grades.values())}</span>"
+        + "<span id='home-grade-total' class='muted'> · total loading</span>"
         "</div>"
+        "<script>"
+        "(() => {"
+        "const countEl = document.getElementById('home-sidecar-count');"
+        "const totalEl = document.getElementById('home-grade-total');"
+        "fetch('/api/grades.json').then(r => r.ok ? r.json() : Promise.reject())"
+        ".then(data => {"
+        "const grades = data.grades || {};"
+        "['A','B','C','D','F'].forEach(g => {"
+        "const el = document.querySelector(`[data-home-grade=\"${g}\"]`);"
+        "if (el) el.textContent = `${g}: ${grades[g] || 0}`;"
+        "});"
+        "if (countEl) countEl.textContent = String(data.total || 0);"
+        "if (totalEl) totalEl.textContent = ` · total ${data.total || 0}`;"
+        "})"
+        ".catch(() => {"
+        "if (countEl) countEl.textContent = 'open';"
+        "if (totalEl) totalEl.textContent = ' · open Skills for counts';"
+        "});"
+        "})();"
+        "</script>"
         # ── Two-column: recent sessions + recent audit ────────────────
         "<div style='display:grid; grid-template-columns:2fr 1fr; gap:1rem;'>"
         f"<div class='card'><strong>Recent sessions</strong> ({len(sessions)} total)"
@@ -2760,6 +3286,36 @@ def _render_skill_detail(slug: str, entity_type: str | None = None) -> str:
     return _layout(slug, body)
 
 
+def _top_degree_seeds_from_index(limit: int = 18) -> list[dict]:
+    if _dashboard_graph_has_runtime_overlays():
+        return []
+    index_path = _ensure_dashboard_graph_index()
+    if index_path is None or not index_path.is_file():
+        return []
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id,label,type,degree FROM nodes ORDER BY degree DESC,id LIMIT ?",
+            (max(1, limit),),
+        ).fetchall()
+    except (OSError, sqlite3.Error, TimeoutError):
+        return []
+    finally:
+        if conn is not None:
+            conn.close()
+    return [
+        {
+            "slug": _graph_slug_from_node_id(str(row["id"])),
+            "type": _graph_type_from_node_id(str(row["id"]), str(row["type"] or "skill")),
+            "degree": int(row["degree"] or 0),
+            "label": row["label"] or _graph_slug_from_node_id(str(row["id"])),
+        }
+        for row in rows
+    ]
+
+
 def _top_degree_seeds(limit: int = 18, *, allow_load: bool = True) -> list[dict]:
     """Pick high-degree nodes from the graph as seed suggestions.
 
@@ -2771,7 +3327,7 @@ def _top_degree_seeds(limit: int = 18, *, allow_load: bool = True) -> list[dict]
     except Exception:  # noqa: BLE001
         return []
     if G is None:
-        return []
+        return _top_degree_seeds_from_index(limit)
     if G.number_of_nodes() == 0:
         return []
     ranked = sorted(G.degree, key=lambda kv: -kv[1])[:limit]
@@ -3094,8 +3650,8 @@ def _render_config() -> str:
 def _render_graph(focus: str | None = None, focus_type: str | None = None) -> str:
     """Interactive graph view backed by a dependency-free SVG renderer."""
     focus_slug = focus or ""
-    focus_js = json.dumps(focus_slug)
-    focus_type_js = json.dumps(focus_type or "")
+    focus_js = _json_for_script(focus_slug)
+    focus_type_js = _json_for_script(focus_type or "")
     gstats = _graph_stats()
     seeds = (
         _top_degree_seeds(allow_load=False)
@@ -4366,6 +4922,12 @@ def _render_manage(mutations_enabled: bool | None = None) -> str:
         "form.addEventListener('submit', async ev => {\n"
         "  ev.preventDefault();\n"
         "  const payload = Object.fromEntries(new FormData(form).entries());\n"
+        "  const isUpdate = selected && selected.slug === payload.slug && selected.type === payload.entity_type;\n"
+        "  if (isUpdate) {\n"
+        "    const ok = confirm('Update existing ' + payload.entity_type + ':' + payload.slug + '?\\n\\nBenefit: keeps the catalog current.\\nRisk: a lower-quality edit can degrade recommendations.');\n"
+        "    if (!ok) { setStatus('update cancelled'); return; }\n"
+        "    payload.confirm_update = 'true';\n"
+        "  }\n"
         "  setStatus('saving...');\n"
         "  const data = await post('/api/entity/upsert', payload);\n"
         "  setStatus(data.detail || (data.ok ? 'saved' : 'save failed'));\n"
@@ -5550,6 +6112,8 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_json(summary.to_dict() if summary is not None else {
                     "total": 0, "detail": "no sidecars yet",
                 })
+            elif path == "/api/grades.json":
+                self._send_json(_grade_distribution_payload())
             elif path == "/api/runtime.json":
                 self._send_json(_runtime_lifecycle_summary())
             elif path == "/api/config.json":

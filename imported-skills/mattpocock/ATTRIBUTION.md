@@ -9,33 +9,27 @@ github triage, and meta-workflows for working with Claude Code.
 | Field | Value |
 |---|---|
 | Upstream repo | https://github.com/mattpocock/skills |
-| Revision | `f304057d61d3df3c9fd992ac2b6e3833cb9325fb` |
-| Revision date | 2026-05-12 |
+| Revision | `e74f0061bb67222181640effa98c675bdb2fdaa7` |
+| Revision date | 2026-05-14 |
 | Upstream license | MIT (see `LICENSE`) |
 | Imported on | 2026-04-27 |
-| Skill count | 31 total: 28 current upstream skills plus 3 legacy aliases preserved for compatibility |
+| Skill count | 28 current upstream skills |
 
 ## What's in here
 
 Each top-level directory is one skill, with `SKILL.md` as the entry point and
 optional supporting `.md` / `.sh` files alongside it (e.g. `tdd/deep-modules.md`,
-`domain-model/ADR-FORMAT.md`, `git-guardrails-claude-code/scripts/block-dangerous-git.sh`).
-
-`domain-model`, `github-triage`, and `triage-issue` are retained as legacy
-ctx aliases. The current upstream equivalents are `grill-with-docs` and
-`triage`.
+`grill-with-docs/ADR-FORMAT.md`, `git-guardrails-claude-code/scripts/block-dangerous-git.sh`).
 
 | Skill | Purpose |
 |---|---|
 | `tdd` | Red-green-refactor TDD discipline (with deep-modules / mocking / refactoring sidecars) |
 | `qa` | Interactive QA conversation that files GitHub issues using project domain language |
 | `caveman` | Ultra-compressed communication mode (~75% token reduction) |
-| `domain-model` | Stress-test plans against existing domain model + ADRs (with `ADR-FORMAT.md` + `CONTEXT-FORMAT.md`) |
 | `ubiquitous-language` | DDD-style shared vocabulary discipline |
 | `design-an-interface` | Generate multiple radically different API designs via parallel sub-agents |
 | `improve-codebase-architecture` | Architecture review playbook (with `DEEPENING.md`, `INTERFACE-DESIGN.md`, `LANGUAGE.md` sidecars) |
-| `github-triage` | Triage GitHub issues with agent-brief + out-of-scope guardrails |
-| `triage-issue` | Single-issue triage workflow |
+| `triage` | Triage issues with agent-brief + out-of-scope guardrails |
 | `diagnose` | Disciplined reproduce/minimize/hypothesize/instrument/fix loop |
 | `grill-with-docs` | Plan interrogation backed by `CONTEXT.md` and ADRs |
 | `handoff` | Compact a session into a continuation handoff |
@@ -97,7 +91,7 @@ checklists or playbooks than reference manuals. They complement the larger
 catalogue (which leans dense + comprehensive) by providing crisp,
 single-purpose workflows for everyday engineering tasks.
 
-The `tdd`, `domain-model`, `ubiquitous-language`, and
+The `tdd`, `grill-with-docs`, `ubiquitous-language`, and
 `improve-codebase-architecture` set in particular form a cohesive DDD-leaning
 toolkit. The `caveman`, `grill-me`, `zoom-out` set are useful behavioural
 modes for steering a Claude Code session.

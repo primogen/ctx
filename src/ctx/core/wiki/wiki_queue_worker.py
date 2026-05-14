@@ -124,12 +124,22 @@ def _process_job(wiki_path: Path, job: wiki_queue.QueueJob) -> str:
 def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
     entity_type = _required_string(payload, "entity_type")
     slug = _required_string(payload, "slug")
+    action = str(payload.get("action", "upsert")).strip() or "upsert"
     expected_hash = _required_string(payload, "content_hash")
     subject_type = _ENTITY_SUBJECT_TYPES.get(entity_type)
     if subject_type is None:
         raise ValueError(f"unsupported entity_type for entity-upsert: {entity_type}")
 
     entity_path = _resolve_entity_path(wiki_path, _required_string(payload, "entity_path"))
+    if action == "delete":
+        wiki_queue.enqueue_maintenance_job(
+            wiki_path,
+            kind=wiki_queue.GRAPH_EXPORT_JOB,
+            payload={"graph_only": True, "incremental": False},
+            source="entity-delete",
+        )
+        return f"queued full graph refresh for deleted {subject_type} entity {slug}"
+
     text = entity_path.read_text(encoding="utf-8")
     actual_hash = sha256(text.encode("utf-8")).hexdigest()
     if actual_hash != expected_hash:
