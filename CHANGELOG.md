@@ -7,6 +7,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.7] - 2026-05-15
+
+### Fixed
+
+- Fixed dashboard graph cold starts for `ctx-init --graph` installs by keeping
+  the SQLite neighborhood index fast path when the installed release overlay is
+  already represented in the shipped graph index.
+- Preserved the safe full-graph merge path for local/user runtime overlays so
+  newly attached entity edges still appear immediately in the dashboard.
+
 ## [1.0.6] - 2026-05-14
 
 ### Fixed
@@ -1548,6 +1558,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.7]: https://github.com/stevesolun/ctx/releases/tag/v1.0.7
 [1.0.6]: https://github.com/stevesolun/ctx/releases/tag/v1.0.6
 [1.0.5]: https://github.com/stevesolun/ctx/releases/tag/v1.0.5
 [1.0.4]: https://github.com/stevesolun/ctx/releases/tag/v1.0.4
