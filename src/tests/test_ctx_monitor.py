@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import hashlib
 import json
 import os
 import sqlite3
@@ -17,6 +18,7 @@ from pathlib import Path
 import pytest
 
 import ctx_monitor as cm
+import ctx_init as ci
 from ctx.core.wiki import wiki_queue
 
 
@@ -1530,6 +1532,175 @@ def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
         "total": 2,
         "split_known": True,
     }
+
+
+def test_graph_neighborhood_uses_dashboard_index_when_overlay_is_already_indexed(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_graph_manifest(fake_claude, "test-export")
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    index_path = graph_dir / "dashboard-neighborhoods.sqlite3"
+    overlay_path = graph_dir / "entity-overlays.jsonl"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE slug_index(slug TEXT,type TEXT,node_id TEXT,"
+            "PRIMARY KEY(slug,type,node_id))"
+        )
+        conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [
+                ("max_degree", "10"),
+                ("top_k", "40"),
+                ("export_id", json.dumps("test-export")),
+                ("nodes_count", "2"),
+                ("edges_count", "1"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            [
+                ("harness:mirage", "mirage", "harness", '["sandbox"]', "", 0.82, 0.0, 10),
+                ("skill:codex-review", "codex-review", "skill", '["review"]', "", 0.7, 0.0, 5),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO slug_index VALUES(?,?,?)",
+            [
+                ("mirage", "harness", "harness:mirage"),
+                ("codex-review", "skill", "skill:codex-review"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO neighbors VALUES(?,?)",
+            (
+                "harness:mirage",
+                zlib.compress(json.dumps([
+                    {
+                        "target": "skill:codex-review",
+                        "weight": 0.18,
+                        "shared_tags": ["sandbox"],
+                    },
+                ]).encode("utf-8")),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    overlay_path.write_text(
+        json.dumps({
+            "overlay_id": "mirage-overlay",
+            "nodes": [{"id": "harness:mirage", "type": "harness"}],
+            "edges": [{"source": "harness:mirage", "target": "skill:codex-review"}],
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cm, "_dashboard_overlay_matches_known_release", lambda overlay: True)
+    monkeypatch.setattr(
+        cm,
+        "_load_dashboard_graph",
+        lambda: (_ for _ in ()).throw(AssertionError("full graph loaded")),
+    )
+
+    result = cm._graph_neighborhood("mirage", entity_type="harness")
+
+    assert result["center"] == "harness:mirage"
+    assert [node["data"]["id"] for node in result["nodes"]] == [
+        "harness:mirage",
+        "skill:codex-review",
+    ]
+
+
+def test_dashboard_overlay_release_hash_normalizes_crlf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    overlay = tmp_path / "entity-overlays.jsonl"
+    overlay.write_bytes(b'{"overlay_id":"release"}\r\n')
+    expected = hashlib.sha256(b'{"overlay_id":"release"}\n').hexdigest()
+    monkeypatch.setattr(ci, "_GRAPH_ENTITY_OVERLAY_SHA256", expected)
+
+    assert cm._dashboard_overlay_matches_known_release(overlay)
+
+
+def test_graph_neighborhood_bypasses_index_for_local_overlay_even_when_node_exists(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import networkx as nx
+
+    _write_graph_manifest(fake_claude, "test-export")
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    index_path = graph_dir / "dashboard-neighborhoods.sqlite3"
+    overlay_path = graph_dir / "entity-overlays.jsonl"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE slug_index(slug TEXT,type TEXT,node_id TEXT,"
+            "PRIMARY KEY(slug,type,node_id))"
+        )
+        conn.execute("CREATE TABLE neighbors(source TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [
+                ("max_degree", "10"),
+                ("top_k", "40"),
+                ("export_id", json.dumps("test-export")),
+                ("nodes_count", "1"),
+                ("edges_count", "0"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            ("skill:existing", "existing", "skill", "[]", "", 0.7, 0.0, 0),
+        )
+        conn.execute(
+            "INSERT INTO slug_index VALUES(?,?,?)",
+            ("existing", "skill", "skill:existing"),
+        )
+        conn.execute(
+            "INSERT INTO neighbors VALUES(?,?)",
+            ("skill:existing", zlib.compress(b"[]")),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    overlay_path.write_text(
+        json.dumps({
+            "kind": "ann_attach",
+            "nodes": [{"id": "skill:existing", "type": "skill"}],
+            "edges": [{"source": "skill:existing", "target": "skill:new-runtime-edge"}],
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cm,
+        "_graph_neighborhood_from_index",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("index used")),
+    )
+    G = nx.Graph()
+    G.add_node("skill:existing", label="existing", type="skill", tags=[])
+    monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
+
+    result = cm._graph_neighborhood("existing", entity_type="skill")
+
+    assert result["center"] == "skill:existing"
 
 
 def test_graph_index_honors_requested_type_on_exact_slug(
