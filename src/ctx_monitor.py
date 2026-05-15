@@ -57,6 +57,7 @@ starting point.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import ipaddress
 import json
@@ -88,6 +89,8 @@ _MONITOR_TOKEN = ""
 _MONITOR_MUTATIONS_ENABLED = True
 _GRAPH_CACHE_KEY: tuple[Any, ...] | None = None
 _GRAPH_CACHE_VALUE: Any | None = None
+_OVERLAY_INDEX_COVERAGE_CACHE_KEY: tuple[Any, ...] | None = None
+_OVERLAY_INDEX_COVERAGE_CACHE_VALUE: bool | None = None
 _SIDECAR_INDEX_CACHE_KEY: tuple[tuple[Path, float, int], ...] | None = None
 _SIDECAR_INDEX_CACHE_VALUE: dict[tuple[str, str], dict] | None = None
 _WIKI_INDEX_LIMIT_PER_TYPE = 500
@@ -2337,6 +2340,129 @@ def _dashboard_graph_has_runtime_overlays() -> bool:
         return False
 
 
+def _overlay_index_coverage_key(index_path: Path, overlay: Path) -> tuple[Any, ...] | None:
+    try:
+        index_stat = index_path.stat()
+        overlay_stat = overlay.stat()
+    except OSError:
+        return None
+    return (
+        index_path.resolve(),
+        index_stat.st_mtime,
+        index_stat.st_size,
+        overlay.resolve(),
+        overlay_stat.st_mtime,
+        overlay_stat.st_size,
+        _dashboard_graph_manifest_export_id(),
+    )
+
+
+def _active_dashboard_overlay_records(overlay: Path) -> list[dict[str, Any]] | None:
+    try:
+        from ctx.core.graph.entity_overlays import active_overlay_records
+
+        rows = []
+        for line in overlay.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                return None
+            rows.append(payload)
+        return [dict(row) for row in active_overlay_records(rows)]
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _dashboard_overlay_matches_known_release(overlay: Path) -> bool:
+    try:
+        from ctx_init import _GRAPH_ENTITY_OVERLAY_SHA256
+    except (ImportError, AttributeError):
+        return False
+    if not isinstance(_GRAPH_ENTITY_OVERLAY_SHA256, str) or not _GRAPH_ENTITY_OVERLAY_SHA256:
+        return False
+    try:
+        data = overlay.read_bytes().replace(b"\r\n", b"\n")
+        return hashlib.sha256(data).hexdigest() == _GRAPH_ENTITY_OVERLAY_SHA256
+    except OSError:
+        return False
+
+
+def _dashboard_index_covers_runtime_overlays(index_path: Path) -> bool:
+    """Return True when the shipped SQLite index already includes overlays.
+
+    ``ctx-init`` may install ``entity-overlays.jsonl`` beside a graph export.
+    Older dashboard code treated any overlay file as runtime-only and skipped
+    the SQLite fast path. Current release artifacts can already contain those
+    overlay nodes and edges in ``dashboard-neighborhoods.sqlite3``; in that
+    case loading the full graph just to merge the same small known-release
+    overlay is wasted cold-start work. Local/user overlays still fall back to
+    the full graph merge so newly attached edges remain visible.
+    """
+    overlay = _wiki_dir() / "graphify-out" / "entity-overlays.jsonl"
+    try:
+        if not overlay.is_file() or overlay.stat().st_size == 0:
+            return True
+    except OSError:
+        return True
+    if not index_path.is_file() or not _dashboard_index_matches_manifest(index_path):
+        return False
+
+    global _OVERLAY_INDEX_COVERAGE_CACHE_KEY, _OVERLAY_INDEX_COVERAGE_CACHE_VALUE
+    cache_key = _overlay_index_coverage_key(index_path, overlay)
+    if (
+        cache_key is not None
+        and _OVERLAY_INDEX_COVERAGE_CACHE_KEY == cache_key
+        and _OVERLAY_INDEX_COVERAGE_CACHE_VALUE is not None
+    ):
+        return _OVERLAY_INDEX_COVERAGE_CACHE_VALUE
+
+    if not _dashboard_overlay_matches_known_release(overlay):
+        coverage = False
+    else:
+        records = _active_dashboard_overlay_records(overlay)
+        if records is None:
+            coverage = False
+        else:
+            coverage = True
+            try:
+                conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+                conn.row_factory = sqlite3.Row
+                try:
+                    for record in records:
+                        nodes = record.get("nodes", [])
+                        edges = record.get("edges", [])
+                        if not isinstance(nodes, list) or not isinstance(edges, list):
+                            coverage = False
+                            break
+                        if not nodes and edges:
+                            coverage = False
+                            break
+                        for node in nodes:
+                            if not isinstance(node, dict):
+                                coverage = False
+                                break
+                            node_id = node.get("id")
+                            if not isinstance(node_id, str) or not conn.execute(
+                                "SELECT 1 FROM nodes WHERE id=? LIMIT 1",
+                                (node_id,),
+                            ).fetchone():
+                                coverage = False
+                                break
+                        if not coverage:
+                            break
+                finally:
+                    conn.close()
+            except (OSError, sqlite3.Error, KeyError, TypeError):
+                coverage = False
+
+    if cache_key is not None:
+        _OVERLAY_INDEX_COVERAGE_CACHE_KEY = cache_key
+        _OVERLAY_INDEX_COVERAGE_CACHE_VALUE = coverage
+    return coverage
+
+
 def _dashboard_graph_index_archives() -> list[Path]:
     module_root = Path(__file__).resolve().parent.parent
     roots = (module_root,)
@@ -2702,7 +2828,10 @@ def _graph_neighborhood(
     if "/" in slug or "\\" in slug or ".." in slug:
         return {"nodes": [], "edges": [], "center": None}
     normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
-    if not _dashboard_graph_has_runtime_overlays():
+    if (
+        not _dashboard_graph_has_runtime_overlays()
+        or _dashboard_index_covers_runtime_overlays(_dashboard_graph_index_path())
+    ):
         indexed = _graph_neighborhood_from_index(
             slug,
             hops=hops,
@@ -3287,14 +3416,18 @@ def _render_skill_detail(slug: str, entity_type: str | None = None) -> str:
 
 
 def _top_degree_seeds_from_index(limit: int = 18) -> list[dict]:
-    if _dashboard_graph_has_runtime_overlays():
+    index_path = _dashboard_graph_index_path()
+    if (
+        _dashboard_graph_has_runtime_overlays()
+        and not _dashboard_index_covers_runtime_overlays(index_path)
+    ):
         return []
-    index_path = _ensure_dashboard_graph_index()
-    if index_path is None or not index_path.is_file():
+    ensured_index_path = _ensure_dashboard_graph_index()
+    if ensured_index_path is None or not ensured_index_path.is_file():
         return []
     conn: sqlite3.Connection | None = None
     try:
-        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{ensured_index_path.as_posix()}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id,label,type,degree FROM nodes ORDER BY degree DESC,id LIMIT ?",
