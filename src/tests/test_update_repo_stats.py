@@ -192,7 +192,7 @@ def test_harness_aware_readme_prose_is_updated() -> None:
     for pattern, replacement in urs.build_replacements(stats, tests=None, converted=None):
         patched = pattern.sub(replacement, patched)
 
-    assert "**92,815 skills, 464 agents, 10,787 MCP servers, and 13 cataloged harnesses**" in patched
+    assert "**92,815 skills, 464 agents, 10,787 MCP servers, and 13 harnesses**" in patched
 
 
 def test_read_test_count_prefers_project_python(

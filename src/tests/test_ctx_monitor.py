@@ -2272,6 +2272,22 @@ def test_render_wiki_index_lists_entities(fake_claude: Path) -> None:
     assert "href='/wiki/code-reviewer?type=agent'" in html_out
 
 
+def test_render_wiki_index_hides_legacy_skill_source_prefix(fake_claude: Path) -> None:
+    skills_dir = fake_claude / "skill-wiki" / "entities" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "skills-sh-owner-repo-brainstorming.md").write_text(
+        "---\nname: skills-sh-owner-repo-brainstorming\ntype: skill\n"
+        "description: Brainstorm with constraints\ntags: [brainstorming]\n"
+        "---\n# body\n",
+        encoding="utf-8",
+    )
+
+    html_out = cm._render_wiki_index()
+
+    assert "<code style='font-size:0.84rem;'>owner-repo-brainstorming</code>" in html_out
+    assert "href='/wiki/skills-sh-owner-repo-brainstorming?type=skill'" in html_out
+
+
 def test_render_wiki_index_does_not_bleed_grade_across_duplicate_slugs(
     fake_claude: Path,
 ) -> None:

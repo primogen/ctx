@@ -1,6 +1,6 @@
-# External Catalog Registry
+# Entity Source Registry
 
-ctx keeps external catalogs separate from install state. A catalog entry can be
+ctx keeps entity sources separate from install state. A source entry can be
 searched and recommended without being installed, and duplicate/update paths must
 show what would change before replacing an existing entity.
 
@@ -13,7 +13,7 @@ name: ctx-shipped-graph
 type: compressed-runtime
 paths:
   graph: graph/wiki-graph-runtime.tar.gz
-  catalog: graph/skills-sh-catalog.json.gz
+  skills: graph/<skill-index>.json.gz
 refresh: release-time
 priority: 1
 ```
@@ -36,23 +36,22 @@ refresh: always current
 priority: 2
 ```
 
-Local assets override catalog-only suggestions when names collide, but updates
+Local assets override shipped suggestions when names collide, but updates
 still require an explicit review if replacement content is proposed.
 
-### Skills.sh Catalog
+### Skill Index
 
 ```yaml
-name: skills-sh
-type: remote-catalog
-url: https://skills.sh
-shipped_entries: 89463
-local_catalog: graph/skills-sh-catalog.json.gz
-hydrated_wiki: external-catalogs/skills-sh/catalog.json
+name: shipped-skills
+type: shipped-index
+shipped_entries: 89465
+local_index: graph/<skill-index>.json.gz
+hydrated_wiki: external-catalogs/<source>/catalog.json
 refresh: on-demand
 priority: 3
 ```
 
-Skills.sh entries are stored as first-class skill entities in the graph/wiki.
+Skill index entries are stored as first-class skill entities in the graph/wiki.
 Hydrated `SKILL.md` bodies pass through the micro-skill gate before they are
 packed into the shipped runtime.
 
@@ -75,11 +74,11 @@ metadata for a candidate entity. The ctx repository's own star count is not
 hard-coded in docs because it changes continuously; read it from GitHub when
 needed.
 
-### MCP And Harness Catalogs
+### MCP And Harness Sources
 
 ```yaml
-name: mcp-and-harness-catalogs
-type: curated-external
+name: mcp-and-harness-sources
+type: curated-source
 entrypoints:
   mcp: ctx-mcp-fetch, ctx-mcp-add
   harnesses: ctx-harness-add, ctx-harness-install
@@ -87,7 +86,7 @@ refresh: on-demand
 priority: 5
 ```
 
-MCP servers and harnesses are cataloged as entities with install guidance,
+MCP servers and harnesses are recorded as entities with install guidance,
 permission notes, compatibility tags, and quality/security review status.
 
 ## Query Protocol
@@ -95,7 +94,7 @@ permission notes, compatibility tags, and quality/security review status.
 When a user asks for help or the scanner detects a stack/task gap:
 
 1. Search the local graph/wiki first.
-2. Search Skills.sh via the shipped catalog and, when needed, the `find-skills`
+2. Search the shipped skill index and, when needed, the `find-skills`
    helper for fresher remote results.
 3. Search local user assets and configured entity repositories.
 4. Deduplicate by slug, source URL, canonical name, tags, and semantic overlap.
@@ -114,7 +113,7 @@ Entity updates are intentionally explicit:
 - If a duplicate exists, the command emits an update review and refuses to
   replace content unless the user passes the update flag.
 - New or updated skills go through the micro-skill line-count gate from config.
-- Security/cyber checks run before catalog content is promoted.
+- Security/cyber checks run before entity content is promoted.
 - Graph/wiki artifacts are rebuilt, validated, packed, and atomically promoted.
 
 ## Security Notes

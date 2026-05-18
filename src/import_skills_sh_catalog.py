@@ -1568,6 +1568,12 @@ def update_wiki_tarball(tarball: Path, catalog: dict[str, Any]) -> None:
         _reconcile_body_availability_with_tar(catalog, existing_converted_paths)
         staged_converted_files = _stage_inline_skill_bodies_for_packaging(catalog)
         replacement_slugs = set(staged_converted_files)
+        valid_converted_slugs = {
+            str(item.get("ctx_slug") or "")
+            for item in _catalog_skills(catalog)
+            if str(item.get("ctx_slug") or "")
+            and str(item.get("converted_path") or "")
+        }
         graph_for_report: dict[str, Any] | None = None
         communities_for_report: dict[str, Any] | None = None
 
@@ -1591,7 +1597,10 @@ def update_wiki_tarball(tarball: Path, catalog: dict[str, Any]) -> None:
                 or (
                     is_skills_sh_converted
                     and len(parts) >= 2
-                    and parts[1] in replacement_slugs
+                    and (
+                        parts[1] in replacement_slugs
+                        or parts[1] not in valid_converted_slugs
+                    )
                 )
                 or safe_name.endswith(".original")
                 or safe_name.endswith(".lock")

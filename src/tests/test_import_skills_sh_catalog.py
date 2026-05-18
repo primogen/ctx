@@ -401,6 +401,7 @@ def test_update_wiki_tarball_removes_pruned_skills_sh_nodes_pages_and_communitie
         _add_text(tf, "./entities/skills/skills-sh-owner-repo-good.md", "# Good\n")
         _add_text(tf, "./entities/skills/skills-sh-owner-repo-missing.md", "# Missing\n")
         _add_text(tf, "./converted/skills-sh-owner-repo-good/SKILL.md", "# Good\n")
+        _add_text(tf, "./converted/skills-sh-owner-repo-missing/SKILL.md", "# Missing\n")
 
     catalog: dict[str, Any] = {
         "schema_version": 1,
@@ -445,6 +446,8 @@ def test_update_wiki_tarball_removes_pruned_skills_sh_nodes_pages_and_communitie
 
     assert "./entities/skills/skills-sh-owner-repo-good.md" in names
     assert "./entities/skills/skills-sh-owner-repo-missing.md" not in names
+    assert "./converted/skills-sh-owner-repo-good/SKILL.md" in names
+    assert "./converted/skills-sh-owner-repo-missing/SKILL.md" not in names
     assert {node["id"] for node in graph_out["nodes"]} == {
         "skill:curated",
         "skill:skills-sh-owner-repo-good",

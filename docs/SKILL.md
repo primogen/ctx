@@ -170,7 +170,7 @@ title: Entity Name
 type: skill | agent | mcp-server | harness | external-catalog
 status: installed | available | deprecated | broken
 tags: []
-source: local | skills-sh | github | curated
+source: local | shipped | github | curated
 source_url: ""
 path: ""
 quality_score: null
@@ -180,17 +180,17 @@ always_load: false
 never_load: false
 ```
 
-## External Catalogs
+## Entity Sources
 
-External catalog sources include Skills.sh, curated MCP/harness sources, GitHub
+Entity sources include shipped skill/MCP/harness sources, GitHub
 entity repositories, and local user assets. The public reference page is
 [`marketplace-registry.md`](marketplace-registry.md), kept under that filename
 for backwards-compatible links.
 
-Catalog rules:
+Source rules:
 
 1. Search the shipped graph/wiki first.
-2. Use external catalogs only when the local graph is missing or stale.
+2. Use additional sources only when the local graph is missing or stale.
 3. Deduplicate before adding.
 4. If an entity exists, emit an update review instead of replacing it.
 5. Run security checks before promotion.
@@ -240,7 +240,7 @@ preference.
 When the user asks what exists for a task:
 
 1. Search graph/wiki entity pages by tags and text.
-2. Use `find-skills` and external catalogs for remote freshness when needed.
+2. Use `find-skills` and configured sources for remote freshness when needed.
 3. Show status, score, source, and risk notes.
 4. Suggest install/update commands, not silent installs.
 5. Log the query.
@@ -250,7 +250,7 @@ When the user asks what exists for a task:
 - **Stale installed helpers** - used rarely or not used recently.
 - **Ghost helpers** - installed status but missing local path.
 - **Orphan local helpers** - present locally but missing entity page.
-- **External catalog freshness** - catalog snapshot older than policy.
+- **Skill index freshness** - shipped skill snapshot older than policy.
 - **Conflicts** - overlapping helpers both marked `always_load`.
 - **Usage cold spots** - low usage/quality score candidates for unload review.
 - **Wiki lint** - broken links, missing frontmatter, index drift.

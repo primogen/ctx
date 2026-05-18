@@ -353,15 +353,15 @@ def recommend_by_tags(
         if normalized_score < min_score:
             continue
         graph_results.append({
-            "name": label,
+            "name": _public_label(label),
             "type": node_data.get("type", "skill"),
             "score": round(score, 1),
             "normalized_score": normalized_score,
             "matching_tags": sorted(matching_tags),
             "external": node_data.get("external", False),
             "external_catalog": node_data.get("external_catalog"),
-            "source_catalog": node_data.get("source_catalog"),
-            "status": node_data.get("status"),
+            "source_catalog": _public_source_catalog(node_data.get("source_catalog")),
+            "status": _public_status(node_data.get("status")),
             "never_load": _truthy_flag(node_data.get("never_load")),
             "source": node_data.get("source"),
             "skill_id": node_data.get("skill_id"),
@@ -461,12 +461,12 @@ def _recommend_external_catalog(
     query: str | None,
     catalog_path: Path | None,
 ) -> list[dict[str, Any]]:
-    """Rank remote Skills.sh catalog entries alongside graph entities.
+    """Rank shipped skill-index entries alongside graph entities.
 
-    These entries are external: they carry install instructions and detail URLs,
+    These entries carry install instructions and detail URLs,
     but they do not pretend to be local ``converted/<slug>/SKILL.md`` wiki
-    bodies. This keeps the curated graph useful while making the 90K+ Skills.sh
-    catalog available as a fallback recommendation source.
+    bodies. This keeps the graph useful while making the shipped skill index
+    available as a fallback recommendation source.
     """
     path = catalog_path or _infer_external_catalog_path(graph)
     skills = _load_external_catalog(path)
@@ -512,8 +512,8 @@ def _recommend_external_catalog(
             "matching_tags": sorted(matching),
             "external": False,
             "external_catalog": None,
-            "source_catalog": "skills.sh",
-            "status": "remote-cataloged",
+            "source_catalog": "skill-index",
+            "status": "available",
             "source": skill.get("source"),
             "skill_id": skill.get("skill_id"),
             "installs": _safe_int(skill.get("installs")),
@@ -529,6 +529,25 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _public_source_catalog(value: Any) -> Any:
+    if str(value).strip().lower() == "skills.sh":
+        return "skill-index"
+    return value
+
+
+def _public_label(value: Any) -> str:
+    label = str(value)
+    if label.lower().startswith("skills-sh-"):
+        return label[len("skills-sh-"):]
+    return label
+
+
+def _public_status(value: Any) -> Any:
+    if str(value).strip().lower() == "remote-cataloged":
+        return "available"
+    return value
 
 
 def _normalise_signals(tags: list[str]) -> list[str]:

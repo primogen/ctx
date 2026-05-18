@@ -5,8 +5,8 @@ be indexed, linked in the knowledge graph, and recommended from the same
 surface. The important distinction is install behavior:
 
 - Skills and agents are local Claude Code assets.
-- MCP servers are cataloged first, then installed only when the user opts in.
-- Harnesses are cataloged first. A harness describes the machinery around the
+- MCP servers are recorded first, then installed only when the user opts in.
+- Harnesses are recorded first. A harness describes the machinery around the
   model: runtime, tools, access boundaries, memory, verification, and approval
   policy. Adding one never executes upstream setup commands.
 
@@ -51,14 +51,13 @@ the update is treated like a release step.
    write a staged tarball, validate it, atomically promote it, and keep the
    generated `*.promotion.json` metadata with the previous/current hashes.
    Never commit local review reports or raw caches.
-8. Refresh the Skills.sh catalog overlay when shipping catalog coverage.
-   This adds remote-cataloged first-class `skill` nodes under the
-   `skills-sh-` prefix, skill pages under `entities/skills/`, install
+8. Refresh the bulk skill index when shipping large skill updates.
+   This adds first-class `skill` nodes, skill pages under `entities/skills/`, install
    commands, duplicate hints, and metadata-only quality/security signals:
 
    ```bash
    python src/import_skills_sh_catalog.py --from-api-union <raw.json> \
-     --catalog-out graph/skills-sh-catalog.json.gz \
+     --catalog-out graph/<skill-index>.json.gz \
      --wiki-tar graph/wiki-graph.tar.gz \
      --update-wiki-tar
    ```
@@ -71,7 +70,7 @@ the update is treated like a release step.
     after interrupted Git/LFS runs or after release staging.
 
 The durable wiki worker drains `entity-upsert`, `graph-export`,
-`catalog-refresh`, `tar-refresh`, and `artifact-promotion` jobs. Use
+`skill-index-refresh`, `tar-refresh`, and `artifact-promotion` jobs. Use
 `ctx-wiki-worker --wiki ~/.claude/skill-wiki --limit 1` for a controlled
 single-job drain, or omit `--limit` to drain the ready queue.
 
@@ -154,7 +153,7 @@ approved commands, and before shipping a refreshed graph tarball.
 - Prefer dry-run first: `ctx-harness-install <slug> --dry-run` and
   `ctx-harness-install <slug> --update --dry-run`.
 - If a candidate is useful but risky, document the safer install path or keep it
-  as catalog-only metadata instead of shipping it as an installed skill.
+  as metadata instead of shipping it as an installed skill.
 
 ## Updating an Existing Entity
 
@@ -211,7 +210,7 @@ Removal has three separate meanings. First decide which one you need.
   then `ctx-lifecycle purge` for stale local skills that should be deleted
   after the configured grace period.
 
-After deleting a catalog page, drain or rebuild before trusting recommendation
+After deleting an entity page, drain or rebuild before trusting recommendation
 results:
 
 ```bash
@@ -299,7 +298,7 @@ Use this when a repo provides the runtime around a model rather than just a
 tool. Harness examples include coding-agent loops, CAD-generation runtimes,
 browser-automation runners, evaluation loops, and local-model workbenches.
 
-Example: catalog `earthtojake/text-to-cad` as a harness recommendation.
+Example: add `earthtojake/text-to-cad` as a harness recommendation.
 
 ```bash
 ctx-harness-add \
@@ -339,7 +338,7 @@ Harness pages live under `entities/harnesses/<slug>.md`. Setup and verification
 commands are documentation only; ctx records them so the user can inspect and
 decide before running anything.
 
-To inspect and install a cataloged harness:
+To inspect and install a harness:
 
 ```bash
 ctx-harness-install text-to-cad --dry-run
