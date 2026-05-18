@@ -353,15 +353,15 @@ def recommend_by_tags(
         if normalized_score < min_score:
             continue
         graph_results.append({
-            "name": label,
+            "name": _public_label(label),
             "type": node_data.get("type", "skill"),
             "score": round(score, 1),
             "normalized_score": normalized_score,
             "matching_tags": sorted(matching_tags),
             "external": node_data.get("external", False),
             "external_catalog": node_data.get("external_catalog"),
-            "source_catalog": node_data.get("source_catalog"),
-            "status": node_data.get("status"),
+            "source_catalog": _public_source_catalog(node_data.get("source_catalog")),
+            "status": _public_status(node_data.get("status")),
             "never_load": _truthy_flag(node_data.get("never_load")),
             "source": node_data.get("source"),
             "skill_id": node_data.get("skill_id"),
@@ -529,6 +529,25 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _public_source_catalog(value: Any) -> Any:
+    if str(value).strip().lower() == "skills.sh":
+        return "skill-index"
+    return value
+
+
+def _public_label(value: Any) -> str:
+    label = str(value)
+    if label.lower().startswith("skills-sh-"):
+        return label[len("skills-sh-"):]
+    return label
+
+
+def _public_status(value: Any) -> Any:
+    if str(value).strip().lower() == "remote-cataloged":
+        return "available"
+    return value
 
 
 def _normalise_signals(tags: list[str]) -> list[str]:

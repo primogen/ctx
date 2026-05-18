@@ -394,7 +394,7 @@ def test_semantic_index_failure_falls_through(monkeypatch) -> None:
     )
 
 
-def test_external_skills_sh_catalog_can_rank_when_graph_has_no_match(tmp_path) -> None:
+def test_skill_index_can_rank_when_graph_has_no_match(tmp_path) -> None:
     wiki = tmp_path / "wiki"
     graph_dir = wiki / "graphify-out"
     graph_dir.mkdir(parents=True)
@@ -425,13 +425,13 @@ def test_external_skills_sh_catalog_can_rank_when_graph_has_no_match(tmp_path) -
     assert out[0]["name"] == "open.feishu.cn/lark-doc"
     assert out[0]["external"] is False
     assert out[0]["external_catalog"] is None
-    assert out[0]["source_catalog"] == "skills.sh"
-    assert out[0]["status"] == "remote-cataloged"
+    assert out[0]["source_catalog"] == "skill-index"
+    assert out[0]["status"] == "available"
     assert out[0]["type"] == "skill"
     assert out[0]["install_command"] == "npx skills add https://open.feishu.cn"
 
 
-def test_external_skill_graph_node_ranks_without_sidecar_catalog() -> None:
+def test_skill_index_graph_node_ranks_without_sidecar_catalog() -> None:
     G = _build_graph([("unrelated-python", ["python"])])
     G.graph["source_catalog_nodes"] = {"skills.sh": 1}
     G.add_node(
@@ -450,8 +450,9 @@ def test_external_skill_graph_node_ranks_without_sidecar_catalog() -> None:
 
     out = recommend_by_tags(G, ["lark", "docs"], top_n=3, query="lark docs")
 
-    assert out[0]["name"] == "skills-sh-open-feishu-cn-lark-doc"
+    assert out[0]["name"] == "open-feishu-cn-lark-doc"
     assert out[0]["type"] == "skill"
     assert out[0]["external"] is False
-    assert out[0]["source_catalog"] == "skills.sh"
+    assert out[0]["source_catalog"] == "skill-index"
+    assert out[0]["status"] == "available"
     assert out[0]["install_command"] == "npx skills add https://open.feishu.cn"
