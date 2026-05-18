@@ -51,14 +51,13 @@ the update is treated like a release step.
    write a staged tarball, validate it, atomically promote it, and keep the
    generated `*.promotion.json` metadata with the previous/current hashes.
    Never commit local review reports or raw caches.
-8. Refresh the Skills.sh catalog overlay when shipping catalog coverage.
-   This adds remote-cataloged first-class `skill` nodes under the
-   `skills-sh-` prefix, skill pages under `entities/skills/`, install
+8. Refresh the external skill catalog overlay when shipping catalog coverage.
+   This adds first-class `skill` nodes, skill pages under `entities/skills/`, install
    commands, duplicate hints, and metadata-only quality/security signals:
 
    ```bash
    python src/import_skills_sh_catalog.py --from-api-union <raw.json> \
-     --catalog-out graph/skills-sh-catalog.json.gz \
+     --catalog-out graph/<external-skill-catalog>.json.gz \
      --wiki-tar graph/wiki-graph.tar.gz \
      --update-wiki-tar
    ```

@@ -6,6 +6,7 @@
 [![Tests](https://img.shields.io/badge/Tests-3823_collected-brightgreen.svg)](#)
 [![Graph](https://img.shields.io/badge/Graph-102%2C720_nodes_/_2.9M_edges-red.svg)](graph/)
 [![Docs](https://img.shields.io/badge/docs-MkDocs_Material-blue.svg)](https://stevesolun.github.io/ctx/)
+[![Repo views](https://hits.sh/github.com/stevesolun/ctx.svg?label=repo%20views)](https://hits.sh/github.com/stevesolun/ctx/)
 
 ctx watches what you are building, walks a **102,720-node** graph, and
 recommends a small, top-scored bundle of skills, agents, and MCP servers for
@@ -15,15 +16,15 @@ recommended harness, then install with dry-run/update/uninstall controls.
 
 Current shipped snapshot:
 
-- **91,448 skills**: 1,985 curated/imported skills plus **89,463 body-backed Skills.sh skills**.
-- **467 agents**, **10,787 MCP servers**, and **15 cataloged harnesses**.
+- **91,450 skills** with hydrated installable `SKILL.md` bodies.
+- **467 agents**, **10,787 MCP servers**, and **16 cataloged harnesses**.
 - **2.9M graph edges** across semantic similarity, tags, slug tokens, source overlap, direct links, quality, usage, type affinity, and graph structure.
-- **89,463 hydrated `SKILL.md` bodies** in the shipped LLM-wiki; long entries are converted through the micro-skill gate instead of loading raw long prompts.
+- **89,465 hydrated `SKILL.md` bodies** in the shipped LLM-wiki; long entries are converted through the micro-skill gate instead of loading raw long prompts.
 - Entity updates for skills, agents, MCPs, and harnesses print benefits/risks and skip replacement unless you explicitly approve the update.
 
 ## Why it exists
 
-- **Discovery** — with 91K+ skill nodes, 460+ agents, 10K+ MCP servers, and 15 cataloged harnesses, you can't possibly know which exist or which apply to your current work.
+- **Discovery** — with 91K+ skill nodes, 460+ agents, 10K+ MCP servers, and 16 cataloged harnesses, you can't possibly know which exist or which apply to your current work.
 - **Context budget** — loading everything wastes tokens and degrades quality. You need the right 10–15 per session.
 - **Skill rot** — skills you installed months ago and never used are cluttering context. Stale ones should be flagged automatically.
 
@@ -45,8 +46,8 @@ Optional extras: `pip install "claude-ctx[embeddings]"` for the semantic backend
 Graph-backed recommendations need the pre-built graph. By default, `ctx-init
 --graph` installs the fast runtime artifact: `graph/wiki-graph-runtime.tar.gz`
 in source checkouts, or the matching GitHub release asset from pip installs.
-It contains `graphify-out/*` plus the external Skills.sh catalog needed for
-recommendations and the 15 cataloged harness pages needed by
+It contains `graphify-out/*`, the shipped skill catalog needed for
+recommendations, and the 16 cataloged harness pages needed by
 `ctx-harness-install`:
 
 ```bash
@@ -60,10 +61,10 @@ expanded markdown pages:
 ctx-init --graph --graph-install-mode full
 ```
 
-The full `wiki-graph.tar.gz` includes `external-catalogs/skills-sh/catalog.json`,
-89,463 body-backed Skills.sh skill pages under `entities/skills/skills-sh-*.md`,
-89,463 hydrated installable Skills.sh `SKILL.md` files under
-`converted/skills-sh-*/`, and 15 cataloged harness pages under
+The full `wiki-graph.tar.gz` includes the external source catalog,
+91,450 skill entity pages under `entities/skills/`, 89,465 hydrated
+external installable `SKILL.md` files under `converted/`,
+and 16 cataloged harness pages under
 `entities/harnesses/`.
 
 > **Windows:** PowerShell's built-in `tar.exe` does not support

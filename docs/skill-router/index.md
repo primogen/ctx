@@ -47,5 +47,5 @@ confirmation UX, not in ranking logic.
   identify stack signals.
 - [Skill-stack matrix](../skill-stack-matrix.md) - stack-to-capability mapping
   used as scanner evidence.
-- [External catalog registry](../marketplace-registry.md) - Skills.sh, GitHub,
+- [External catalog registry](../marketplace-registry.md) - external skills, GitHub,
   MCP, harness, and local catalog sources plus update rules.

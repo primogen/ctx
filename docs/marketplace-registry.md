@@ -13,7 +13,7 @@ name: ctx-shipped-graph
 type: compressed-runtime
 paths:
   graph: graph/wiki-graph-runtime.tar.gz
-  catalog: graph/skills-sh-catalog.json.gz
+  catalog: graph/<external-skill-catalog>.json.gz
 refresh: release-time
 priority: 1
 ```
@@ -39,20 +39,19 @@ priority: 2
 Local assets override catalog-only suggestions when names collide, but updates
 still require an explicit review if replacement content is proposed.
 
-### Skills.sh Catalog
+### External Skill Catalog
 
 ```yaml
-name: skills-sh
+name: external-skills
 type: remote-catalog
-url: https://skills.sh
-shipped_entries: 89463
-local_catalog: graph/skills-sh-catalog.json.gz
-hydrated_wiki: external-catalogs/skills-sh/catalog.json
+shipped_entries: 89465
+local_catalog: graph/<external-skill-catalog>.json.gz
+hydrated_wiki: external-catalogs/<source>/catalog.json
 refresh: on-demand
 priority: 3
 ```
 
-Skills.sh entries are stored as first-class skill entities in the graph/wiki.
+External catalog entries are stored as first-class skill entities in the graph/wiki.
 Hydrated `SKILL.md` bodies pass through the micro-skill gate before they are
 packed into the shipped runtime.
 
@@ -95,7 +94,7 @@ permission notes, compatibility tags, and quality/security review status.
 When a user asks for help or the scanner detects a stack/task gap:
 
 1. Search the local graph/wiki first.
-2. Search Skills.sh via the shipped catalog and, when needed, the `find-skills`
+2. Search the shipped skill catalog and, when needed, the `find-skills`
    helper for fresher remote results.
 3. Search local user assets and configured entity repositories.
 4. Deduplicate by slug, source URL, canonical name, tags, and semantic overlap.

@@ -4,15 +4,15 @@ This directory ships the pre-built ctx LLM-wiki and knowledge graph.
 
 Current snapshot:
 
-- **102,717 graph nodes**
-- **2,911,162 graph edges**
+- **102,720 graph nodes**
+- **2,911,575 graph edges**
 - **52 Louvain communities**
-- **91,448 skill entity pages**: 1,985 curated/imported skills plus 89,463 body-backed Skills.sh skills
+- **91,450 skill entity pages** with hydrated installable bodies
 - **467 agent pages**
 - **10,787 MCP server pages**
-- **15 harness pages**
-- **89,463 hydrated Skills.sh `SKILL.md` bodies**
-- **28,612 long Skills.sh bodies converted through the micro-skill gate**
+- **16 harness pages**
+- **89,465 hydrated external `SKILL.md` bodies**
+- **28,612 long external skill bodies converted through the micro-skill gate**
 
 The runtime recommendation paths use this graph in two ways:
 
@@ -23,9 +23,9 @@ The runtime recommendation paths use this graph in two ways:
 
 | File | Contents |
 |---|---|
-| `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the external Skills.sh catalog, 15 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
+| `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the external skill catalog, 16 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
 | `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, external catalogs, and Obsidian metadata |
-| `skills-sh-catalog.json.gz` | Compressed Skills.sh catalog for the 89,463 body-backed entries shipped in the wiki |
+| External catalog gzip | Compressed external-source catalog for the 89,465 body-backed skill entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
 | `graphify-out/dashboard-neighborhoods.sqlite3` inside both tarballs | Compact top-neighbor index used by `ctx-monitor` so `/api/graph/<slug>.json` does not cold-parse the 604 MB NetworkX graph |
 | `viz-overview.html` | Plotly overview of the graph |
@@ -50,14 +50,14 @@ want local wiki browsing, Obsidian, or the converted skill body tree.
 
 ## What Is Inside `wiki-graph.tar.gz`
 
-- `entities/skills/` - all skill entity pages, including `skills-sh-*` pages
+- `entities/skills/` - all skill entity pages, including external-source pages
 - `entities/agents/` - agent entity pages
 - `entities/mcp-servers/<shard>/` - sharded MCP server entity pages
 - `entities/harnesses/` - harness entity pages
-- `converted/` - installable skill bodies for curated and Skills.sh skills
+- `converted/` - installable skill bodies for curated and external-source skills
 - `converted-agents/` - mirrored agent bodies
 - `concepts/` - community concept pages
-- `external-catalogs/skills-sh/` - Skills.sh catalog, summary, and coverage metadata
+- `external-catalogs/` - external skill catalog, summary, and coverage metadata
 - `graphify-out/graph.json` - NetworkX node-link graph
 - `graphify-out/graph-delta.json` - delta export for the latest graph generation
 - `graphify-out/graph-export-manifest.json` - export manifest tying graph, delta, communities, and report to one generation
@@ -110,24 +110,21 @@ For release-count validation, pin the exact snapshot numbers:
 
 ```bash
 python src/validate_graph_artifacts.py --deep \
-  --expected-nodes 102717 \
-  --expected-edges 2911162 \
-  --expected-semantic-edges 1683182 \
-  --expected-harness-nodes 15 \
-  --expected-skills-sh-nodes 89463 \
-  --expected-skills-sh-catalog-entries 89463 \
-  --expected-skills-sh-converted 89463 \
-  --expected-skill-pages 91448 \
+  --expected-nodes 102720 \
+  --expected-edges 2911575 \
+  --expected-semantic-edges 1683163 \
+  --expected-harness-nodes 16 \
+  --expected-skill-pages 91450 \
   --expected-agent-pages 467 \
   --expected-mcp-pages 10787 \
-  --expected-harness-pages 15
+  --expected-harness-pages 16
 ```
 
 Manual sanity checks:
 
 ```bash
 tar -tzf graph/wiki-graph.tar.gz | grep 'graphify-out/graph.json'
-tar -tzf graph/wiki-graph.tar.gz | grep 'external-catalogs/skills-sh/catalog.json'
+tar -tzf graph/wiki-graph.tar.gz | grep 'external-catalogs/.*/catalog.json'
 tar -tzf graph/wiki-graph.tar.gz | grep 'SKILL.md.original' && exit 1 || true
 tar -tzf graph/wiki-graph.tar.gz | grep '\.lock$' && exit 1 || true
 tar -tzf graph/wiki-graph.tar.gz | grep '^\./\.ctx/' && exit 1 || true
@@ -200,7 +197,7 @@ python src/update_repo_stats.py --check
 
 `park` sets Git's local `skip-worktree` bit for the heavyweight generated
 archives: `graph/wiki-graph.tar.gz`, `graph/wiki-graph-runtime.tar.gz`, and
-`graph/skills-sh-catalog.json.gz`. Keep them parked while graph/wiki generation,
+the compressed external skill catalog. Keep them parked while graph/wiki generation,
 validation, dashboard smoke, and stats checks are still in progress. This
 prevents background Git integrations from repeatedly staging hundreds of
 megabytes through the Git LFS clean filter. When the release candidate is final,
@@ -208,7 +205,7 @@ unpark and stage the artifacts exactly once:
 
 ```bash
 python scripts/graph_artifact_guard.py unpark
-git add graph/wiki-graph.tar.gz graph/wiki-graph-runtime.tar.gz graph/skills-sh-catalog.json.gz
+git add graph/wiki-graph.tar.gz graph/wiki-graph-runtime.tar.gz graph/*.json.gz
 python scripts/graph_artifact_guard.py prune
 ```
 
@@ -217,13 +214,13 @@ If a local Git integration gets interrupted while artifacts are dirty,
 objects and prunable local LFS cache entries. It does not delete tracked graph
 files, rewrite history, or change the remote LFS store.
 
-For a Skills.sh catalog/body refresh, update the existing shipped tarball
+For an external skill catalog/body refresh, update the existing shipped tarball
 through the release refresh path:
 
 ```bash
 python src/import_skills_sh_catalog.py \
-  --from-catalog graph/skills-sh-catalog.json.gz \
-  --catalog-out graph/skills-sh-catalog.json.gz \
+  --from-catalog <external-skill-catalog.json.gz> \
+  --catalog-out <external-skill-catalog.json.gz> \
   --wiki-tar graph/wiki-graph.tar.gz \
   --update-wiki-tar
 ```

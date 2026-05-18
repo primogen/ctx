@@ -48,9 +48,7 @@ generated graph/wiki artifacts that ctx can ship or consume. It reports:
   opened or queried
 - artifact presence and byte size for generated
   `~/.claude/skill-wiki/graphify-out/{graph.json,graph-delta.json,communities.json}`
-  plus the runtime Skills.sh catalog under
-  `~/.claude/skill-wiki/external-catalogs/skills-sh/catalog.json`, falling
-  back to `~/.claude/graph/skills-sh-catalog.json.gz` or the repo `graph/`
+  plus the runtime external skill catalog, falling back to the repo `graph/`
   directory during source checkouts. The status page also reports the full
   `wiki-graph.tar.gz` artifact when present.
 - artifact promotion metadata, including the latest promoted hash when
@@ -91,9 +89,9 @@ frontmatter values are visibly marked as truncated.
 ### Explore the knowledge graph — `/graph`
 
 The graph tab is a built-in list view over the dashboard-supported
-skill/agent/MCP/harness graph. The shipped graph bundle also contains
-remote-cataloged Skills.sh `skill` nodes. Harness nodes are browsable
-and filterable here; install/update actions remain in `ctx-harness-install`.
+skill/agent/MCP/harness graph. External catalog skills are normal `skill`
+nodes in the graph. Harness nodes are browsable and filterable here;
+install/update actions remain in `ctx-harness-install`.
 When you arrive with no
 slug selected, the page shows:
 

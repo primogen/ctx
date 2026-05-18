@@ -10,7 +10,7 @@ tarball and catalog artifacts, not local review reports or ignored caches.
 - Tracked source, docs, tests, and packaging files.
 - `graph/wiki-graph.tar.gz`.
 - `graph/wiki-graph-runtime.tar.gz`.
-- `graph/skills-sh-catalog.json.gz`.
+- The compressed external skill catalog under `graph/`.
 - Tracked graph visualizations under `graph/`.
 
 Ignored local reports, review notes, raw ingest caches, coverage files,
@@ -21,8 +21,8 @@ by git.
 
 Use the repository sync script. It exports only tracked files, adds the
 Hugging Face repo-card frontmatter to the uploaded `README.md`, and refuses to
-publish if `graph/wiki-graph.tar.gz`, `graph/wiki-graph-runtime.tar.gz`, or
-`graph/skills-sh-catalog.json.gz` is missing, too small, or still a Git LFS
+publish if the full wiki tarball, runtime wiki tarball, or compressed external
+skill catalog is missing, too small, or still a Git LFS
 pointer.
 
 The script prefers Hugging Face's resumable large-folder uploader when the

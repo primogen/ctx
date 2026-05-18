@@ -170,7 +170,7 @@ title: Entity Name
 type: skill | agent | mcp-server | harness | external-catalog
 status: installed | available | deprecated | broken
 tags: []
-source: local | skills-sh | github | curated
+source: local | external-catalog | github | curated
 source_url: ""
 path: ""
 quality_score: null
@@ -182,7 +182,7 @@ never_load: false
 
 ## External Catalogs
 
-External catalog sources include Skills.sh, curated MCP/harness sources, GitHub
+External catalog sources include curated skill/MCP/harness sources, GitHub
 entity repositories, and local user assets. The public reference page is
 [`marketplace-registry.md`](marketplace-registry.md), kept under that filename
 for backwards-compatible links.
