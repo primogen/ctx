@@ -433,18 +433,18 @@ def build_replacements(stats: dict, tests: int | None, converted: int | None) ->
         s = stats["skills"]
         reps.append((re.compile(r"badge/Skills-[0-9%,]+-"), f"badge/Skills-{s:,}-".replace(",", "%2C")))
         # 4-type pattern: "92,815 skills, 464 agents, 10,787 MCP servers,
-        # and 13 cataloged harnesses". Keep this before the 3-type fallback
+        # and 13 harnesses". Keep this before the 3-type fallback
         # so the README's harness-aware lead sentence stays machine-owned.
         if stats["agents"] and stats["mcps"] and stats["harnesses"]:
             reps.append((
                 re.compile(
                     r"\*\*[\d,]+\s+skills,\s+[\d,]+\s+agents,\s+"
                     r"[\d,]+\s+MCP\s+servers,\s+and\s+[\d,]+\s+"
-                    r"cataloged\s+harnesses\*\*"
+                    r"(?:cataloged\s+)?harnesses\*\*"
                 ),
                 f"**{s:,} skills, {stats['agents']:,} agents, "
                 f"{stats['mcps']:,} MCP servers, and "
-                f"{stats['harnesses']:,} cataloged harnesses**",
+                f"{stats['harnesses']:,} harnesses**",
             ))
         # 3-type pattern: "1,789 skills, 464 agents, and 10,786 MCP servers"
         # Order matters — this regex is more specific than the 2-type one
@@ -525,24 +525,24 @@ def build_replacements(stats: dict, tests: int | None, converted: int | None) ->
         bodies = int(stats["skills_sh_bodies"])
         reps.append((
             re.compile(
-                r"The shipped wiki includes [\d,]+ Skills\.sh entries, "
+                r"The shipped wiki includes [\d,]+(?: Skills\.sh)? entries, "
                 r"[\d,]+ hydrated installable `SKILL\.md` bodies"
             ),
             "The shipped wiki includes "
-            f"{entries:,} Skills.sh entries, {bodies:,} hydrated installable "
+            f"{entries:,} skill entries, {bodies:,} hydrated installable "
             "`SKILL.md` bodies",
         ))
         reps.append((
             re.compile(
                 r"includes `external-catalogs/skills-sh/catalog\.json`, "
-                r"[\d,]+ (?:remote-cataloged|body-backed) Skills\.sh skill pages under "
+                r"[\d,]+ (?:remote-cataloged|body-backed|skill) "
+                r"(?:Skills\.sh )?skill pages under "
                 r"`entities/skills/skills-sh-\*\.md`, "
-                r"[\d,]+ hydrated installable Skills\.sh `SKILL\.md` files"
+                r"[\d,]+ hydrated installable (?:Skills\.sh )?`SKILL\.md` files"
             ),
-            "includes `external-catalogs/skills-sh/catalog.json`, "
-            f"{entries:,} body-backed Skills.sh skill pages under "
-            "`entities/skills/skills-sh-*.md`, "
-            f"{bodies:,} hydrated installable Skills.sh `SKILL.md` files",
+            "includes the shipped skill index, "
+            f"{entries:,} skill pages, "
+            f"{bodies:,} hydrated installable `SKILL.md` files",
         ))
 
     if tests is not None:

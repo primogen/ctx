@@ -5,7 +5,7 @@ loaded skills, agents, MCP servers, and installed harness records; session timel
 knowledge graph; the LLM-wiki browser; quality grades + scores;
 durable queue state; graph/wiki artifact versions; filterable audit
 logs; generic-harness validation/escalation state; a live event stream;
-and cataloged harness wiki/graph browsing.
+and harness wiki/graph browsing.
 
 ```bash
 ctx-monitor serve              # http://127.0.0.1:8765
@@ -48,7 +48,7 @@ generated graph/wiki artifacts that ctx can ship or consume. It reports:
   opened or queried
 - artifact presence and byte size for generated
   `~/.claude/skill-wiki/graphify-out/{graph.json,graph-delta.json,communities.json}`
-  plus the runtime external skill catalog, falling back to the repo `graph/`
+  plus the runtime skill index, falling back to the repo `graph/`
   directory during source checkouts. The status page also reports the full
   `wiki-graph.tar.gz` artifact when present.
 - artifact promotion metadata, including the latest promoted hash when
@@ -89,7 +89,7 @@ frontmatter values are visibly marked as truncated.
 ### Explore the knowledge graph — `/graph`
 
 The graph tab is a built-in list view over the dashboard-supported
-skill/agent/MCP/harness graph. External catalog skills are normal `skill`
+skill/agent/MCP/harness graph. Imported skills are normal `skill`
 nodes in the graph. Harness nodes are browsable and filterable here;
 install/update actions remain in `ctx-harness-install`.
 When you arrive with no

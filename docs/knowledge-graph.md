@@ -1,6 +1,6 @@
 # Knowledge graph
 
-A pre-built weighted graph of skills, agents, MCP servers, and cataloged
+A pre-built weighted graph of skills, agents, MCP servers, and
 harnesses in the ctx ecosystem, shipped as `graph/wiki-graph.tar.gz`.
 The on-disk JSON and `resolve_graph` Python API are harness-aware, including
 plain-slug graph walks from `harness:<slug>` nodes. `ctx-monitor`
@@ -15,8 +15,8 @@ agents, and MCP servers.
 Authoritative numbers from the shipped tarball. The curated-core snapshot
 is **13,255 nodes** (1,985 curated skills + 467 agents + 10,787 MCP servers
 + 16 harnesses). Harness pages under `entities/harnesses/` are ingested into
-local rebuilds and the separate harness-catalog recommendation path. The
-tarball also carries **91,450 skill pages**; **89,465** external-source
+local rebuilds and the separate harness recommendation path. The
+tarball also carries **91,450 skill pages**; **89,465**
 skill bodies are hydrated as installable `SKILL.md` files under
 `converted/`; the **28,612** entries over the configured line
 limit were converted to gated micro-skill orchestrators. Full original bodies
@@ -28,32 +28,32 @@ are omitted from the shipped tarball.
 |---|---:|
 | Total nodes | **102,720** |
 | Curated core nodes | **13,255** (1,985 skills + 467 agents + 10,787 MCP servers + 16 harnesses) |
-| External-catalog provenance graph nodes | **89,471** (89,465 are body-backed skill entries) |
+| Hydrated skill import nodes | **89,471** (89,465 are body-backed skill entries) |
 | Total edges | **2,911,575** |
-| External-catalog incident edges | **2,605,690** |
-| External-catalog semantic incident edges | **1,500,648** |
+| Hydrated skill incident edges | **2,605,690** |
+| Hydrated skill semantic incident edges | **1,500,648** |
 | Communities | **52** (Louvain) |
 | Edge sources (overlap-deduped) | semantic 1,683,163 - tag 895,399 - token 433,245 |
 | Cross-type edges (skill <-> agent) | ~67K |
 | Cross-type edges (skill <-> MCP) | ~41K |
 | Cross-type edges (agent <-> MCP) | ~223 |
 | Harness edges | **4,334** |
-| External source catalog | **89,465** observed body-backed skill entries |
+| Shipped skill index | **89,465** observed body-backed skill entries |
 
 ## Install
 
 Use `ctx-init --graph` to install the fast runtime graph. Source checkouts use
 `graph/wiki-graph-runtime.tar.gz`; pip installs download the matching GitHub
 release asset for the installed package version. This installs
-`graphify-out/*`, the external skill catalog used by recommendations, and
-the harness catalog pages used by `ctx-harness-install`:
+`graphify-out/*`, the skill index used by recommendations, and
+the harness pages used by `ctx-harness-install`:
 
 ```bash
 ctx-init --graph
 ```
 
-To expand every shipped skill/agent/MCP entity page, cataloged harness page,
-external-source skill page, concept page, converted micro-skill pipeline,
+To expand every shipped skill/agent/MCP entity page, harness page,
+skill page, concept page, converted micro-skill pipeline,
 and Obsidian vault metadata, request the full wiki artifact explicitly:
 
 ```bash
@@ -118,7 +118,7 @@ floor with zero edge loss, while `0.05` would remove roughly 29.7% of edges.
 Edge metadata keeps the ingredients explainable: `semantic_sim`,
 `shared_tags`, `shared_tokens`, `shared_sources`, `direct_link`,
 `adamic_adar`, `type_affinity`, `usage_score`, `quality_score`,
-`edge_reasons`, and `score_components`. Hydrated external-source skill records use their
+`edge_reasons`, and `score_components`. Hydrated skill records use their
 full source bodies during graph rebuilds, so long converted entries keep
 full-body similarity even though the shipped installable `SKILL.md` files are
 short gated loaders. The raw `SKILL.md.original` backups are build inputs, not
@@ -198,15 +198,15 @@ The graph backs two recommendation paths:
   `ctx.core.resolve.recommendations.recommend_by_tags` for skills,
   agents, and MCP servers. That engine ranks candidates by
   slug-token matches, tag overlap, graph degree, and semantic-cache
-  signals when available. External catalog results are normal `skill` nodes with
+  signals when available. Imported skill results are normal `skill` nodes with
   detail URLs, install commands, duplicate
   hints, gated micro-skill loaders when over the line threshold, and
   quality/security metadata. If an older
-  extracted wiki has the external catalog JSON but no graph nodes for
-  those records, the same recommender falls back to the catalog file.
-- Harness recommendations are a separate catalog path for custom/API/local
+  extracted wiki has the skill index JSON but no graph nodes for
+  those records, the same recommender falls back to the index file.
+- Harness recommendations are a separate path for custom/API/local
   model onboarding (`ctx-init --model-mode custom ...`) and
-  `ctx-harness-install`. They use the same graph catalog filtered to
+  `ctx-harness-install`. They use the same graph filtered to
   `harness` nodes and the higher harness match floor from `config.json`.
 - Repository scans still start from stack detections, then turn that profile
   into the same tag/query bundle used by the execution recommender. If a
@@ -301,7 +301,7 @@ repack graph artifacts from `~/.claude/skill-wiki/`; that local wiki can
 contain private entities. It refreshes cheap README stats when relevant
 checked-in files are staged and warns when entity sources changed. Run
 `ctx-wiki-graphify`, validate, repack, and stage the artifacts explicitly
-for skill, agent, MCP server, or harness catalog releases.
+for skill, agent, MCP server, or harness releases.
 
 Graphify exports stage and validate each generated artifact before atomic
 promotion. `graph.json`, `graph-delta.json`, `communities.json`,
@@ -319,21 +319,21 @@ next run rebuilds instead of trusting mixed graph files.
 | v0.6.0 | 454,719 | Threshold raised to 500, multi-line YAML lists parsed, slug-token pseudo-tags added. |
 | v0.7.x | 847,207 | Pulsemcp ingest added 10,786 MCP server nodes; sentence-embedding semantic edges added. |
 | 2026-04-27 graph rebuild pass | **963,068** | +21 mattpocock skills, +156 designdotmd designs (+106,702 edges); patch-path bug fixed (graphify now forces full rebuild when prior graph has 0 semantic edges but current run computed semantic pairs); community detection switched from CNM to Louvain. |
-| 2026-04-29 external skill catalog pass | **1,030,831** | +90,846 first-class `skill` nodes, +90,846 skill pages, and +67,519 sparse duplicate/tag metadata edges to the curated graph. Full-body semantic edges are intentionally deferred to the hydration pass. |
-| 2026-04-29 text-to-cad harness pass | **1,031,011** | +1 first-class `harness` node, +1 harness page, and +224 explainable harness edges, including 44 external skill edges. |
-| 2026-04-29 curated harness catalog pass | **1,033,253** | +12 first-class `harness` nodes/pages for LangGraph, CrewAI, AutoGen, Google ADK, Semantic Kernel, Mastra, Pydantic AI, Haystack, OpenAI Agents SDK, LiteLLM, Langfuse, and AgentOps; harness incident edges now total 2,700. |
-| 2026-04-30 external skill semantic hydration pass | **2,881,027** | +full-body semantic edges for hydrated external skill records; semantic top-K became the dominant large-scale signal. |
-| 2026-05-01 micro-skill pass | **2,960,189** | Enforced the <=180-line loader threshold across 89,461 hydrated external `SKILL.md` files, converted 28,611 long bodies into gated micro-skill orchestrators, used full originals for semantic graphing, excluded `.original` backups from the shipped tarball, bounded generated stage/reference files to 40 lines, and rebuilt the graph. |
-| 2026-05-02 GitNexus MCP pass | **2,960,215** | Added GitNexus as a cataloged MCP server entity with 26 cross-type edges to related skill pages and architecture/refactoring agents; semantic edge count unchanged. |
-| 2026-05-04 v0.7.3 artifact refresh | **2,960,215** | Hydrated one recoverable command-injection-testing body, raising hydrated external `SKILL.md` files to 89,463; generated micro-skill markdown now defangs high-risk command-injection payloads before packaging. Graph topology unchanged. |
-| 2026-05-04 body-backed skill prune | **2,900,834** | Removed 1,383 external skill records that had no packaged `SKILL.md` body and no parseable prose body. Remaining external catalog entries, graph nodes, entity pages, and converted `SKILL.md` bodies are all **89,463**. |
+| 2026-04-29 bulk skill import pass | **1,030,831** | +90,846 first-class `skill` nodes, +90,846 skill pages, and +67,519 sparse duplicate/tag metadata edges to the core graph. Full-body semantic edges are intentionally deferred to the hydration pass. |
+| 2026-04-29 text-to-cad harness pass | **1,031,011** | +1 first-class `harness` node, +1 harness page, and +224 explainable harness edges, including 44 skill edges. |
+| 2026-04-29 harness inventory pass | **1,033,253** | +12 first-class `harness` nodes/pages for LangGraph, CrewAI, AutoGen, Google ADK, Semantic Kernel, Mastra, Pydantic AI, Haystack, OpenAI Agents SDK, LiteLLM, Langfuse, and AgentOps; harness incident edges now total 2,700. |
+| 2026-04-30 skill semantic hydration pass | **2,881,027** | +full-body semantic edges for hydrated skill records; semantic top-K became the dominant large-scale signal. |
+| 2026-05-01 micro-skill pass | **2,960,189** | Enforced the <=180-line loader threshold across 89,461 hydrated `SKILL.md` files, converted 28,611 long bodies into gated micro-skill orchestrators, used full originals for semantic graphing, excluded `.original` backups from the shipped tarball, bounded generated stage/reference files to 40 lines, and rebuilt the graph. |
+| 2026-05-02 GitNexus MCP pass | **2,960,215** | Added GitNexus as an MCP server entity with 26 cross-type edges to related skill pages and architecture/refactoring agents; semantic edge count unchanged. |
+| 2026-05-04 v0.7.3 artifact refresh | **2,960,215** | Hydrated one recoverable command-injection-testing body, raising hydrated `SKILL.md` files to 89,463; generated micro-skill markdown now defangs high-risk command-injection payloads before packaging. Graph topology unchanged. |
+| 2026-05-04 body-backed skill prune | **2,900,834** | Removed 1,383 skill records that had no packaged `SKILL.md` body and no parseable prose body. Remaining skill records, graph nodes, entity pages, and converted `SKILL.md` bodies are all **89,463**. |
 | 2026-05-05 artifact hygiene refresh | **2,900,834** | Repacked `graph/wiki-graph.tar.gz` to remove transient `.lock` files from the shipped LLM-wiki. Topology unchanged. |
 | 2026-05-10 v1.0.0 release prep | **2,900,834** | Refreshed shipped HTML previews from the current export, validated their export IDs in CI, and removed stale PNG previews. Topology unchanged. |
-| 2026-05-12 book-to-skill + queue hygiene | **2,900,910** | Added `book-to-skill` as a curated skill entity (+1 node, +76 edges), restored a missing converted external skill body, and repacked `graph/wiki-graph.tar.gz` to omit `.ctx/` queue state. Tar members: **598,154**. |
-| 2026-05-13 external source overlay | **2,911,220** | Added AGENTS.md, lat.md, OptiLLM, Matt Pocock refresh deltas, and Julius caveman entities through the safe overlay path (+21 nodes, +10,310 edges) while preserving the saturated external skill topology. Tar members at that pass: **598,192**. |
+| 2026-05-12 book-to-skill + queue hygiene | **2,900,910** | Added `book-to-skill` as a skill entity (+1 node, +76 edges), restored a missing converted skill body, and repacked `graph/wiki-graph.tar.gz` to omit `.ctx/` queue state. Tar members: **598,154**. |
+| 2026-05-13 overlay pass | **2,911,220** | Added AGENTS.md, lat.md, OptiLLM, Matt Pocock refresh deltas, and Julius caveman entities through the safe overlay path (+21 nodes, +10,310 edges) while preserving the saturated skill topology. Tar members at that pass: **598,192**. |
 | 2026-05-14 Matt Pocock upstream refresh | **2,911,126** | Pinned `mattpocock/skills` to `e74f0061bb67222181640effa98c675bdb2fdaa7`, removed three stale legacy alias skill pages/nodes (`mattpocock-domain-model`, `mattpocock-github-triage`, `mattpocock-triage-issue`), refreshed `mattpocock-grill-with-docs`, and pruned 94 incident edges plus stale wiki references. Current tar members: **598,189**. |
 | 2026-05-14 Mirage + CodeGraph first-class wiki pass | **2,911,162** | Added Mirage as a shipped harness wiki/runtime page, added the CodeGraph MCP markdown page and `codegraph-agentic-codebase-analysis` skill page/body to the full LLM-wiki, added the compact dashboard neighborhood index, regenerated graph preview HTML from the current export, and refreshed exact validation counts. Current tar members: **598,193**. |
-| 2026-05-18 external repo refresh | **2,911,575** | Refreshed `addyosmani/agent-skills` and `bytedance/deer-flow` from current upstream SKILL.md bodies, added Addy Osmani's `doubt-driven-development` and `interview-me` skills, replaced DeerFlow's stale `vercel-deploy` entry with `vercel-deploy-claimable`, retained `Imbad0202/academic-research-skills` as existing cataloged non-commercial upstream content, and added DeerFlow as a first-class harness page/runtime page. Current tar members: **598,596**. |
+| 2026-05-18 repo refresh | **2,911,575** | Refreshed `addyosmani/agent-skills` and `bytedance/deer-flow` from current upstream SKILL.md bodies, added Addy Osmani's `doubt-driven-development` and `interview-me` skills, replaced DeerFlow's stale `vercel-deploy` entry with `vercel-deploy-claimable`, retained `Imbad0202/academic-research-skills` as existing non-commercial upstream content, and added DeerFlow as a first-class harness page/runtime page. Current tar members: **598,596**. |
 
 The full audit history lives in `CHANGELOG.md`. The current build is
 fully reproducible from the wiki content.
@@ -341,7 +341,7 @@ fully reproducible from the wiki content.
 ## Pre-ship gates
 
 Two advisory gates run before the tarball is repackaged. Both produce
-review reports and never auto-modify the catalog.
+review reports and never auto-modify the inventory.
 
 - **`ctx-dedup-check`** — flags entity pairs (skill ↔ skill, skill ↔
   agent, skill ↔ MCP, agent ↔ agent, agent ↔ MCP, MCP ↔ MCP) at or

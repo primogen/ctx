@@ -461,12 +461,12 @@ def _recommend_external_catalog(
     query: str | None,
     catalog_path: Path | None,
 ) -> list[dict[str, Any]]:
-    """Rank remote Skills.sh catalog entries alongside graph entities.
+    """Rank shipped skill-index entries alongside graph entities.
 
-    These entries are external: they carry install instructions and detail URLs,
+    These entries carry install instructions and detail URLs,
     but they do not pretend to be local ``converted/<slug>/SKILL.md`` wiki
-    bodies. This keeps the curated graph useful while making the 90K+ Skills.sh
-    catalog available as a fallback recommendation source.
+    bodies. This keeps the graph useful while making the shipped skill index
+    available as a fallback recommendation source.
     """
     path = catalog_path or _infer_external_catalog_path(graph)
     skills = _load_external_catalog(path)
@@ -512,8 +512,8 @@ def _recommend_external_catalog(
             "matching_tags": sorted(matching),
             "external": False,
             "external_catalog": None,
-            "source_catalog": "skills.sh",
-            "status": "remote-cataloged",
+            "source_catalog": "skill-index",
+            "status": "available",
             "source": skill.get("source"),
             "skill_id": skill.get("skill_id"),
             "installs": _safe_int(skill.get("installs")),

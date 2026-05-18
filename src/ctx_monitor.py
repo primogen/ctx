@@ -329,12 +329,19 @@ def _search_wiki_entities(
         frontmatter, body = _parse_frontmatter(head)
         tags = _frontmatter_tags(frontmatter.get("tags", ""), limit=None)
         description = _frontmatter_text(frontmatter.get("description", ""))
-        title = _frontmatter_text(frontmatter.get("title") or frontmatter.get("name") or slug)
-        haystack = " ".join([slug, current_type, title, description, " ".join(tags), body]).lower()
+        display_slug = _display_slug(slug)
+        title = _display_label(
+            _frontmatter_text(frontmatter.get("title") or frontmatter.get("name") or slug),
+            fallback_slug=slug,
+        )
+        haystack = " ".join(
+            [slug, display_slug, current_type, title, description, " ".join(tags), body],
+        ).lower()
         if terms and not all(term in haystack for term in terms):
             continue
         results.append({
             "slug": slug,
+            "display_slug": display_slug,
             "type": current_type,
             "title": title,
             "description": description,
@@ -593,7 +600,7 @@ def _wiki_link_href(target: str) -> tuple[str, str]:
     if not _is_safe_slug(slug):
         return "#", slug or target
     suffix = f"?type={quote(entity_type)}" if entity_type else ""
-    return f"/wiki/{quote(slug)}{suffix}", slug
+    return f"/wiki/{quote(slug)}{suffix}", _display_slug(slug)
 
 
 def _markdown_link_href(target: str) -> str | None:
@@ -730,6 +737,17 @@ def _slugish(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
+def _display_slug(slug: str) -> str:
+    """Return the user-facing slug while preserving raw IDs for links/actions."""
+    text = str(slug or "")
+    return text.removeprefix("skills-sh-")
+
+
+def _display_label(value: Any, *, fallback_slug: str = "") -> str:
+    text = str(value or fallback_slug or "")
+    return _display_slug(text)
+
+
 def _strip_duplicate_wiki_heading(markdown_text: str, slug: str) -> str:
     """Drop the first H1 if it only repeats the page slug."""
     lines = markdown_text.splitlines()
@@ -838,7 +856,7 @@ def _render_entity_subgraph_svg(
             node_id, str(node.get("type") or "skill"),
         )
         node_slug = _graph_slug_from_node_id(node_id)
-        label = str(node.get("label") or node_slug)
+        label = _display_label(node.get("label"), fallback_slug=node_slug)
         sidecar = sidecar_by_id.get(node_id)
         node_payload.append({
             "id": node_id,
@@ -866,8 +884,8 @@ def _render_entity_subgraph_svg(
             "target": target,
             "weight": weight,
             "title": (
-                f"{_graph_slug_from_node_id(source)} ↔ "
-                f"{_graph_slug_from_node_id(target)} · weight {weight:.3f} "
+                f"{_display_slug(_graph_slug_from_node_id(source))} ↔ "
+                f"{_display_slug(_graph_slug_from_node_id(target))} · weight {weight:.3f} "
                 f"· shared {shared}"
             ),
         })
@@ -2252,8 +2270,8 @@ def _resolve_graph_center(
             continue
         data = G.nodes.get(node_id, {})
         node_slug = _graph_slug_from_node_id(str(node_id))
-        label = str(data.get("label") or node_slug)
-        haystacks = {_slugish(node_slug), _slugish(label)}
+        label = _display_label(data.get("label"), fallback_slug=node_slug)
+        haystacks = {_slugish(node_slug), _slugish(_display_slug(node_slug)), _slugish(label)}
         tags = data.get("tags", [])
         if isinstance(tags, list):
             haystacks.update(_slugish(str(tag)) for tag in tags[:12])
@@ -2279,8 +2297,9 @@ def _resolve_graph_center(
     matches.sort(key=lambda item: item[0])
     suggestions = []
     for _, _node_id, suggestion in matches[:8]:
-        if suggestion not in suggestions:
-            suggestions.append(suggestion)
+        display_suggestion = _display_slug(suggestion)
+        if display_suggestion not in suggestions:
+            suggestions.append(display_suggestion)
     if not matches:
         return None, None, suggestions
     center = matches[0][1]
@@ -2704,8 +2723,8 @@ def _resolve_index_center(
     query_tokens = set(normalized_query.split("-"))
     for row in rows:
         node_slug = str(row["slug"] or "")
-        label = str(row["label"] or node_slug)
-        haystacks = {_slugish(node_slug), _slugish(label)}
+        label = _display_label(row["label"], fallback_slug=node_slug)
+        haystacks = {_slugish(node_slug), _slugish(_display_slug(node_slug)), _slugish(label)}
         try:
             tags = json.loads(row["tags"] or "[]")
         except (TypeError, json.JSONDecodeError):
@@ -2734,8 +2753,9 @@ def _resolve_index_center(
     matches.sort(key=lambda item: item[0])
     suggestions: list[str] = []
     for _, _node_id, suggestion in matches[:8]:
-        if suggestion not in suggestions:
-            suggestions.append(suggestion)
+        display_suggestion = _display_slug(suggestion)
+        if display_suggestion not in suggestions:
+            suggestions.append(display_suggestion)
     if not matches:
         return None, None, suggestions
     center = matches[0][1]
@@ -2799,10 +2819,11 @@ def _graph_neighborhood_from_index(
                 degree=degree,
                 max_degree=max_degree,
             )
+            label = _display_label(row["label"], fallback_slug=node_slug)
             nodes_out[node_id] = {
                 "data": {
                     "id": node_id,
-                    "label": row["label"] or node_slug,
+                    "label": label,
                     "type": node_type,
                     "depth": depth,
                     "degree": degree,
@@ -2810,7 +2831,14 @@ def _graph_neighborhood_from_index(
                     "description": row["description"] or "",
                     "quality_score": row["quality_score"],
                     "usage_score": row["usage_score"],
-                    "filter_tokens": [node_id, row["label"], node_slug, *tags],
+                    "filter_tokens": [
+                        node_id,
+                        row["label"],
+                        node_slug,
+                        _display_slug(node_slug),
+                        label,
+                        *tags,
+                    ],
                     **size_data,
                 },
             }
@@ -2935,7 +2963,8 @@ def _graph_neighborhood(
         if nid in nodes_out:
             return
         data = dict(G.nodes.get(nid, {}))
-        label = data.get("label", nid.split(":", 1)[-1])
+        node_slug = nid.split(":", 1)[-1]
+        label = _display_label(data.get("label"), fallback_slug=node_slug)
         tags = list(data.get("tags", []))
         default_type = (
             "mcp-server" if nid.startswith("mcp-server:")
@@ -2966,7 +2995,7 @@ def _graph_neighborhood(
                 "description": data.get("description", ""),
                 "quality_score": data.get("quality_score"),
                 "usage_score": data.get("usage_score"),
-                "filter_tokens": [nid, label, nid.split(":", 1)[-1], *tags],
+                "filter_tokens": [nid, label, node_slug, _display_slug(node_slug), *tags],
                 **size_data,
             },
         }
@@ -3950,12 +3979,14 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "  return '#6366f1';\n"
         "}\n"
         "function escapeHtml(s) { return String(s).replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[ch])); }\n"
-        "function nodeSlug(id) { return String(id || '').replace(/^(skill|agent|mcp-server|harness):/, ''); }\n"
+        "function rawNodeSlug(id) { return String(id || '').replace(/^(skill|agent|mcp-server|harness):/, ''); }\n"
+        "function displaySlug(slug) { return String(slug || '').replace(/^skills-sh-/, ''); }\n"
+        "function nodeSlug(id) { return displaySlug(rawNodeSlug(id)); }\n"
         "function nodeDomId(id) { return 'graph-node-' + String(id || '').replace(/[^a-zA-Z0-9_-]/g, '_'); }\n"
         "function wikiHref(data) {\n"
         "  const nodeType = data.type || '';\n"
         "  const suffix = nodeType ? '?type=' + encodeURIComponent(nodeType) : '';\n"
-        "  return '/wiki/' + encodeURIComponent(nodeSlug(data.id)) + suffix;\n"
+        "  return '/wiki/' + encodeURIComponent(rawNodeSlug(data.id)) + suffix;\n"
         "}\n"
         "function renderFallback(g) {\n"
         "  const nodes = g.nodes || [];\n"
@@ -4282,7 +4313,8 @@ def _render_runtime_graph_entity(
         node_id,
         str(data.get("type") or normalized_type or "skill"),
     )
-    label = str(data.get("label") or resolved_slug)
+    label = _display_label(data.get("label"), fallback_slug=resolved_slug)
+    display_slug = _display_slug(resolved_slug)
     description = str(data.get("description") or "").strip()
     tags = [str(tag) for tag in data.get("tags", []) if str(tag).strip()][:12]
     sidecar = _load_sidecar(resolved_slug, entity_type=resolved_type)
@@ -4326,7 +4358,7 @@ def _render_runtime_graph_entity(
         + "</div>"
         "<div class='card'><strong>Runtime metadata</strong>"
         "<table class='frontmatter-table'><tr><th>Field</th><th>Value</th></tr>"
-        + _runtime_graph_metric_row("slug", resolved_slug)
+        + _runtime_graph_metric_row("slug", display_slug)
         + _runtime_graph_metric_row("type", resolved_type)
         + _runtime_graph_metric_row("node_id", node_id)
         + _runtime_graph_metric_row("quality_score", quality_score)
@@ -4403,6 +4435,7 @@ def _render_wiki_entity(
         )
     meta, md_body = _parse_frontmatter(raw)
     sidecar = _load_sidecar(slug, entity_type=entity_type)
+    display_slug = _display_slug(slug)
     type_suffix = (
         f"&amp;type={html.escape(entity_type)}"
         if entity_type in _DASHBOARD_ENTITY_TYPES
@@ -4457,7 +4490,7 @@ def _render_wiki_entity(
     subgraph_html = _render_entity_subgraph(slug, entity_type=entity_type)
     quality_html = _render_quality_drilldown(sidecar, embedded_quality_markdown)
     body = (
-        f"<h1>{html.escape(slug)}</h1>"
+        f"<h1>{html.escape(display_slug)}</h1>"
         + quality_summary_html
         + _render_entity_tabs(
             overview_html=overview_html,
@@ -4465,7 +4498,7 @@ def _render_wiki_entity(
             quality_html=quality_html,
         )
     )
-    return _layout(slug, body)
+    return _layout(display_slug, body)
 
 
 def _wiki_index_entries(
@@ -4473,8 +4506,8 @@ def _wiki_index_entries(
 ) -> list[dict]:
     """List every wiki entity page under ~/.claude/skill-wiki/entities/.
 
-    Returns ``{slug, type, tags, description}`` rows. The full Skills.sh
-    corpus is too large to render as one HTML page, so the dashboard samples
+    Returns ``{slug, type, tags, description}`` rows. The full skill inventory
+    is too large to render as one HTML page, so the dashboard samples
     a bounded number of pages per entity type.
     """
     base = _wiki_dir() / "entities"
@@ -4512,6 +4545,7 @@ def _wiki_index_entries(
             )
             out.append({
                 "slug": slug,
+                "display_slug": _display_slug(slug),
                 "type": entity_type,
                 "tags": all_tags[:6],
                 "search_tags": all_tags,
@@ -4543,6 +4577,7 @@ def _render_wiki_index() -> str:
     cards = "".join(
         "<a class='wiki-card' "
         f"data-slug='{html.escape(e['slug'])}' "
+        f"data-display-slug='{html.escape(e.get('display_slug') or e['slug'])}' "
         f"data-type='{html.escape(e['type'])}' "
         f"data-tags='{html.escape(' '.join(e.get('search_tags', e['tags'])).lower())}' "
         f"href='/wiki/{html.escape(e['slug'])}?type={html.escape(e['type'])}' "
@@ -4550,7 +4585,7 @@ def _render_wiki_index() -> str:
         "padding:0.6rem 0.8rem; text-decoration:none; color:inherit; "
         "display:flex; flex-direction:column; gap:0.25rem;'>"
         "<div style='display:flex; justify-content:space-between; align-items:center; gap:0.4rem;'>"
-        f"<code style='font-size:0.84rem;'>{html.escape(e['slug'])}</code>"
+        f"<code style='font-size:0.84rem;'>{html.escape(e.get('display_slug') or e['slug'])}</code>"
         + (f"<span class='pill grade-{html.escape(grade_by_key[(e['slug'], e['type'])])}'>"
            f"{html.escape(grade_by_key[(e['slug'], e['type'])])}</span>"
            if grade_by_key.get((e['slug'], e['type'])) else
@@ -4607,7 +4642,7 @@ def _render_wiki_index() -> str:
         "  const types = new Set(wActiveTypes());\n"
         "  let shown = 0;\n"
         "  wcards.forEach(c => {\n"
-        "    const hay = (c.dataset.slug + ' ' + (c.textContent||'') + ' ' + c.dataset.tags).toLowerCase();\n"
+        "    const hay = (c.dataset.slug + ' ' + c.dataset.displaySlug + ' ' + (c.textContent||'') + ' ' + c.dataset.tags).toLowerCase();\n"
         "    const ok = types.has(c.dataset.type) && (!q || hay.includes(q));\n"
         "    c.style.display = ok ? '' : 'none';\n"
         "    if (ok) shown++;\n"
@@ -5249,7 +5284,8 @@ def _render_manage(mutations_enabled: bool | None = None) -> str:
         "function escapeHtml(value) {\n"
         "  return String(value ?? '').replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[ch]));\n"
         "}\n"
-        "function entityLabel(row) { return row.type + ':' + row.slug; }\n"
+        "function displaySlug(slug) { return String(slug || '').replace(/^skills-sh-/, ''); }\n"
+        "function entityLabel(row) { return row.type + ':' + displaySlug(row.slug); }\n"
         "function setStatus(text) { editorStatus.textContent = text || ''; }\n"
         "function fillForm(detail) {\n"
         "  selected = {slug: detail.slug, type: detail.type};\n"
@@ -5266,7 +5302,7 @@ def _render_manage(mutations_enabled: bool | None = None) -> str:
         "function renderResults(rows) {\n"
         "  statusEl.textContent = rows.length + ' result' + (rows.length === 1 ? '' : 's');\n"
         "  if (!rows.length) { resultsEl.innerHTML = '<p class=\"muted\">No entities found.</p>'; return; }\n"
-        "  resultsEl.innerHTML = rows.map(row => '<button type=\"button\" class=\"manage-result\" data-slug=\"' + escapeHtml(row.slug) + '\" data-type=\"' + escapeHtml(row.type) + '\"><strong>' + escapeHtml(row.slug) + '</strong><span class=\"pill entity-type-' + escapeHtml(row.type) + '\">' + escapeHtml(row.type) + '</span><span class=\"muted\">' + escapeHtml(row.description || row.title || '') + '</span></button>').join('');\n"
+        "  resultsEl.innerHTML = rows.map(row => '<button type=\"button\" class=\"manage-result\" data-slug=\"' + escapeHtml(row.slug) + '\" data-type=\"' + escapeHtml(row.type) + '\"><strong>' + escapeHtml(row.display_slug || displaySlug(row.slug)) + '</strong><span class=\"pill entity-type-' + escapeHtml(row.type) + '\">' + escapeHtml(row.type) + '</span><span class=\"muted\">' + escapeHtml(row.description || row.title || '') + '</span></button>').join('');\n"
         "  document.querySelectorAll('.manage-result').forEach(btn => btn.addEventListener('click', async () => {\n"
         "    const slug = btn.dataset.slug; const type = btn.dataset.type;\n"
         "    const res = await fetch('/api/entity/' + encodeURIComponent(slug) + '.json?type=' + encodeURIComponent(type));\n"
@@ -5424,7 +5460,7 @@ def _render_harness_wizard() -> str:
             else "<span class='pill entity-type-harness'>harness</span>"
         )
         + "</div>"
-        f"<p class='muted' style='margin:0;'>{html.escape(row['description'] or 'No description in catalog.')}</p>"
+        f"<p class='muted' style='margin:0;'>{html.escape(row['description'] or 'No description available.')}</p>"
         + (
             "<div class='muted' style='font-size:0.78rem;'>"
             + " ".join(f"<code>{html.escape(tag)}</code>" for tag in row["tags"][:8])
@@ -5444,7 +5480,7 @@ def _render_harness_wizard() -> str:
     )
     if not harness_cards:
         harness_cards = (
-            "<p class='muted'>No harness catalog pages were found under "
+            "<p class='muted'>No harness pages were found under "
             "<code>~/.claude/skill-wiki/entities/harnesses/</code>. "
             "Use the no-fit PRD output below to build an attachable harness.</p>"
         )
@@ -5455,7 +5491,7 @@ def _render_harness_wizard() -> str:
         "<h1>Harness Setup</h1>"
         "<p class='muted'>For users running their own API or local model instead of Claude Code. "
         "Interview the model/runtime choice, generate a real ctx harness recommendation command, "
-        "then install a catalog harness or produce a no-fit PRD for a custom harness.</p></div>"
+        "then install a harness or produce a no-fit PRD for a custom harness.</p></div>"
         "<span class='pill entity-type-harness'>local/API model path</span>"
         "</div>"
         "<div class='setup-flow'>"
@@ -5803,7 +5839,7 @@ def _render_status() -> str:
         ("graph_delta_json", "graph-delta.json"),
         ("communities_json", "communities.json"),
         ("wiki_graph_tar", "wiki-graph.tar.gz"),
-        ("skills_sh_catalog", "skills-sh-catalog.json.gz"),
+        ("skills_sh_catalog", "skill-index.json.gz"),
     )
     artifact_rows = "".join(
         "<tr>"

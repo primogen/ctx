@@ -9,7 +9,7 @@ skills/agents/MCP recommendation layer can be used by that host.
 
 Every loaded skill, agent, and MCP server costs tokens, attention, and tool
 surface area. Most sessions need a small top-scored bundle from the 91K+ skills,
-460+ agents, and 10K+ MCP servers in the shipped graph, not the whole catalog.
+460+ agents, and 10K+ MCP servers in the shipped graph, not the whole inventory.
 Loading too much:
 
 - wastes context on irrelevant instructions,
@@ -47,5 +47,5 @@ confirmation UX, not in ranking logic.
   identify stack signals.
 - [Skill-stack matrix](../skill-stack-matrix.md) - stack-to-capability mapping
   used as scanner evidence.
-- [External catalog registry](../marketplace-registry.md) - external skills, GitHub,
-  MCP, harness, and local catalog sources plus update rules.
+- [Entity source registry](../marketplace-registry.md) - skill, GitHub,
+  MCP, harness, and local sources plus update rules.

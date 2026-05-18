@@ -11,21 +11,21 @@ Current snapshot:
 - **467 agent pages**
 - **10,787 MCP server pages**
 - **16 harness pages**
-- **89,465 hydrated external `SKILL.md` bodies**
-- **28,612 long external skill bodies converted through the micro-skill gate**
+- **89,465 hydrated `SKILL.md` bodies**
+- **28,612 long skill bodies converted through the micro-skill gate**
 
 The runtime recommendation paths use this graph in two ways:
 
 - Development recommendations return skills, agents, and MCP servers only.
-- Custom/API/local model onboarding recommends harnesses from the harness catalog using the higher harness fit floor in `src/config.json`.
+- Custom/API/local model onboarding recommends harnesses using the higher harness fit floor in `src/config.json`.
 
 ## Files
 
 | File | Contents |
 |---|---|
-| `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the external skill catalog, 16 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
-| `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, external catalogs, and Obsidian metadata |
-| External catalog gzip | Compressed external-source catalog for the 89,465 body-backed skill entries shipped in the wiki |
+| `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the skill index, 16 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
+| `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, skill indexes, and Obsidian metadata |
+| Skill catalog gzip | Compressed skill index for the 89,465 body-backed skill entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
 | `graphify-out/dashboard-neighborhoods.sqlite3` inside both tarballs | Compact top-neighbor index used by `ctx-monitor` so `/api/graph/<slug>.json` does not cold-parse the 604 MB NetworkX graph |
 | `viz-overview.html` | Plotly overview of the graph |
@@ -44,20 +44,20 @@ current tarball without an executable freshness check.
 `ctx-init --graph` installs `wiki-graph-runtime.tar.gz` by default. That is the
 right path for recommendations and first-time installs because it avoids
 expanding hundreds of thousands of markdown files while still shipping the
-harness catalog pages needed by `ctx-harness-install --dry-run`. Use
+harness pages needed by `ctx-harness-install --dry-run`. Use
 `ctx-init --graph --graph-install-mode full` or manual full extraction when you
 want local wiki browsing, Obsidian, or the converted skill body tree.
 
 ## What Is Inside `wiki-graph.tar.gz`
 
-- `entities/skills/` - all skill entity pages, including external-source pages
+- `entities/skills/` - all skill entity pages
 - `entities/agents/` - agent entity pages
 - `entities/mcp-servers/<shard>/` - sharded MCP server entity pages
 - `entities/harnesses/` - harness entity pages
-- `converted/` - installable skill bodies for curated and external-source skills
+- `converted/` - installable skill bodies
 - `converted-agents/` - mirrored agent bodies
 - `concepts/` - community concept pages
-- `external-catalogs/` - external skill catalog, summary, and coverage metadata
+- `external-catalogs/` - machine-readable skill index, summary, and coverage metadata
 - `graphify-out/graph.json` - NetworkX node-link graph
 - `graphify-out/graph-delta.json` - delta export for the latest graph generation
 - `graphify-out/graph-export-manifest.json` - export manifest tying graph, delta, communities, and report to one generation
@@ -197,7 +197,7 @@ python src/update_repo_stats.py --check
 
 `park` sets Git's local `skip-worktree` bit for the heavyweight generated
 archives: `graph/wiki-graph.tar.gz`, `graph/wiki-graph-runtime.tar.gz`, and
-the compressed external skill catalog. Keep them parked while graph/wiki generation,
+the compressed skill index. Keep them parked while graph/wiki generation,
 validation, dashboard smoke, and stats checks are still in progress. This
 prevents background Git integrations from repeatedly staging hundreds of
 megabytes through the Git LFS clean filter. When the release candidate is final,
@@ -214,13 +214,13 @@ If a local Git integration gets interrupted while artifacts are dirty,
 objects and prunable local LFS cache entries. It does not delete tracked graph
 files, rewrite history, or change the remote LFS store.
 
-For an external skill catalog/body refresh, update the existing shipped tarball
-through the release refresh path:
+For a bulk skill refresh, update the existing shipped tarball through the
+release refresh path:
 
 ```bash
 python src/import_skills_sh_catalog.py \
-  --from-catalog <external-skill-catalog.json.gz> \
-  --catalog-out <external-skill-catalog.json.gz> \
+  --from-catalog <skill-catalog.json.gz> \
+  --catalog-out <skill-catalog.json.gz> \
   --wiki-tar graph/wiki-graph.tar.gz \
   --update-wiki-tar
 ```
