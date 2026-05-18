@@ -4,10 +4,10 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![PyPI](https://img.shields.io/pypi/v/claude-ctx.svg)](https://pypi.org/project/claude-ctx/)
 [![Tests](https://img.shields.io/badge/Tests-3823_collected-brightgreen.svg)](#)
-[![Graph](https://img.shields.io/badge/Graph-102%2C717_nodes_/_2.9M_edges-red.svg)](graph/)
+[![Graph](https://img.shields.io/badge/Graph-102%2C720_nodes_/_2.9M_edges-red.svg)](graph/)
 [![Docs](https://img.shields.io/badge/docs-MkDocs_Material-blue.svg)](https://stevesolun.github.io/ctx/)
 
-ctx watches what you are building, walks a **102,717-node** graph, and
+ctx watches what you are building, walks a **102,720-node** graph, and
 recommends a small, top-scored bundle of skills, agents, and MCP servers for
 the current task. If you use your own local/API model instead of Claude Code,
 ctx has a separate harness catalog flow: tell it the model and goal, review the
