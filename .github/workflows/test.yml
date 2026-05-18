@@ -400,17 +400,17 @@ jobs:
             --min-edges 2000000 \
             --min-skills-sh-nodes 89000 \
             --min-semantic-edges 1000000 \
-            --expected-nodes 102717 \
-            --expected-edges 2911162 \
-            --expected-semantic-edges 1683182 \
-            --expected-harness-nodes 15 \
-            --expected-skills-sh-nodes 89463 \
-            --expected-skills-sh-catalog-entries 89463 \
-            --expected-skills-sh-converted 89463 \
-            --expected-skill-pages 91448 \
+            --expected-nodes 102720 \
+            --expected-edges 2911575 \
+            --expected-semantic-edges 1683163 \
+            --expected-harness-nodes 16 \
+            --expected-skills-sh-nodes 89471 \
+            --expected-skills-sh-catalog-entries 89465 \
+            --expected-skills-sh-converted 89465 \
+            --expected-skill-pages 91450 \
             --expected-agent-pages 467 \
             --expected-mcp-pages 10787 \
-            --expected-harness-pages 15 \
+            --expected-harness-pages 16 \
             --line-threshold 180 \
             --max-stage-lines 40
 
