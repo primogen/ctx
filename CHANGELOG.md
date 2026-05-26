@@ -7,6 +7,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.9] - 2026-05-26
+
+### Added
+
+- Imported the upstream browsing, code-review, presentation, book-to-skill,
+  DeerFlow, and agent-harness catalogs into the shipped LLM-wiki and
+  knowledge graph.
+- Added 190 harness catalog pages and refreshed the dashboard graph/runtime
+  archives with the current neighborhood SQLite index.
+
+### Changed
+
+- Updated graph artifact validation counts to 102,925 nodes, 2,913,930 edges,
+  91,463 skill pages, 467 agent pages, 10,788 MCP pages, and 207 harness
+  pages.
+- Repacked the full and runtime graph archives, updated graph download
+  checksums, and refreshed README/docs count references.
+
 ## [1.0.8] - 2026-05-15
 
 ### Fixed
@@ -1570,6 +1588,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.9]: https://github.com/stevesolun/ctx/releases/tag/v1.0.9
 [1.0.8]: https://github.com/stevesolun/ctx/releases/tag/v1.0.8
 [1.0.7]: https://github.com/stevesolun/ctx/releases/tag/v1.0.7
 [1.0.6]: https://github.com/stevesolun/ctx/releases/tag/v1.0.6
