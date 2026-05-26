@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,11 +30,12 @@ def test_overlay_entities_preserves_existing_graph_and_adds_selected_pages(tmp_p
     (source_wiki / "entities" / "skills").mkdir(parents=True)
     (source_wiki / "entities" / "harnesses").mkdir(parents=True)
     skills_root = tmp_path / "skills"
-    (skills_root / "new-skill").mkdir(parents=True)
+    (skills_root / "new-skill" / "references").mkdir(parents=True)
     (source_wiki / "entities" / "skills" / "new-skill.md").write_text("# New skill\n")
     (source_wiki / "entities" / "harnesses" / "new-harness.md").write_text("# Harness\n")
     body = skills_root / "new-skill" / "SKILL.md"
     body.write_text("# body\n", encoding="utf-8")
+    (skills_root / "new-skill" / "references" / "guide.md").write_text("# guide\n", encoding="utf-8")
     source_graph = {
         "graph": {"export_id": "source"},
         "nodes": [
@@ -104,4 +106,14 @@ def test_overlay_entities_preserves_existing_graph_and_adds_selected_pages(tmp_p
         assert tf.extractfile("./entities/skills/new-skill.md") is not None
         assert tf.extractfile("./entities/harnesses/new-harness.md") is not None
         assert tf.extractfile("./converted/new-skill/SKILL.md") is not None
+        assert tf.extractfile("./converted/new-skill/references/guide.md") is not None
+        index_member = tf.extractfile("./graphify-out/dashboard-neighborhoods.sqlite3")
+        assert index_member is not None
+        index_path = tmp_path / "dashboard-neighborhoods.sqlite3"
+        index_path.write_bytes(index_member.read())
+    with sqlite3.connect(index_path) as conn:
+        assert conn.execute(
+            "SELECT node_id FROM slug_index WHERE slug = ?",
+            ("new-skill",),
+        ).fetchone() == ("skill:new-skill",)
     assert json.loads(root_communities.read_text())["export_id"] == stats.export_id
