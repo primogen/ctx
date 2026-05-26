@@ -13,10 +13,10 @@ agents, and MCP servers.
 ## What's in it
 
 Authoritative numbers from the shipped tarball. The curated-core snapshot
-is **13,255 nodes** (1,985 curated skills + 467 agents + 10,787 MCP servers
-+ 16 harnesses). Harness pages under `entities/harnesses/` are ingested into
+is **13,460 nodes** (1,998 curated skills + 467 agents + 10,788 MCP servers
++ 207 harnesses). Harness pages under `entities/harnesses/` are ingested into
 local rebuilds and the separate harness recommendation path. The
-tarball also carries **91,450 skill pages**; **89,465**
+tarball also carries **91,463 skill pages**; **89,465**
 skill bodies are hydrated as installable `SKILL.md` files under
 `converted/`; the **28,612** entries over the configured line
 limit were converted to gated micro-skill orchestrators. Full original bodies
@@ -26,18 +26,18 @@ are omitted from the shipped tarball.
 
 | | Count |
 |---|---:|
-| Total nodes | **102,720** |
-| Curated core nodes | **13,255** (1,985 skills + 467 agents + 10,787 MCP servers + 16 harnesses) |
+| Total nodes | **102,925** |
+| Curated core nodes | **13,460** (1,998 skills + 467 agents + 10,788 MCP servers + 207 harnesses) |
 | Hydrated skill import nodes | **89,471** (89,465 are body-backed skill entries) |
-| Total edges | **2,911,575** |
-| Hydrated skill incident edges | **2,605,690** |
+| Total edges | **2,913,930** |
+| Hydrated skill incident edges | **2,605,721** |
 | Hydrated skill semantic incident edges | **1,500,648** |
 | Communities | **52** (Louvain) |
-| Edge sources (overlap-deduped) | semantic 1,683,163 - tag 895,399 - token 433,245 |
+| Edge sources (overlap-deduped) | semantic 1,683,163 - tag 897,754 - token 433,245 |
 | Cross-type edges (skill <-> agent) | ~67K |
 | Cross-type edges (skill <-> MCP) | ~41K |
 | Cross-type edges (agent <-> MCP) | ~223 |
-| Harness edges | **4,334** |
+| Harness edges | **6,571** |
 | Shipped skill index | **89,465** observed body-backed skill entries |
 
 ## Install
@@ -169,7 +169,7 @@ raw = json.loads(
 edges_key = "links" if "links" in raw else "edges"
 G = node_link_graph(raw, edges=edges_key)
 
-# 102,720 nodes, 2,911,575 edges
+# 102,925 nodes, 2,913,930 edges
 print(G.number_of_nodes(), G.number_of_edges())
 
 # Find entities related to 'fastapi-pro' by edge weight
@@ -334,6 +334,7 @@ next run rebuilds instead of trusting mixed graph files.
 | 2026-05-14 Matt Pocock upstream refresh | **2,911,126** | Pinned `mattpocock/skills` to `e74f0061bb67222181640effa98c675bdb2fdaa7`, removed three stale legacy alias skill pages/nodes (`mattpocock-domain-model`, `mattpocock-github-triage`, `mattpocock-triage-issue`), refreshed `mattpocock-grill-with-docs`, and pruned 94 incident edges plus stale wiki references. Current tar members: **598,189**. |
 | 2026-05-14 Mirage + CodeGraph first-class wiki pass | **2,911,162** | Added Mirage as a shipped harness wiki/runtime page, added the CodeGraph MCP markdown page and `codegraph-agentic-codebase-analysis` skill page/body to the full LLM-wiki, added the compact dashboard neighborhood index, regenerated graph preview HTML from the current export, and refreshed exact validation counts. Current tar members: **598,193**. |
 | 2026-05-18 repo refresh | **2,911,575** | Refreshed `addyosmani/agent-skills` and `bytedance/deer-flow` from current upstream SKILL.md bodies, added Addy Osmani's `doubt-driven-development` and `interview-me` skills, replaced DeerFlow's stale `vercel-deploy` entry with `vercel-deploy-claimable`, retained `Imbad0202/academic-research-skills` as existing non-commercial upstream content, and added DeerFlow as a first-class harness page/runtime page. Current tar members: **598,596**. |
+| 2026-05-26 upstream repo ingest | **2,913,930** | Added `browsing-skills/browsing-skills` as a root browser skill plus 11 site-specific browser skills, refreshed `awesome-skills/code-review-skill` into `code-review-excellence` with its reference pack, refreshed `book-to-skill` through the micro-skill gate, added Presenton as both a harness and MCP server, refreshed DeerFlow's harness page, imported 190 harness catalog pages from `Picrew/awesome-agent-harness`, regenerated dashboard sqlite and preview HTML from the current export, and refreshed exact validation counts. Current tar members: **598,951**. |
 
 The full audit history lives in `CHANGELOG.md`. The current build is
 fully reproducible from the wiki content.

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import tarfile
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from typing import Any
 
 from ctx.core.wiki.artifact_promotion import promote_staged_artifact
 from ctx.utils._fs_utils import atomic_write_text, reject_symlink_path
+from scripts.build_dashboard_graph_index import build_dashboard_index
 
 GRAPH_EXPORT_NAMES = {
     "graphify-out/graph.json",
@@ -27,6 +29,7 @@ GRAPH_EXPORT_NAMES = {
     "graphify-out/graph-report.md",
     "graphify-out/graph-export-manifest.json",
 }
+OVERLAY_GZIP_COMPRESSLEVEL = 3
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,7 @@ def overlay_entities(
     )
     replacements.update({
         "graphify-out/graph.json": _json_bytes(graph, compact=True),
+        "graphify-out/dashboard-neighborhoods.sqlite3": _dashboard_index_bytes(graph),
         "graphify-out/graph-delta.json": _json_bytes(
             _render_delta(graph, selected, export_id=export_id, generated=timestamp),
             compact=False,
@@ -213,10 +217,18 @@ def _collect_replacements(
         if page is not None and (not runtime or entity_type == "harness"):
             replacements[page.relative_to(source_wiki).as_posix()] = page.read_bytes()
         if not runtime and entity_type == "skill":
-            body = _skill_body(source_wiki, slug, skills_root=skills_root)
-            if body is not None:
-                replacements[f"converted/{slug}/SKILL.md"] = body.read_bytes()
+            replacements.update(_skill_replacements(source_wiki, slug, skills_root=skills_root))
     return replacements
+
+
+def _dashboard_index_bytes(graph: dict[str, Any]) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="ctx-overlay-index-") as tmp:
+        tmp_path = Path(tmp)
+        graph_path = tmp_path / "graph.json"
+        index_path = tmp_path / "dashboard-neighborhoods.sqlite3"
+        graph_path.write_bytes(_json_bytes(graph, compact=True))
+        build_dashboard_index(graph_path, index_path)
+        return index_path.read_bytes()
 
 
 def _entity_page(source_wiki: Path, entity_type: str, slug: str) -> Path | None:
@@ -238,7 +250,7 @@ def _entity_page(source_wiki: Path, entity_type: str, slug: str) -> Path | None:
     return None
 
 
-def _skill_body(source_wiki: Path, slug: str, *, skills_root: Path | None) -> Path | None:
+def _skill_replacements(source_wiki: Path, slug: str, *, skills_root: Path | None) -> dict[str, bytes]:
     root = skills_root or Path.home() / ".claude" / "skills"
     candidates = [
         source_wiki / "converted" / slug / "SKILL.md",
@@ -246,8 +258,13 @@ def _skill_body(source_wiki: Path, slug: str, *, skills_root: Path | None) -> Pa
     ]
     for candidate in candidates:
         if candidate.is_file():
-            return candidate
-    return None
+            skill_dir = candidate.parent
+            return {
+                f"converted/{slug}/{path.relative_to(skill_dir).as_posix()}": path.read_bytes()
+                for path in sorted(skill_dir.rglob("*"))
+                if path.is_file() and not path.name.endswith((".original", ".lock"))
+            }
+    return {}
 
 
 def _rewrite_tarball(tarball: Path, replacements: dict[str, bytes]) -> None:
@@ -255,7 +272,11 @@ def _rewrite_tarball(tarball: Path, replacements: dict[str, bytes]) -> None:
     staged = tarball.with_name(f"{tarball.name}.staged")
     reject_symlink_path(staged)
     skip_names = set(replacements)
-    with tarfile.open(tarball, "r:gz") as src, tarfile.open(staged, "w:gz") as dst:
+    with tarfile.open(tarball, "r:gz") as src, tarfile.open(
+        staged,
+        "w:gz",
+        compresslevel=OVERLAY_GZIP_COMPRESSLEVEL,
+    ) as dst:
         for member in src:
             safe_name = _safe_tar_name(member.name)
             if safe_name is None:
