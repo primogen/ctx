@@ -235,6 +235,65 @@ class TestLoadGraph:
         assert not G.has_edge("harness:mirage", "skill:A")
         assert G.has_edge("harness:mirage", "skill:B")
 
+    def test_entity_overlay_delete_tombstone_removes_stale_node(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        source = _build_simple_graph()
+        p = tmp_path / "graph.json"
+        p.write_text(json.dumps(_serialise_graph(source)), encoding="utf-8")
+        stale = {
+            "attach_key": "ann:v1:model:skill:deleted:old",
+            "replace_scope": "ann:v1:model:skill:deleted",
+            "nodes": [{"id": "skill:deleted", "type": "skill"}],
+            "edges": [{"source": "skill:deleted", "target": "skill:A", "weight": 0.4}],
+        }
+        tombstone = {
+            "action": "delete",
+            "node_id": "skill:deleted",
+            "source": "test",
+            "deleted_at": "2026-05-27T00:00:00Z",
+        }
+        (tmp_path / "entity-overlays.jsonl").write_text(
+            json.dumps(stale) + "\n" + json.dumps(tombstone) + "\n",
+            encoding="utf-8",
+        )
+
+        G = resolve_graph.load_graph(p)
+
+        assert "skill:deleted" not in G
+        assert G.graph["ctx_entity_overlay_nodes"] == 0
+        assert G.graph["ctx_entity_overlay_edges"] == 0
+
+    def test_entity_overlay_upsert_after_tombstone_is_active(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        source = _build_simple_graph()
+        p = tmp_path / "graph.json"
+        p.write_text(json.dumps(_serialise_graph(source)), encoding="utf-8")
+        tombstone = {
+            "action": "delete",
+            "node_id": "skill:deleted",
+            "source": "test",
+            "deleted_at": "2026-05-27T00:00:00Z",
+        }
+        fresh = {
+            "attach_key": "ann:v1:model:skill:deleted:new",
+            "replace_scope": "ann:v1:model:skill:deleted",
+            "nodes": [{"id": "skill:deleted", "type": "skill"}],
+            "edges": [{"source": "skill:deleted", "target": "skill:A", "weight": 0.4}],
+        }
+        (tmp_path / "entity-overlays.jsonl").write_text(
+            json.dumps(tombstone) + "\n" + json.dumps(fresh) + "\n",
+            encoding="utf-8",
+        )
+
+        G = resolve_graph.load_graph(p)
+
+        assert "skill:deleted" in G
+        assert G.has_edge("skill:deleted", "skill:A")
+
     def test_entity_overlay_does_not_lower_existing_edge(self, tmp_path: Path) -> None:
         source = _build_simple_graph()
         p = tmp_path / "graph.json"
