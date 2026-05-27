@@ -27,7 +27,7 @@ from intake_pipeline import IntakeRejected, check_intake, record_embedding
 from ctx.adapters.claude_code.install.install_utils import safe_copy_file
 from ctx.core.wiki.wiki_queue import enqueue_entity_upsert
 from ctx.core.wiki.wiki_sync import append_log, ensure_wiki, update_index
-from ctx.core.wiki.wiki_utils import validate_skill_name
+from ctx.core.wiki.wiki_utils import parse_frontmatter, validate_skill_name
 from ctx.utils._fs_utils import reject_symlink_path, safe_atomic_write_text
 
 TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -173,6 +173,50 @@ def write_entity_page(wiki_path: Path, name: str, content: str) -> bool:
 
 # ── Wikilink backfill ─────────────────────────────────────────────────────────
 
+def _tag_set_from_frontmatter(raw: object) -> set[str]:
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        values = raw.strip()
+        if values.startswith("[") and values.endswith("]"):
+            values = values[1:-1]
+        return {item.strip().strip("'\"") for item in values.split(",") if item.strip()}
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        return {str(item).strip().strip("'\"") for item in raw if str(item).strip()}
+    return {str(raw).strip().strip("'\"")} if str(raw).strip() else set()
+
+
+def _existing_skill_review_text(entity_page: Path, installed_path: Path) -> str:
+    if entity_page.exists():
+        existing = entity_page.read_text(encoding="utf-8", errors="replace")
+        if installed_path.exists():
+            installed = installed_path.read_text(encoding="utf-8", errors="replace")
+            existing += f"\n\n## Installed SKILL.md\n\n{installed}"
+        return existing
+    return installed_path.read_text(encoding="utf-8", errors="replace")
+
+
+def _proposed_skill_review_text(
+    *,
+    name: str,
+    tags: list[str],
+    line_count: int,
+    source_content: str,
+    installed_path: Path,
+    wiki_path: Path,
+) -> str:
+    page_content = build_entity_page(
+        name=name,
+        tags=tags,
+        line_count=line_count,
+        has_pipeline=line_count > cfg.line_threshold,
+        original_path=installed_path,
+        related=find_related_skills(wiki_path, name, tags),
+        scan_sources=detect_scan_sources(wiki_path, name),
+    )
+    return f"{page_content}\n\n## Proposed SKILL.md\n\n{source_content}"
+
+
 def find_related_skills(wiki_path: Path, name: str, tags: list[str]) -> list[str]:
     """Scan existing entity pages for skills that share at least one tag."""
     skills_dir = wiki_path / "entities" / "skills"
@@ -183,10 +227,7 @@ def find_related_skills(wiki_path: Path, name: str, tags: list[str]) -> list[str
         if page.stem == name:
             continue
         content = page.read_text(encoding="utf-8", errors="replace")
-        m = re.search(r"^tags:\s*\[([^\]]*)\]", content, re.MULTILINE)
-        if not m:
-            continue
-        page_tags = {t.strip() for t in m.group(1).split(",")}
+        page_tags = _tag_set_from_frontmatter(parse_frontmatter(content).get("tags"))
         if tag_set & page_tags:
             related.append(page.stem)
 
@@ -275,15 +316,21 @@ def add_skill(
         else entity_page if entity_page.exists() else None
     )
     has_existing = existing_path is not None
+    tags = infer_tags(name, content)
 
     if review_existing and has_existing and not update_existing:
-        assert existing_path is not None
-        existing_text = existing_path.read_text(encoding="utf-8", errors="replace")
         review = build_update_review(
             entity_type="skill",
             slug=name,
-            existing_text=existing_text,
-            proposed_text=content,
+            existing_text=_existing_skill_review_text(entity_page, installed_path),
+            proposed_text=_proposed_skill_review_text(
+                name=name,
+                tags=tags,
+                line_count=line_count,
+                source_content=content,
+                installed_path=installed_path,
+                wiki_path=wiki_path,
+            ),
         )
         return {
             "name": name,
@@ -302,8 +349,6 @@ def add_skill(
         decision = check_intake(content, "skills")
         if not decision.allow:
             raise IntakeRejected(decision)
-
-    tags = infer_tags(name, content)
 
     # 1. Install original into skills-dir (never modified after this)
     installed_path = install_skill(source_path, skills_dir, name)

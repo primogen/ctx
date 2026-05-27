@@ -117,6 +117,32 @@ def _write_catalog(graph_dir: Path, *, converted_path: str | None = None) -> Non
         json.dump(catalog, f)
 
 
+def _write_entity_overlay(graph_dir: Path) -> None:
+    payload = {
+        "overlay_id": "test-overlay",
+        "nodes": [
+            {
+                "id": "harness:langgraph",
+                "label": "langgraph",
+                "type": "harness",
+            }
+        ],
+        "edges": [
+            {
+                "source": "skill:skills-sh-example-skill",
+                "target": "harness:langgraph",
+                "weight": 0.5,
+                "final_weight": 0.5,
+                "similarity_score": 0.5,
+            }
+        ],
+    }
+    (graph_dir / "entity-overlays.jsonl").write_text(
+        json.dumps(payload) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _write_runtime_archive(
     graph_dir: Path,
     *,
@@ -194,6 +220,7 @@ def _write_archive(
     report_export_id: str | None = None,
     manifest_export_id: str | None = None,
 ) -> None:
+    _write_entity_overlay(graph_dir)
     communities_export_id = communities_export_id or graph_export_id
     report_export_id = report_export_id or graph_export_id
     manifest_export_id = manifest_export_id or graph_export_id
@@ -664,6 +691,38 @@ def test_validate_graph_artifacts_rejects_body_unavailable_catalog_records(
     _write_archive(tmp_path, include_converted=False)
 
     with pytest.raises(GraphArtifactError, match="body-unavailable records"):
+        validate_graph_artifacts(tmp_path)
+
+
+def test_validate_graph_artifacts_rejects_missing_entity_overlay(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    (tmp_path / "entity-overlays.jsonl").unlink()
+
+    with pytest.raises(GraphArtifactError, match="entity-overlays.jsonl"):
+        validate_graph_artifacts(tmp_path)
+
+
+def test_validate_graph_artifacts_rejects_invalid_entity_overlay(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    (tmp_path / "entity-overlays.jsonl").write_text(
+        json.dumps({
+            "overlay_id": "bad-overlay",
+            "nodes": [{"id": "skill:bad"}],
+            "edges": [{"source": "skill:bad", "target": "skill:other", "weight": 2}],
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(GraphArtifactError, match="weight must be 0..1"):
         validate_graph_artifacts(tmp_path)
 
 

@@ -10,6 +10,8 @@ DEFAULT_ARTIFACTS = (
     "graph/wiki-graph.tar.gz",
     "graph/wiki-graph-runtime.tar.gz",
     "graph/skills-sh-catalog.json.gz",
+    "graph/communities.json",
+    "graph/entity-overlays.jsonl",
 )
 
 STALE_GRAPH_PATTERNS = (

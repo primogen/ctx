@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -126,6 +127,54 @@ def _rewrite_frontmatter(page_text: str, new_fm: dict[str, Any]) -> str:
     body = body_match.group(1) if body_match else page_text
     fm_str = yaml.safe_dump(new_fm, default_flow_style=False, allow_unicode=True, sort_keys=False)
     return f"---\n{fm_str}---\n{body}"
+
+
+def _tuple_from_frontmatter(raw: object, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(raw, str):
+        return tuple(item.strip() for item in raw.split(",") if item.strip())
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        return tuple(str(item).strip() for item in raw if str(item).strip())
+    return fallback
+
+
+def _optional_text_from_frontmatter(raw: object, fallback: str | None) -> str | None:
+    if raw is None:
+        return fallback
+    text = str(raw).strip()
+    return text or fallback
+
+
+def _render_existing_update_page(
+    *,
+    existing_fm: dict[str, Any],
+    record: McpRecord,
+    merged_sources: list[str],
+    kept_description: str,
+) -> str:
+    updated_fm = {
+        **existing_fm,
+        "sources": merged_sources,
+        "description": kept_description,
+        "updated": TODAY,
+    }
+    render_record = replace(
+        record,
+        name=str(updated_fm.get("name") or record.name),
+        description=kept_description,
+        sources=tuple(merged_sources),
+        github_url=_optional_text_from_frontmatter(
+            updated_fm.get("github_url"), record.github_url
+        ),
+        homepage_url=_optional_text_from_frontmatter(
+            updated_fm.get("homepage_url"), record.homepage_url
+        ),
+        tags=_tuple_from_frontmatter(updated_fm.get("tags"), record.tags),
+        transports=_tuple_from_frontmatter(
+            updated_fm.get("transports"), record.transports
+        ),
+    )
+    rendered_text = generate_mcp_page(render_record)
+    return _rewrite_frontmatter(rendered_text, updated_fm)
 
 
 def _normalize_github_url(url: str | None) -> str | None:
@@ -333,13 +382,12 @@ def add_mcp(
     if is_new_page:
         final_text = generate_mcp_page(record)
     else:
-        updated_fm = {
-            **existing_fm,
-            "sources": merged_sources,
-            "description": kept_description,
-            "updated": TODAY,
-        }
-        final_text = _rewrite_frontmatter(existing_text, updated_fm)
+        final_text = _render_existing_update_page(
+            existing_fm=existing_fm,
+            record=record,
+            merged_sources=merged_sources,
+            kept_description=kept_description,
+        )
 
     if review_existing and not is_new_page and not update_existing:
         review = build_update_review(

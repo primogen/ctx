@@ -122,6 +122,61 @@ def _load_gzip_json(path: Path) -> dict[str, Any]:
     return data
 
 
+def _validate_root_entity_overlay(path: Path) -> None:
+    records = 0
+    for lineno, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise GraphArtifactError(
+                f"graph/entity-overlays.jsonl line {lineno} is invalid JSON: {exc}",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise GraphArtifactError(
+                f"graph/entity-overlays.jsonl line {lineno} must be a JSON object",
+            )
+        nodes = payload.get("nodes", [])
+        edges = payload.get("edges", [])
+        if not isinstance(nodes, list) or not isinstance(edges, list):
+            raise GraphArtifactError(
+                f"graph/entity-overlays.jsonl line {lineno} must contain nodes/edges lists",
+            )
+        for index, node in enumerate(nodes, 1):
+            if not isinstance(node, dict) or not isinstance(node.get("id"), str):
+                raise GraphArtifactError(
+                    f"graph/entity-overlays.jsonl line {lineno} node {index} "
+                    "must contain id",
+                )
+        for index, edge in enumerate(edges, 1):
+            if not isinstance(edge, dict):
+                raise GraphArtifactError(
+                    f"graph/entity-overlays.jsonl line {lineno} edge {index} "
+                    "must be an object",
+                )
+            if not isinstance(edge.get("source"), str) or not isinstance(
+                edge.get("target"), str
+            ):
+                raise GraphArtifactError(
+                    f"graph/entity-overlays.jsonl line {lineno} edge {index} "
+                    "must contain source/target",
+                )
+            for field in ("weight", "final_weight", "similarity_score"):
+                value = edge.get(field)
+                if value is not None and (
+                    not isinstance(value, int | float) or not 0 <= float(value) <= 1
+                ):
+                    raise GraphArtifactError(
+                        f"graph/entity-overlays.jsonl line {lineno} edge {index} "
+                        f"{field} must be 0..1",
+                    )
+        records += 1
+    if records == 0:
+        raise GraphArtifactError("graph/entity-overlays.jsonl has no overlay records")
+
+
 def _require_real_file(path: Path) -> None:
     if not path.is_file() or path.stat().st_size == 0:
         raise GraphArtifactError(f"missing or empty graph artifact: {path}")
@@ -355,7 +410,8 @@ def validate_graph_artifacts(
     runtime_tarball = graph_dir / "wiki-graph-runtime.tar.gz"
     catalog_path = graph_dir / "skills-sh-catalog.json.gz"
     communities_path = graph_dir / "communities.json"
-    for path in (tarball, runtime_tarball, catalog_path, communities_path):
+    overlay_path = graph_dir / "entity-overlays.jsonl"
+    for path in (tarball, runtime_tarball, catalog_path, communities_path, overlay_path):
         _require_real_file(path)
 
     expected_harnesses = DEFAULT_HARNESSES if expected_harnesses is None else expected_harnesses
@@ -363,6 +419,7 @@ def validate_graph_artifacts(
         runtime_tarball,
         expected_harnesses=expected_harnesses,
     )
+    _validate_root_entity_overlay(overlay_path)
     catalog = _load_gzip_json(catalog_path)
     root_communities = _load_json(communities_path)
     if not isinstance(root_communities, dict):

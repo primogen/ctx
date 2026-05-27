@@ -640,6 +640,36 @@ def test_runtime_graph_install_extracts_harness_pages_after_required_files(
     ).exists()
 
 
+def test_runtime_graph_install_preserves_existing_non_harness_entities(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    archive = _write_graph_archive(tmp_path)
+    claude = tmp_path / "home"
+    local_skill = claude / "skill-wiki" / "entities" / "skills" / "private.md"
+    local_agent = claude / "skill-wiki" / "entities" / "agents" / "private.md"
+    local_mcp = claude / "skill-wiki" / "entities" / "mcp-servers" / "p" / "private.md"
+    local_harness = claude / "skill-wiki" / "entities" / "harnesses" / "old.md"
+    for path in (local_skill, local_agent, local_mcp, local_harness):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {path.stem}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        ci,
+        "_find_local_graph_archive",
+        lambda _install_mode="runtime": archive,
+    )
+    monkeypatch.setattr(ci, "_verify_local_graph_archive", lambda *_a, **_k: None)
+    monkeypatch.setattr(ci, "_install_graph_entity_overlay", lambda *_a, **_k: None)
+
+    assert ci.build_graph(claude, force=True, install_mode="runtime") == 0
+
+    assert local_skill.is_file()
+    assert local_agent.is_file()
+    assert local_mcp.is_file()
+    assert not local_harness.exists()
+
+
 def test_graph_install_rejects_incomplete_archive(
     tmp_path: Path,
     monkeypatch,

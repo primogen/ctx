@@ -36,17 +36,58 @@ _LIST_EDGE_ATTRS = frozenset(
 def active_overlay_records(records: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     """Return deduped active records, superseding stale rows by scope."""
     by_attach_key: dict[str, Mapping[str, Any]] = {}
+    by_scope: dict[str, Mapping[str, Any]] = {}
     for index, record in enumerate(records):
         if record.get("superseded_at"):
             continue
+        node_id = _record_node_id(record)
+        if _is_delete_record(record):
+            if node_id:
+                by_attach_key = {
+                    key: value
+                    for key, value in by_attach_key.items()
+                    if _record_node_id(value) != node_id
+                }
+                by_scope = {
+                    key: value
+                    for key, value in by_scope.items()
+                    if _record_node_id(value) != node_id
+                }
+            continue
         attach_key = overlay_attach_key(record, fallback_index=index)
-        if attach_key not in by_attach_key:
-            by_attach_key[attach_key] = record
+        if attach_key in by_attach_key:
+            continue
+        by_attach_key[attach_key] = record
 
-    by_scope: dict[str, Mapping[str, Any]] = {}
-    for index, record in enumerate(by_attach_key.values()):
         by_scope[overlay_replace_scope(record, fallback_index=index)] = record
     return list(by_scope.values())
+
+
+def append_overlay_tombstone(path: Path, *, node_id: str, source: str) -> str:
+    """Append a delete tombstone so stale overlay nodes stay removed."""
+    if not node_id:
+        raise ValueError("node_id must be non-empty")
+    if not source:
+        raise ValueError("source must be non-empty")
+    with file_lock(path):
+        records = load_overlay_records(path)
+        if not records:
+            return "skipped"
+        records.append({
+            "action": "delete",
+            "node_id": node_id,
+            "source": source,
+            "deleted_at": _utc_now(),
+        })
+        write_overlay_records_atomic(path, records)
+        return "inserted"
+
+
+def _is_delete_record(record: Mapping[str, Any]) -> bool:
+    action = record.get("action")
+    if isinstance(action, str) and action.strip().lower() in {"delete", "tombstone"}:
+        return True
+    return bool(record.get("tombstone"))
 
 
 def overlay_attach_key(record: Mapping[str, Any], *, fallback_index: int = 0) -> str:

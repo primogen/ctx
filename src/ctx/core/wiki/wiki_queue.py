@@ -137,6 +137,7 @@ def enqueue_entity_upsert(
         payload=payload,
         idempotency_key=f"{ENTITY_UPSERT_JOB}:{entity_type}:{slug}:{content_hash}",
         content_hash=content_hash,
+        reuse_terminal=action != "delete",
         now=now,
     )
 

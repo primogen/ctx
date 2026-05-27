@@ -40,15 +40,21 @@ def test_graph_artifact_guard_parks_and_unparks_tracked_artifacts(
     _git(repo, "config", "user.name", "ctx test")
 
     artifact = graph / "wiki-graph.tar.gz"
+    overlay = graph / "entity-overlays.jsonl"
     artifact.write_bytes(b"fake graph artifact")
-    _git(repo, "add", "graph/wiki-graph.tar.gz")
+    overlay.write_text('{"nodes":[],"edges":[]}\n', encoding="utf-8")
+    _git(repo, "add", "graph/wiki-graph.tar.gz", "graph/entity-overlays.jsonl")
     _git(repo, "commit", "-m", "track graph artifact")
 
     assert guard.main(["--repo", str(repo), "park"]) == 0
     assert _git(repo, "ls-files", "-v", "graph/wiki-graph.tar.gz").startswith("S ")
+    assert _git(repo, "ls-files", "-v", "graph/entity-overlays.jsonl").startswith("S ")
 
     assert guard.main(["--repo", str(repo), "unpark"]) == 0
     assert not _git(repo, "ls-files", "-v", "graph/wiki-graph.tar.gz").startswith(
+        "S "
+    )
+    assert not _git(repo, "ls-files", "-v", "graph/entity-overlays.jsonl").startswith(
         "S "
     )
 

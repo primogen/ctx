@@ -7,7 +7,7 @@ Current snapshot:
 - **102,925 graph nodes**
 - **2,913,930 graph edges**
 - **52 Louvain communities**
-- **91,463 skill entity pages** with hydrated installable bodies
+- **91,463 skill entity pages**; **89,465** have hydrated installable bodies
 - **467 agent pages**
 - **10,788 MCP server pages**
 - **207 harness pages**
@@ -27,7 +27,8 @@ The runtime recommendation paths use this graph in two ways:
 | `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, skill indexes, and Obsidian metadata |
 | Skill catalog gzip | Compressed skill index for the 89,465 body-backed skill entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
-| `graphify-out/dashboard-neighborhoods.sqlite3` inside both tarballs | Compact top-neighbor index used by `ctx-monitor` so `/api/graph/<slug>.json` does not cold-parse the 604 MB NetworkX graph |
+| `entity-overlays.jsonl` | Release overlay for first-class entities added after the base graph export; installed beside `graphify-out/graph.json` by `ctx-init --graph` |
+| `graphify-out/dashboard-neighborhoods.sqlite3` inside both tarballs | Compact top-neighbor index used by `ctx-monitor` so `/api/graph/<slug>.json` does not cold-parse the 818 MiB graph JSON |
 | `viz-overview.html` | Plotly overview of the graph |
 | `viz-python.html` | Python-focused graph view |
 | `viz-security.html` | Security-focused graph view |

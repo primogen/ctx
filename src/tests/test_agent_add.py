@@ -75,7 +75,10 @@ def test_existing_agent_review_skips_without_mutating_files(
     )
     installed.write_text(existing_text, encoding="utf-8")
     entity = wiki / "entities" / "agents" / "reviewer-agent.md"
-    entity.write_text("# existing entity\n", encoding="utf-8")
+    entity.write_text(
+        agent_add.generate_agent_page("reviewer-agent", installed),
+        encoding="utf-8",
+    )
     entity_text = entity.read_text(encoding="utf-8")
     source.write_text(
         _agent_text(description="Short agent.", model="haiku"),
@@ -94,6 +97,8 @@ def test_existing_agent_review_skips_without_mutating_files(
     assert result["skipped"] is True
     assert result["update_required"] is True
     assert "Existing agent already exists: reviewer-agent" in result["update_review"]
+    assert "Changed frontmatter fields:" in result["update_review"]
+    assert "model" in result["update_review"]
     assert installed.read_text(encoding="utf-8") == existing_text
     assert entity.read_text(encoding="utf-8") == entity_text
     check.assert_not_called()

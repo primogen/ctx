@@ -12,6 +12,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
 
+from ctx.core.graph.entity_overlays import append_overlay_tombstone
 from ctx.core.graph.incremental_attach import attach_entity
 from ctx.core.wiki.artifact_promotion import promote_staged_artifact
 from ctx.core.wiki import wiki_queue
@@ -132,6 +133,11 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
 
     entity_path = _resolve_entity_path(wiki_path, _required_string(payload, "entity_path"))
     if action == "delete":
+        append_overlay_tombstone(
+            wiki_path / "graphify-out" / "entity-overlays.jsonl",
+            node_id=f"{entity_type}:{slug}",
+            source="entity-delete",
+        )
         wiki_queue.enqueue_maintenance_job(
             wiki_path,
             kind=wiki_queue.GRAPH_EXPORT_JOB,

@@ -257,6 +257,9 @@ _GRAPH_MANAGED_PATHS = (
     "versions-catalog.md",
     ".obsidian",
 )
+_GRAPH_RUNTIME_MANAGED_PATHS = tuple(
+    name for name in _GRAPH_MANAGED_PATHS if name != "entities"
+) + ("entities/harnesses",)
 _GRAPH_JSON_OUTLINE_BYTES = 1024 * 1024
 _GRAPH_INSTALL_MODES = ("runtime", "full")
 _GRAPH_RUNTIME_PREFIXES = ("graphify-out/", "external-catalogs/", "entities/harnesses/")
@@ -554,7 +557,7 @@ def _extract_graph_archive(
             install_mode=install_mode,
         )
         _validate_graph_install_tree(staging_dir)
-        _promote_graph_tree(staging_dir, target_dir)
+        _promote_graph_tree(staging_dir, target_dir, install_mode=install_mode)
 
 
 def _extract_graph_archive_to_dir(
@@ -712,10 +715,20 @@ def _read_json_file(path: Path) -> Any:
         return json.load(f)
 
 
-def _promote_graph_tree(staging_dir: Path, target_dir: Path) -> None:
+def _promote_graph_tree(
+    staging_dir: Path,
+    target_dir: Path,
+    *,
+    install_mode: str,
+) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     target_root = target_dir.resolve()
-    for name in _GRAPH_MANAGED_PATHS:
+    managed_paths = (
+        _GRAPH_MANAGED_PATHS
+        if install_mode == "full"
+        else _GRAPH_RUNTIME_MANAGED_PATHS
+    )
+    for name in managed_paths:
         source = staging_dir / name
         destination = target_dir / name
         _ensure_path_under_root(destination.parent, target_root)
@@ -860,6 +873,7 @@ _HARNESS_SOFT_REQUIREMENT_SIGNALS = frozenset({
     "linux",
     "mac",
     "macos",
+    "gpt",
     "mcp",
     "npm",
     "pytest",

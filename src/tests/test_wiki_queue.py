@@ -138,6 +138,41 @@ def test_enqueue_maintenance_job_rejects_unknown_kind(tmp_path: Path) -> None:
         )
 
 
+def test_delete_entity_upsert_requeues_after_terminal_completion(tmp_path: Path) -> None:
+    wiki = tmp_path / "wiki"
+    entity_path = wiki / "entities" / "skills" / "alpha.md"
+    db_path = wiki_queue.queue_db_path(wiki)
+
+    first = wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="alpha",
+        entity_path=entity_path,
+        content="",
+        action="delete",
+        source="test",
+        now=10.0,
+    )
+    leased = wiki_queue.lease_next(db_path, worker_id="worker-a", now=11.0)
+    assert leased is not None
+    wiki_queue.mark_succeeded(db_path, leased.id, worker_id="worker-a", now=12.0)
+
+    second = wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="alpha",
+        entity_path=entity_path,
+        content="",
+        action="delete",
+        source="test",
+        now=20.0,
+    )
+
+    assert second.id != first.id
+    assert second.status == wiki_queue.STATUS_PENDING
+    assert [job.id for job in wiki_queue.list_jobs(db_path)] == [first.id, second.id]
+
+
 def test_count_jobs_by_status_and_list_recent_jobs_are_bounded(tmp_path: Path) -> None:
     db_path = tmp_path / "wiki-queue.sqlite3"
     jobs = [
