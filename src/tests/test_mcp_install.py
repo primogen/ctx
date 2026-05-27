@@ -395,6 +395,38 @@ class TestInstallMcp:
             "two words",
         ]
 
+    @pytest.mark.parametrize("cmd", ["npx.cmd -y pkg", "python.exe server.py"])
+    def test_windows_wrapper_executables_are_allowlisted(
+        self,
+        wiki_dir: Path,
+        fake_claude: dict[str, Any],
+        isolated_manifest: Path,
+        cmd: str,
+    ) -> None:
+        _write_entity(wiki_dir, "srv", {"status": "cataloged"})
+
+        r = mcp_install.install_mcp("srv", wiki_dir=wiki_dir, command=cmd, auto=True)
+
+        assert r.status == "installed"
+
+    def test_windows_wrapper_still_rejects_code_execution_args(
+        self,
+        wiki_dir: Path,
+        fake_claude: dict[str, Any],
+        isolated_manifest: Path,
+    ) -> None:
+        _write_entity(wiki_dir, "srv", {"status": "cataloged"})
+
+        r = mcp_install.install_mcp(
+            "srv",
+            wiki_dir=wiki_dir,
+            command='python.exe -c "print(1)"',
+            auto=True,
+        )
+
+        assert r.status == "invalid-cmd"
+        assert fake_claude["calls"] == []
+
     # Strix vuln-0002 regression: even when the first token is allowlisted,
     # code-execution argument forms must be rejected. A tampered frontmatter
     # install_cmd could otherwise invoke arbitrary interpreter-controlled
@@ -450,6 +482,47 @@ class TestInstallMcp:
         assert r.status == "installed", (
             f"legitimate launcher {cmd!r} falsely rejected (msg={r.message})"
         )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "npx -y pkg GITHUB_TOKEN=ghp_supersecret123456789012345",
+            "npx -y pkg --api-key sk-supersecret123456789012345",
+            "npx -y pkg --client-secret=plain-secret-value",
+        ],
+    )
+    def test_install_cmd_rejects_inline_secret_arguments(
+        self,
+        wiki_dir: Path,
+        fake_claude: dict[str, Any],
+        isolated_manifest: Path,
+        cmd: str,
+    ) -> None:
+        _write_entity(wiki_dir, "srv", {"status": "cataloged"})
+
+        r = mcp_install.install_mcp("srv", wiki_dir=wiki_dir, command=cmd, auto=True)
+
+        assert r.status == "invalid-cmd"
+        assert "inline secret" in r.message
+        assert fake_claude["calls"] == []
+
+    def test_install_cmd_allows_secret_env_reference(
+        self,
+        wiki_dir: Path,
+        fake_claude: dict[str, Any],
+        isolated_manifest: Path,
+    ) -> None:
+        _write_entity(wiki_dir, "srv", {"status": "cataloged"})
+
+        r = mcp_install.install_mcp(
+            "srv",
+            wiki_dir=wiki_dir,
+            command="npx -y pkg --api-key $API_KEY",
+            auto=True,
+        )
+
+        assert r.status == "installed"
+        assert fake_claude["calls"]
 
     def test_empty_command_tokens_rejected(
         self, wiki_dir: Path, fake_claude: dict[str, Any], isolated_manifest: Path

@@ -26,6 +26,7 @@ import re
 import subprocess
 import sys
 import tarfile
+from collections.abc import Mapping
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -426,7 +427,11 @@ def format_edges(n: int) -> str:
     return str(n)
 
 
-def build_replacements(stats: dict, tests: int | None, converted: int | None) -> list[tuple[re.Pattern, str]]:
+def build_replacements(
+    stats: Mapping[str, int | None],
+    tests: int | None,
+    converted: int | None,
+) -> list[tuple[re.Pattern, str]]:
     """Return (regex, replacement) pairs for every stat."""
     reps: list[tuple[re.Pattern, str]] = []
 
@@ -521,9 +526,11 @@ def build_replacements(stats: dict, tests: int | None, converted: int | None) ->
                 f"**{n:,} entity pages** ({stats['skills']:,} skills + {stats['agents']:,} agents)",
             ))
 
-    if stats.get("skills_sh_entries") and stats.get("skills_sh_bodies"):
-        entries = int(stats["skills_sh_entries"])
-        bodies = int(stats["skills_sh_bodies"])
+    skills_sh_entries = stats.get("skills_sh_entries")
+    skills_sh_bodies = stats.get("skills_sh_bodies")
+    if skills_sh_entries is not None and skills_sh_bodies is not None:
+        entries = int(skills_sh_entries)
+        bodies = int(skills_sh_bodies)
         skill_pages = int(stats.get("skills") or entries)
         reps.append((
             re.compile(
@@ -571,13 +578,19 @@ def build_replacements(stats: dict, tests: int | None, converted: int | None) ->
     return reps
 
 
-def build_docs_replacements(tests: int | None) -> list[tuple[re.Pattern[str], str]]:
+def build_docs_replacements(
+    stats: Mapping[str, int | None],
+    tests: int | None,
+    converted: int | None,
+) -> list[tuple[re.Pattern[str], str]]:
+    reps = build_replacements(stats, tests, converted)
     if tests is None:
-        return []
-    return [(
+        return reps
+    reps.append((
         re.compile(r"[\d,]+\s+tests collected"),
         f"{tests:,} tests collected",
-    )]
+    ))
+    return reps
 
 
 def patch_readme(check_only: bool = False) -> int:
@@ -595,7 +608,7 @@ def patch_readme(check_only: bool = False) -> int:
             continue
         replacements = (
             build_replacements(stats, tests, converted)
-            if target == README else build_docs_replacements(tests)
+            if target == README else build_docs_replacements(stats, tests, converted)
         )
         original = target.read_text(encoding="utf-8")
         patched = original
