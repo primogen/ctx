@@ -6,10 +6,11 @@ Run by the pre-commit hook so README/docs badges and inline counts never drift
 from reality. Reads only committed files and a live pytest collection.
 
 Sources of truth:
-  - graph/communities.json      -> total_communities
-  - ~/.claude/skill-wiki/graphify-out/graph.json  -> nodes, edges, skill/agent counts
-  - ~/.claude/skill-wiki/entities/{skills,agents}/  -> fallback entity counts
-  - pytest --collect-only -q    -> collected test count
+  - graph/wiki-graph.tar.gz              -> graph/report/entity counts
+  - graph/wiki-graph-runtime.tar.gz      -> runtime graph/report counts
+  - graph/communities.json               -> current community export
+  - graph/skills-sh-catalog.json.gz      -> hydrated skill body counts
+  - pytest --collect-only -q             -> collected test count
 
 Usage:
   python src/update_repo_stats.py          # patch README/docs in place
@@ -523,6 +524,16 @@ def build_replacements(stats: dict, tests: int | None, converted: int | None) ->
     if stats.get("skills_sh_entries") and stats.get("skills_sh_bodies"):
         entries = int(stats["skills_sh_entries"])
         bodies = int(stats["skills_sh_bodies"])
+        skill_pages = int(stats.get("skills") or entries)
+        reps.append((
+            re.compile(
+                r"\*\*[\d,]+\s+(?:skills|skill entity pages)\*\*"
+                r"(?:,\s+with\s+\*\*[\d,]+\*\*)?\s+hydrated installable "
+                r"`SKILL\.md` bodies\."
+            ),
+            f"**{skill_pages:,} skill entity pages**, with **{bodies:,}** "
+            "hydrated installable `SKILL.md` bodies.",
+        ))
         reps.append((
             re.compile(
                 r"The shipped wiki includes [\d,]+(?: Skills\.sh)? entries, "

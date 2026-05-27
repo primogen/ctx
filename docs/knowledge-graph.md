@@ -28,7 +28,7 @@ are omitted from the shipped tarball.
 |---|---:|
 | Total nodes | **102,925** |
 | Curated core nodes | **13,460** (1,998 skills + 467 agents + 10,788 MCP servers + 207 harnesses) |
-| Hydrated skill import nodes | **89,471** (89,465 are body-backed skill entries) |
+| Body-backed skill nodes | **89,465** hydrated installable skill entries |
 | Total edges | **2,913,930** |
 | Hydrated skill incident edges | **2,605,721** |
 | Hydrated skill semantic incident edges | **1,500,648** |

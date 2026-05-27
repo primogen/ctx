@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![PyPI](https://img.shields.io/pypi/v/claude-ctx.svg)](https://pypi.org/project/claude-ctx/)
-[![Tests](https://img.shields.io/badge/Tests-3831_collected-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/Tests-3841_collected-brightgreen.svg)](#)
 [![Graph](https://img.shields.io/badge/Graph-102%2C925_nodes_/_2.9M_edges-red.svg)](graph/)
 [![Docs](https://img.shields.io/badge/docs-MkDocs_Material-blue.svg)](https://stevesolun.github.io/ctx/)
 [![Repo views](https://hits.sh/github.com/stevesolun/ctx.svg?label=repo%20views)](https://hits.sh/github.com/stevesolun/ctx/)
@@ -16,15 +16,15 @@ recommended harness, then install with dry-run/update/uninstall controls.
 
 Current shipped snapshot:
 
-- **91,463 skills** with hydrated installable `SKILL.md` bodies.
+- **91,463 skill entity pages**, with **89,465** hydrated installable `SKILL.md` bodies.
 - **467 agents**, **10,788 MCP servers**, and **207 harnesses**.
 - **2.9M graph edges** across semantic similarity, tags, slug tokens, source overlap, direct links, quality, usage, type affinity, and graph structure.
-- **89,465 hydrated `SKILL.md` bodies** in the shipped LLM-wiki; long entries are converted through the micro-skill gate instead of loading raw long prompts.
+- **28,612 long skill bodies** converted through the micro-skill gate instead of shipping raw long prompts.
 - Entity updates for skills, agents, MCPs, and harnesses print benefits/risks and skip replacement unless you explicitly approve the update.
 
 ## Why it exists
 
-- **Discovery** — with 91K+ skill nodes, 460+ agents, 10K+ MCP servers, and 207 harnesses, you can't possibly know which exist or which apply to your current work.
+- **Discovery** — with 91K+ skill pages, 460+ agents, 10K+ MCP servers, and 207 harnesses, you can't possibly know which exist or which apply to your current work.
 - **Context budget** — loading everything wastes tokens and degrades quality. You need the right 10–15 per session.
 - **Skill rot** — skills you installed months ago and never used are cluttering context. Stale ones should be flagged automatically.
 
