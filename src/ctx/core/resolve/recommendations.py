@@ -227,6 +227,9 @@ def query_to_tags(query: str) -> list[str]:
     tokens = re.findall(r"[A-Za-z0-9_/\-]+", query.lower())
     seen: dict[str, None] = {}
     for raw_token in tokens:
+        if "/" not in raw_token and _SLUG_TOKEN_RE.search(raw_token):
+            if len(raw_token) >= 3 and raw_token not in _TAG_STOPWORDS:
+                seen.setdefault(raw_token, None)
         for token in _slug_token_parts(raw_token):
             if len(token) < 3 or token in _TAG_STOPWORDS:
                 continue
