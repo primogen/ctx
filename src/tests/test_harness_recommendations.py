@@ -258,6 +258,7 @@ def test_ctx_init_keeps_domain_goal_strong_with_install_requirements(
     }
     assert "windows" not in results[0]["missing_signals"]
     assert "mcp" not in results[0]["missing_signals"]
+    assert "gpt" not in results[0]["missing_signals"]
     assert "gpt-5" not in results[0]["fit_signals"]
 
 

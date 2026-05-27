@@ -873,6 +873,7 @@ _HARNESS_SOFT_REQUIREMENT_SIGNALS = frozenset({
     "linux",
     "mac",
     "macos",
+    "gpt",
     "mcp",
     "npm",
     "pytest",
