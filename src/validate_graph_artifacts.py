@@ -48,6 +48,13 @@ _SKILL_BUNDLE_REF_RE = re.compile(
     r"""((?:references|reference|resources|scripts|assets)/[^\s`'"\])<>]+)""",
     re.IGNORECASE,
 )
+_SKILL_BUNDLE_REF_MARKERS = (
+    b"references/",
+    b"reference/",
+    b"resources/",
+    b"scripts/",
+    b"assets/",
+)
 _SEMANTIC_SIM_RE = re.compile(
     rb'"semantic_sim"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)',
 )
@@ -295,6 +302,9 @@ def _is_converted_skill_page(name: str) -> bool:
 
 
 def _iter_skill_bundle_refs(payload: bytes) -> list[str]:
+    lower_payload = payload.lower()
+    if not any(marker in lower_payload for marker in _SKILL_BUNDLE_REF_MARKERS):
+        return []
     text = payload.decode("utf-8", errors="replace")
     refs: set[str] = set()
     for match in _SKILL_BUNDLE_REF_RE.finditer(text):
@@ -512,6 +522,13 @@ def validate_graph_artifacts(
                 payload = f.read()
                 for ref in _iter_skill_bundle_refs(payload):
                     skill_bundle_refs.append((name, ref, _skill_bundle_target_name(name, ref)))
+                if deep and name.startswith("converted/skills-sh-"):
+                    lines = _count_lines(payload)
+                    if lines > line_threshold:
+                        raise GraphArtifactError(
+                            f"{member.name} has {lines} lines, above limit {line_threshold}",
+                        )
+                continue
             if member.isfile() and name == "graphify-out/graph.json":
                 f = tf.extractfile(member)
                 if f is None:
