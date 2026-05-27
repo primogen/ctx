@@ -159,6 +159,13 @@ class CtxCoreToolbox:
                                 "harness recommendations."
                             ),
                         },
+                        "use_semantic_query": {
+                            "type": "boolean",
+                            "description": (
+                                "Opt in to local embedding-based query scoring. "
+                                "Default false keeps recommendations latency-safe."
+                            ),
+                        },
                     },
                     "required": ["query"],
                 },
@@ -328,10 +335,9 @@ class CtxCoreToolbox:
 
         from ctx.core.resolve.recommendations import recommend_by_tags  # noqa: PLC0415
 
-        # Pass the original query through so the recommender can apply
-        # semantic-similarity scoring (in addition to tag/slug-token).
-        # Falls through silently if the embedding cache is missing.
-        self._refresh_semantic_cache_signature()
+        use_semantic_query = bool(args.get("use_semantic_query"))
+        if use_semantic_query:
+            self._refresh_semantic_cache_signature()
         raw = recommend_by_tags(
             graph,
             tags,
@@ -339,7 +345,7 @@ class CtxCoreToolbox:
             query=query,
             entity_types=("skill", "agent", "mcp-server"),
             min_normalized_score=cfg.recommendation_min_normalized_score,
-            use_semantic_query=True,
+            use_semantic_query=use_semantic_query,
         )
         results = [
             {

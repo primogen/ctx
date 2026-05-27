@@ -235,6 +235,24 @@ def test_query_to_tags_dedupes() -> None:
     assert query_to_tags("python python PYTHON") == ["python"]
 
 
+def test_query_to_tags_splits_repo_style_identifiers() -> None:
+    assert query_to_tags("awesome-skills/code-review-skill") == [
+        "awesome", "skills", "code", "review", "skill",
+    ]
+
+
+def test_repo_style_query_recommends_slug_token_match() -> None:
+    G = _build_graph([
+        ("code-review-excellence", ["review"]),
+        ("unrelated-skill", ["docs"]),
+    ])
+    tags = query_to_tags("awesome-skills/code-review-skill")
+
+    out = recommend_by_tags(G, tags, top_n=2)
+
+    assert out[0]["name"] == "code-review-excellence"
+
+
 # ── Semantic boost at query time ──────────────────────────────────────
 
 
