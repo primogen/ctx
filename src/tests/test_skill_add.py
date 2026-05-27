@@ -346,6 +346,25 @@ class TestFindRelatedSkills:
         related = find_related_skills(wiki, "new-skill", ["python"])
         assert "existing-skill" in related
 
+    def test_finds_skill_with_ctx_generated_block_list_tags(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        skills_dir = wiki / "entities" / "skills"
+        skills_dir.mkdir(parents=True)
+        content = build_entity_page(
+            name="generated-skill",
+            tags=["python", "testing"],
+            line_count=20,
+            has_pipeline=False,
+            original_path=tmp_path / "skills" / "generated-skill" / "SKILL.md",
+            related=[],
+            scan_sources=[],
+        )
+        (skills_dir / "generated-skill.md").write_text(content, encoding="utf-8")
+
+        related = find_related_skills(wiki, "new-skill", ["testing"])
+
+        assert "generated-skill" in related
+
     def test_excludes_self(self, tmp_path):
         wiki = tmp_path / "wiki"
         _make_entity_page(wiki, "my-skill", ["python"])
@@ -753,13 +772,24 @@ class TestAddSkill:
         )
         installed.write_text(existing_text, encoding="utf-8")
         entity = wiki / "entities" / "skills" / "myskill.md"
-        entity.write_text("# existing entity\n", encoding="utf-8")
+        entity.write_text(
+            build_entity_page(
+                name="myskill",
+                tags=["python"],
+                line_count=20,
+                has_pipeline=False,
+                original_path=installed,
+                related=[],
+                scan_sources=[],
+            ),
+            encoding="utf-8",
+        )
         entity_text = entity.read_text(encoding="utf-8")
         source = tmp_path / "SKILL.md"
         source.write_text(
             self._skill_text(
-                description="Short skill.",
-                tags=["python"],
+                description="Replacement skill with API support.",
+                tags=["python", "api"],
                 setup_commands=[],
             ),
             encoding="utf-8",
@@ -779,6 +809,8 @@ class TestAddSkill:
         assert result["skipped"] is True
         assert result["update_required"] is True
         assert "Existing skill already exists: myskill" in result["update_review"]
+        assert "Changed frontmatter fields: original_lines, tags" in result["update_review"]
+        assert "adds tag(s): api" in result["update_review"]
         assert installed.read_text(encoding="utf-8") == existing_text
         assert entity.read_text(encoding="utf-8") == entity_text
         _fake_intake.check_intake.assert_not_called()

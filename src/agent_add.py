@@ -62,6 +62,26 @@ def write_entity_page(wiki_path: Path, name: str, content: str) -> bool:
     return is_new
 
 
+def _existing_agent_review_text(entity_page: Path, installed_path: Path) -> str:
+    if entity_page.exists():
+        existing = entity_page.read_text(encoding="utf-8", errors="replace")
+        if installed_path.exists():
+            installed = installed_path.read_text(encoding="utf-8", errors="replace")
+            existing += f"\n\n## Installed agent definition\n\n{installed}"
+        return existing
+    return installed_path.read_text(encoding="utf-8", errors="replace")
+
+
+def _proposed_agent_review_text(
+    *,
+    name: str,
+    source_path: Path,
+    source_content: str,
+) -> str:
+    page_content = generate_agent_page(name, source_path)
+    return f"{page_content}\n\n## Proposed agent definition\n\n{source_content}"
+
+
 def add_agent(
     *,
     source_path: Path,
@@ -97,13 +117,15 @@ def add_agent(
     has_existing = existing_path is not None
 
     if review_existing and has_existing and not update_existing:
-        assert existing_path is not None
-        existing_text = existing_path.read_text(encoding="utf-8", errors="replace")
         review = build_update_review(
             entity_type="agent",
             slug=name,
-            existing_text=existing_text,
-            proposed_text=content,
+            existing_text=_existing_agent_review_text(entity_page, installed_path),
+            proposed_text=_proposed_agent_review_text(
+                name=name,
+                source_path=source_path,
+                source_content=content,
+            ),
         )
         return {
             "name": name,
