@@ -272,6 +272,8 @@ class TestAddMcpExistingReview:
         assert result["merged_sources"] == ["awesome-mcp", "pulsemcp"]
         assert fm["sources"] == ["awesome-mcp", "pulsemcp"]
         assert fm["description"] == record_b.description
+        assert record_b.description in text
+        assert "- pulsemcp" in text
 
 
 # ---------------------------------------------------------------------------
