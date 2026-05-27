@@ -119,14 +119,14 @@ class TestPickSource:
         assert skill_install._pick_source(d, "transformed") == (None, None)
 
 
-# ── _copy_references ─────────────────────────────────────────────────────────
+# ── _copy_bundle_files ───────────────────────────────────────────────────────
 
 
-class TestCopyReferences:
+class TestCopyBundleFiles:
     def test_no_references_dir(self, wiki_dir: Path, tmp_path: Path) -> None:
         d = wiki_dir / "converted" / "s"
         d.mkdir(parents=True)
-        assert skill_install._copy_references(d, tmp_path / "out") == 0
+        assert skill_install._copy_bundle_files(d, tmp_path / "out") == 0
 
     def test_copies_multiple_md_files(
         self, wiki_dir: Path, tmp_path: Path
@@ -135,7 +135,7 @@ class TestCopyReferences:
             wiki_dir, "s", refs=["one", "two", "three"],
         )
         dest = tmp_path / "dest"
-        n = skill_install._copy_references(src, dest)
+        n = skill_install._copy_bundle_files(src, dest)
         assert n == 3
         out = dest / "references"
         assert (out / "one.md").read_text(encoding="utf-8") == "ref one\n"
@@ -143,14 +143,30 @@ class TestCopyReferences:
             "one.md", "three.md", "two.md"
         ]
 
-    def test_skips_non_md_files(
+    def test_copies_nested_bundle_dirs(
         self, wiki_dir: Path, tmp_path: Path
     ) -> None:
-        d = _seed_skill(wiki_dir, "s", refs=["foo"])
-        (d / "references" / "ignore.txt").write_text("nope", encoding="utf-8")
+        d = _seed_skill(wiki_dir, "s")
+        (d / "resources").mkdir()
+        (d / "resources" / "implementation-playbook.md").write_text(
+            "patterns\n", encoding="utf-8",
+        )
+        (d / "scripts").mkdir()
+        (d / "scripts" / "review.py").write_text("print('ok')\n", encoding="utf-8")
+        (d / "assets" / "templates").mkdir(parents=True)
+        (d / "assets" / "templates" / "review.md").write_text(
+            "template\n", encoding="utf-8",
+        )
+        (d / "reference").mkdir()
+        (d / "reference" / "python.md").write_text("python\n", encoding="utf-8")
         dest = tmp_path / "dest"
-        n = skill_install._copy_references(d, dest)
-        assert n == 1
+        n = skill_install._copy_bundle_files(d, dest)
+
+        assert n == 4
+        assert (dest / "resources" / "implementation-playbook.md").is_file()
+        assert (dest / "scripts" / "review.py").is_file()
+        assert (dest / "assets" / "templates" / "review.md").is_file()
+        assert (dest / "reference" / "python.md").is_file()
 
 
 # ── install_skill ────────────────────────────────────────────────────────────
@@ -220,6 +236,44 @@ class TestInstallSkill:
         assert not (skills_dir / "s").exists()
         # Manifest untouched.
         assert install_utils.load_manifest()["load"] == []
+
+    def test_install_copies_resource_scripts_assets_and_singular_reference(
+        self,
+        wiki_dir: Path,
+        skills_dir: Path,
+        isolated_manifest: Path,
+    ) -> None:
+        converted = _seed_skill(wiki_dir, "code-review-excellence")
+        (converted / "resources").mkdir()
+        (converted / "resources" / "implementation-playbook.md").write_text(
+            "review playbook\n", encoding="utf-8",
+        )
+        (converted / "scripts").mkdir()
+        (converted / "scripts" / "pr-analyzer.py").write_text(
+            "print('review')\n", encoding="utf-8",
+        )
+        (converted / "assets").mkdir()
+        (converted / "assets" / "review-checklist.md").write_text(
+            "checklist\n", encoding="utf-8",
+        )
+        (converted / "reference").mkdir()
+        (converted / "reference" / "security-review-guide.md").write_text(
+            "security\n", encoding="utf-8",
+        )
+
+        r = skill_install.install_skill(
+            "code-review-excellence",
+            wiki_dir=wiki_dir,
+            skills_dir=skills_dir,
+        )
+
+        dest = skills_dir / "code-review-excellence"
+        assert r.status == "installed"
+        assert r.references_copied == 4
+        assert (dest / "resources" / "implementation-playbook.md").is_file()
+        assert (dest / "scripts" / "pr-analyzer.py").is_file()
+        assert (dest / "assets" / "review-checklist.md").is_file()
+        assert (dest / "reference" / "security-review-guide.md").is_file()
 
     def test_skipped_existing_reconciles_manifest(
         self,

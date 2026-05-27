@@ -140,20 +140,26 @@ def _ensure_micro_converted(
 # ── Copy logic ───────────────────────────────────────────────────────────────
 
 
-def _copy_references(src_dir: Path, dest_dir: Path) -> int:
-    """Copy every .md in ``src_dir/references/`` to ``dest_dir/references/``.
+_BUNDLE_DIR_NAMES = ("references", "reference", "resources", "scripts", "assets")
 
-    Returns the number of reference files copied. Skips silently when no
-    references dir exists in the wiki.
-    """
-    src_refs = src_dir / "references"
-    if not src_refs.is_dir():
-        return 0
-    dest_refs = dest_dir / "references"
+
+def _iter_bundle_files(src_dir: Path) -> list[tuple[Path, Path]]:
+    """Return ``(source, relative_destination)`` pairs for skill bundle files."""
+    files: list[tuple[Path, Path]] = []
+    for dirname in _BUNDLE_DIR_NAMES:
+        bundle_dir = src_dir / dirname
+        if not bundle_dir.is_dir():
+            continue
+        for source in sorted(path for path in bundle_dir.rglob("*") if path.is_file()):
+            files.append((source, source.relative_to(src_dir)))
+    return files
+
+
+def _copy_bundle_files(src_dir: Path, dest_dir: Path) -> int:
+    """Copy bundled references/resources/scripts/assets into an install dir."""
     copied = 0
-    for md_file in sorted(src_refs.glob("*.md")):
-        dest = dest_refs / md_file.name
-        safe_copy_file(md_file, dest, dest_root=dest_dir)
+    for source, relative in _iter_bundle_files(src_dir):
+        safe_copy_file(source, dest_dir / relative, dest_root=dest_dir)
         copied += 1
     return copied
 
@@ -174,7 +180,7 @@ def install_skill(
       1. Validated (slug passes ``validate_skill_name``).
       2. Sourced from the wiki (``converted/<slug>/SKILL.md``, with
          ``.original`` as fallback).
-      3. Copied to ``<skills_dir>/<slug>/SKILL.md`` plus any references.
+      3. Copied to ``<skills_dir>/<slug>/SKILL.md`` plus bundled resources.
       4. Mirrored into the skill manifest and the wiki entity's status
          frontmatter.
 
@@ -232,10 +238,7 @@ def install_skill(
         )
 
     if dry_run:
-        refs_count = 0
-        refs_dir = converted / "references"
-        if refs_dir.is_dir():
-            refs_count = sum(1 for _ in refs_dir.glob("*.md"))
+        refs_count = len(_iter_bundle_files(converted))
         message = "dry-run: no files written"
         try:
             if _line_count(source) > cfg.line_threshold:
@@ -262,7 +265,7 @@ def install_skill(
 
     try:
         safe_copy_file(source, dest, dest_root=skills_dir)
-        refs_copied = _copy_references(converted, dest_dir)
+        refs_copied = _copy_bundle_files(converted, dest_dir)
     except (OSError, ValueError) as exc:
         return InstallResult(
             slug=slug, status="failed", installed_path=None,
