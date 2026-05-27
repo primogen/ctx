@@ -208,6 +208,7 @@ def _write_archive(
     graph_dir: Path,
     *,
     include_converted: bool = True,
+    converted_skill_text: str = "# Example\n",
     include_original: bool = False,
     include_lock: bool = False,
     include_queue: bool = False,
@@ -287,7 +288,7 @@ def _write_archive(
         _add_text(tf, "./entities/skills/skills-sh-example-skill.md", "# Example\n")
         _add_text(tf, "./entities/harnesses/langgraph.md", "# LangGraph\n")
         if include_converted:
-            _add_text(tf, "./converted/skills-sh-example-skill/SKILL.md", "# Example\n")
+            _add_text(tf, "./converted/skills-sh-example-skill/SKILL.md", converted_skill_text)
             _add_text(tf, "./converted/skills-sh-example-skill/references/01-scope.md", "# Scope\n")
         if include_original:
             _add_text(tf, "./converted/skills-sh-example-skill/SKILL.md.original", "# Raw\n")
@@ -681,6 +682,26 @@ def test_validate_graph_artifacts_rejects_missing_converted_catalog_path(
 
     with pytest.raises(GraphArtifactError, match="missing converted Skills.sh body"):
         validate_graph_artifacts(tmp_path)
+
+
+def test_validate_graph_artifacts_rejects_missing_skill_bundle_reference(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    (tmp_path / "communities.json").write_text("{}", encoding="utf-8")
+    _write_archive(
+        tmp_path,
+        converted_skill_text=(
+            "# Example\n\n"
+            "Use `resources/implementation-playbook.md` for the implementation flow.\n"
+        ),
+    )
+
+    with pytest.raises(GraphArtifactError, match="missing bundled skill file"):
+        validate_graph_artifacts(tmp_path, expected_harnesses={"langgraph"})
 
 
 def test_validate_graph_artifacts_rejects_body_unavailable_catalog_records(

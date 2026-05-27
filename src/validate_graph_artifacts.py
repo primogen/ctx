@@ -43,6 +43,11 @@ _PREVIEW_EXPORT_ID_RE = re.compile(
     r'<meta\s+name=["\']ctx-graph-export-id["\']\s+content=["\']([^"\']+)["\']',
     re.IGNORECASE,
 )
+_SKILL_BUNDLE_REF_RE = re.compile(
+    r"""(?:^|[\s`'"\[(])(?:\./)?"""
+    r"""((?:references|reference|resources|scripts|assets)/[^\s`'"\])<>]+)""",
+    re.IGNORECASE,
+)
 _SEMANTIC_SIM_RE = re.compile(
     rb'"semantic_sim"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)',
 )
@@ -285,6 +290,26 @@ def _count_lines(payload: bytes) -> int:
     return len(payload.decode("utf-8", errors="replace").splitlines())
 
 
+def _is_converted_skill_page(name: str) -> bool:
+    return name.startswith("converted/") and name.endswith("/SKILL.md")
+
+
+def _iter_skill_bundle_refs(payload: bytes) -> list[str]:
+    text = payload.decode("utf-8", errors="replace")
+    refs: set[str] = set()
+    for match in _SKILL_BUNDLE_REF_RE.finditer(text):
+        ref = match.group(1).replace("\\", "/")
+        ref = ref.split("#", 1)[0].split("?", 1)[0].rstrip(".,;:")
+        parts = ref.split("/")
+        if ref and all(part not in ("", ".", "..") for part in parts):
+            refs.add(ref)
+    return sorted(refs)
+
+
+def _skill_bundle_target_name(skill_page: str, ref: str) -> str:
+    return f"{skill_page.rsplit('/', 1)[0]}/{ref}"
+
+
 def _scan_graph_json(stream: IO[bytes]) -> tuple[int, int, int, int, int, str | None]:
     nodes = edges = semantic_edges = skills_sh_nodes = harness_nodes = 0
     export_id: str | None = None
@@ -454,6 +479,7 @@ def validate_graph_artifacts(
     manifest: dict[str, Any] | None = None
     archive_communities: dict[str, Any] | None = None
     dashboard_index_path: Path | None = None
+    skill_bundle_refs: list[tuple[str, str, str]] = []
 
     with tarfile.open(tarball, "r:gz") as tf:
         for member in tf:
@@ -479,6 +505,13 @@ def validate_graph_artifacts(
                 harness_pages += 1
             if name.startswith("converted/skills-sh-") and name.endswith("/SKILL.md"):
                 skills_sh_converted += 1
+            if member.isfile() and _is_converted_skill_page(name):
+                f = tf.extractfile(member)
+                if f is None:
+                    raise GraphArtifactError(f"{member.name} could not be read")
+                payload = f.read()
+                for ref in _iter_skill_bundle_refs(payload):
+                    skill_bundle_refs.append((name, ref, _skill_bundle_target_name(name, ref)))
             if member.isfile() and name == "graphify-out/graph.json":
                 f = tf.extractfile(member)
                 if f is None:
@@ -534,6 +567,18 @@ def validate_graph_artifacts(
                         raise GraphArtifactError(
                             f"{member.name} has {lines} lines, above limit {limit}",
                         )
+
+    missing_bundle_refs = [
+        (skill_page, ref, target)
+        for skill_page, ref, target in skill_bundle_refs
+        if target not in names
+    ]
+    if missing_bundle_refs:
+        sample = "; ".join(
+            f"{skill_page} references {ref} but {target} is absent"
+            for skill_page, ref, target in missing_bundle_refs[:5]
+        )
+        raise GraphArtifactError(f"missing bundled skill file: {sample}")
 
     required_names = _GRAPH_RUNTIME_REQUIRED_NAMES
     missing_required = sorted(required_names - names)
