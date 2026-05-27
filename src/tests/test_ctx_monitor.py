@@ -1275,6 +1275,7 @@ def test_render_wiki_entity_falls_back_to_runtime_graph_metadata(
     assert "data-testid='runtime-entity-load'" in html_out
     assert "/api/load" in html_out
     assert "X-CTX-Monitor-Token" in html_out
+    assert "payload.detail || payload.msg || response.status" in html_out
 
 
 def test_render_runtime_harness_entity_shows_install_commands(
