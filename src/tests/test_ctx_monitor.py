@@ -29,6 +29,13 @@ def fake_claude(tmp_path: Path, monkeypatch) -> Path:
     (claude / "skill-quality").mkdir(parents=True)
     monkeypatch.setattr(cm, "_claude_dir", lambda: claude)
     monkeypatch.setattr(cm, "_dashboard_graph_index_archives", lambda: [])
+    monkeypatch.setattr(cm, "_SIDECAR_INDEX_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_SIDECAR_INDEX_CACHE_VALUE", None)
+    monkeypatch.setattr(cm, "_SIDECAR_FILTER_CACHE_SIGNATURE", None)
+    monkeypatch.setattr(cm, "_SIDECAR_FILTER_CACHE_VALUE", {})
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_AT", 0.0)
     return claude
 
 
@@ -300,7 +307,8 @@ def test_render_skills_includes_harness_filter_and_typed_links(fake_claude: Path
 
     html = cm._render_skills()
 
-    assert "class='type-filter' value='harness'" in html
+    assert "class='type-filter'" in html
+    assert "value='harness'" in html
     assert "/skill/langgraph?type=harness" in html
     assert "/wiki/langgraph?type=harness" in html
     assert "/graph?slug=langgraph&amp;type=harness" in html
@@ -2067,6 +2075,7 @@ def test_graph_neighborhood_extracts_missing_dashboard_index_from_archive(
         tar.add(seed, arcname="./graphify-out/dashboard-neighborhoods.sqlite3")
 
     monkeypatch.setattr(cm, "_dashboard_graph_index_archives", lambda: [archive])
+    monkeypatch.setattr(cm, "_packaged_graph_export_id", lambda: "archive-export")
     monkeypatch.setattr(
         cm,
         "_load_dashboard_graph",
@@ -2103,6 +2112,7 @@ def test_dashboard_index_extraction_skips_archive_export_mismatch(
         tar.add(seed, arcname="./graphify-out/dashboard-neighborhoods.sqlite3")
 
     monkeypatch.setattr(cm, "_dashboard_graph_index_archives", lambda: [archive])
+    monkeypatch.setattr(cm, "_packaged_graph_export_id", lambda: None)
     monkeypatch.setattr(
         cm,
         "_dashboard_index_matches_manifest",
@@ -2115,8 +2125,53 @@ def test_dashboard_index_extraction_skips_archive_export_mismatch(
     assert not (graph_dir / "dashboard-neighborhoods.sqlite3").exists()
 
 
-def test_dashboard_index_extraction_skips_installed_graph_report(
+def test_dashboard_index_extraction_skips_packaged_export_mismatch(
     fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True)
+    (graph_dir / "graph-export-manifest.json").write_text(
+        json.dumps({"version": 1, "export_id": "old-local-export"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cm, "_packaged_graph_export_id", lambda: "new-packaged-export")
+    monkeypatch.setattr(
+        cm,
+        "_dashboard_graph_index_archives",
+        lambda: (_ for _ in ()).throw(AssertionError("archive scan should be skipped")),
+    )
+
+    assert cm._ensure_dashboard_graph_index() is None
+
+
+def test_graph_neighborhood_skips_full_graph_on_packaged_export_mismatch(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True)
+    (graph_dir / "graph-export-manifest.json").write_text(
+        json.dumps({"version": 1, "export_id": "old-local-export"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cm, "_packaged_graph_export_id", lambda: "new-packaged-export")
+    monkeypatch.setattr(
+        cm,
+        "_load_dashboard_graph",
+        lambda: (_ for _ in ()).throw(AssertionError("full graph loaded")),
+    )
+
+    assert cm._graph_neighborhood("github", entity_type="mcp-server") == {
+        "nodes": [],
+        "edges": [],
+        "center": None,
+    }
+
+
+def test_dashboard_index_extraction_works_with_installed_graph_report(
+    fake_claude: Path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     graph_dir = fake_claude / "skill-wiki" / "graphify-out"
@@ -2129,13 +2184,27 @@ def test_dashboard_index_extraction_skips_installed_graph_report(
         "> Nodes: 12 | Edges: 34 | Communities: 2\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        cm,
-        "_dashboard_graph_index_archives",
-        lambda: (_ for _ in ()).throw(AssertionError("archive scan should be skipped")),
+    seed = tmp_path / "dashboard-neighborhoods.sqlite3"
+    conn = sqlite3.connect(seed)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO meta VALUES(?,?)", ("export_id", json.dumps("local-export")))
+        conn.commit()
+    finally:
+        conn.close()
+    archive_manifest = tmp_path / "graph-export-manifest.json"
+    archive_manifest.write_text(
+        json.dumps({"version": 1, "export_id": "local-export"}),
+        encoding="utf-8",
     )
+    archive = tmp_path / "wiki-graph-runtime.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(archive_manifest, arcname="./graphify-out/graph-export-manifest.json")
+        tar.add(seed, arcname="./graphify-out/dashboard-neighborhoods.sqlite3")
+    monkeypatch.setattr(cm, "_dashboard_graph_index_archives", lambda: [archive])
+    monkeypatch.setattr(cm, "_packaged_graph_export_id", lambda: "local-export")
 
-    assert cm._ensure_dashboard_graph_index() is None
+    assert cm._ensure_dashboard_graph_index() == graph_dir / "dashboard-neighborhoods.sqlite3"
 
 
 def test_graph_neighborhood_bypasses_archive_index_when_runtime_overlays_exist(
@@ -2193,6 +2262,7 @@ def test_graph_neighborhood_rejects_stale_dashboard_index(
 
     G = nx.Graph()
     G.add_node("skill:fallback", label="fallback", type="skill", tags=[])
+    monkeypatch.setattr(cm, "_packaged_graph_export_id", lambda: None)
     monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
 
     result = cm._graph_neighborhood("fallback", entity_type="skill")
@@ -2345,7 +2415,7 @@ def test_render_skills_emits_sidebar_filters(fake_claude: Path) -> None:
                                        "subject_type": "agent",
                                        "hard_floor": "intake_fail"})
     html_out = cm._render_skills()
-    # Sidebar must expose a text search + grade checkboxes + type checkboxes.
+    # Sidebar must expose text search plus grade/type filters.
     assert "id='skill-search'" in html_out
     assert "class='grade-filter'" in html_out
     assert "class='type-filter'" in html_out
@@ -2355,6 +2425,113 @@ def test_render_skills_emits_sidebar_filters(fake_claude: Path) -> None:
     assert ">sidecar</a>" in html_out
     assert ">wiki</a>" in html_out
     assert ">graph</a>" in html_out
+
+
+def test_render_skills_paginates_sidecar_page(fake_claude: Path) -> None:
+    for slug in ("a", "b", "c"):
+        _write_sidecar(fake_claude, slug, {
+            "slug": slug,
+            "grade": "A",
+            "raw_score": 0.9,
+            "subject_type": "skill",
+        })
+
+    html_out = cm._render_skills({"limit": "2"})
+
+    assert "Showing 1-2 of 3 sidecars" in html_out
+    assert "next</a>" in html_out
+    assert "a</code>" in html_out
+    assert "b</code>" in html_out
+    assert "c</code>" not in html_out
+
+
+def test_sidecar_page_payload_searches_full_catalog(fake_claude: Path) -> None:
+    for slug in ("alpha-review", "beta-build", "gamma-review"):
+        _write_sidecar(fake_claude, slug, {
+            "slug": slug,
+            "grade": "A",
+            "raw_score": 0.9,
+            "subject_type": "skill",
+        })
+
+    payload = cm._sidecar_page_payload({"q": "review", "limit": "1"})
+
+    assert payload["total"] == 2
+    assert payload["pages"] == 2
+    assert [item["slug"] for item in payload["items"]] == ["alpha-review"]
+
+
+def test_sidecar_page_payload_filters_type_grade_and_floor(fake_claude: Path) -> None:
+    _write_sidecar(fake_claude, "agent-a", {
+        "slug": "agent-a",
+        "grade": "A",
+        "raw_score": 0.9,
+        "subject_type": "agent",
+    })
+    _write_sidecar(fake_claude, "skill-a", {
+        "slug": "skill-a",
+        "grade": "A",
+        "raw_score": 0.9,
+        "subject_type": "skill",
+    })
+    _write_sidecar(fake_claude, "agent-floored", {
+        "slug": "agent-floored",
+        "grade": "A",
+        "raw_score": 0.9,
+        "subject_type": "agent",
+        "hard_floor": "intake_fail",
+    })
+
+    payload = cm._sidecar_page_payload({
+        "type": "agent",
+        "grade": "A",
+        "hide_floor": "1",
+    })
+
+    assert payload["total"] == 1
+    assert payload["items"][0]["slug"] == "agent-a"
+
+
+def test_sidecar_page_payload_reuses_cached_search_records(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for slug in ("alpha-review", "beta-review"):
+        _write_sidecar(fake_claude, slug, {
+            "slug": slug,
+            "grade": "A",
+            "raw_score": 0.9,
+            "subject_type": "skill",
+        })
+    original_read = cm._read_sidecar_file
+    reads = 0
+
+    def counting_read(path: Path) -> dict | None:
+        nonlocal reads
+        reads += 1
+        return original_read(path)
+
+    monkeypatch.setattr(cm, "_read_sidecar_file", counting_read)
+
+    first = cm._sidecar_page_payload({"q": "review"})
+    reads_after_first_search = reads
+    second = cm._sidecar_page_payload({"q": "review"})
+
+    assert [item["slug"] for item in first["items"]] == ["alpha-review", "beta-review"]
+    assert [item["slug"] for item in second["items"]] == ["alpha-review", "beta-review"]
+    assert reads_after_first_search == 2
+    assert reads == reads_after_first_search
+
+    _write_sidecar(fake_claude, "delta-review", {
+        "slug": "delta-review",
+        "grade": "A",
+        "raw_score": 0.8,
+        "subject_type": "skill",
+    })
+    refreshed = cm._sidecar_page_payload({"q": "delta"})
+
+    assert [item["slug"] for item in refreshed["items"]] == ["delta-review"]
+    assert reads > reads_after_first_search
 
 
 def test_render_wiki_index_lists_entities(fake_claude: Path) -> None:
@@ -2795,6 +2972,33 @@ def test_api_kpi_summary_shape(fake_claude: Path) -> None:
         assert key in d, f"missing {key}"
     assert d["total"] == 1
     assert d["grade_counts"].get("A", 0) == 1
+
+
+def test_kpi_summary_cache_reuses_recent_summary(
+    fake_claude: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kpi_dashboard as kd
+
+    _write_sidecar(fake_claude, "alpha", {
+        "slug": "alpha", "subject_type": "skill",
+        "grade": "A", "raw_score": 0.9, "score": 0.9,
+        "hard_floor": None, "computed_at": "2026-04-19T10:00:00+00:00",
+    })
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
+    real_generate = kd.generate
+    calls = 0
+
+    def wrapped_generate(*, sources, top_n=10, now=None):
+        nonlocal calls
+        calls += 1
+        return real_generate(sources=sources, top_n=top_n, now=now)
+
+    monkeypatch.setattr(kd, "generate", wrapped_generate)
+
+    assert cm._kpi_summary() is not None
+    assert cm._kpi_summary() is not None
+    assert calls == 1
 
 
 def test_layout_nav_includes_wiki_and_kpi() -> None:
