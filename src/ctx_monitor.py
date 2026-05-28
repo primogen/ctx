@@ -3256,15 +3256,6 @@ def _graph_neighborhood(
         )
         if indexed is not None:
             return indexed
-    manifest_export_id = _dashboard_graph_manifest_export_id()
-    packaged_export_id = _packaged_graph_export_id()
-    if (
-        not _dashboard_graph_index_path().is_file()
-        and manifest_export_id is not None
-        and packaged_export_id is not None
-        and manifest_export_id != packaged_export_id
-    ):
-        return {"nodes": [], "edges": [], "center": None}
     try:
         G = _load_dashboard_graph()
     except Exception:  # noqa: BLE001 — graph is advisory; blank on error

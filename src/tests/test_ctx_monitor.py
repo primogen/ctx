@@ -2145,10 +2145,12 @@ def test_dashboard_index_extraction_skips_packaged_export_mismatch(
     assert cm._ensure_dashboard_graph_index() is None
 
 
-def test_graph_neighborhood_skips_full_graph_on_packaged_export_mismatch(
+def test_graph_neighborhood_uses_local_graph_on_packaged_export_mismatch(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import networkx as nx
+
     graph_dir = fake_claude / "skill-wiki" / "graphify-out"
     graph_dir.mkdir(parents=True)
     (graph_dir / "graph-export-manifest.json").write_text(
@@ -2156,17 +2158,13 @@ def test_graph_neighborhood_skips_full_graph_on_packaged_export_mismatch(
         encoding="utf-8",
     )
     monkeypatch.setattr(cm, "_packaged_graph_export_id", lambda: "new-packaged-export")
-    monkeypatch.setattr(
-        cm,
-        "_load_dashboard_graph",
-        lambda: (_ for _ in ()).throw(AssertionError("full graph loaded")),
-    )
+    G = nx.Graph()
+    G.add_node("mcp-server:github", label="GitHub", type="mcp-server", tags=["git"])
+    monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
 
-    assert cm._graph_neighborhood("github", entity_type="mcp-server") == {
-        "nodes": [],
-        "edges": [],
-        "center": None,
-    }
+    result = cm._graph_neighborhood("github", entity_type="mcp-server")
+    assert result["center"] == "mcp-server:github"
+    assert result["nodes"][0]["data"]["type"] == "mcp-server"
 
 
 def test_dashboard_index_extraction_works_with_installed_graph_report(
@@ -3372,6 +3370,7 @@ def test_render_graph_landing_does_not_cold_load_graph_for_seed_chips(
         "available": True,
     })
     monkeypatch.setattr(cm, "_load_dashboard_graph", fake_load_graph)
+    monkeypatch.setattr(cm, "_top_degree_seeds_from_index", lambda _limit=18: [])
     monkeypatch.setattr(cm, "_GRAPH_CACHE_VALUE", None)
 
     html_out = cm._render_graph(None)
@@ -3394,6 +3393,7 @@ def test_render_graph_landing_hides_seeds_when_graph_absent(monkeypatch) -> None
     # braces in case a downstream path still routes through it.
     monkeypatch.setitem(sys.modules, "ctx.core.graph.resolve_graph", fake)
     monkeypatch.setitem(sys.modules, "resolve_graph", fake)
+    monkeypatch.setattr(cm, "_graph_stats", lambda: {"available": False})
     monkeypatch.setattr(cm, "_GRAPH_CACHE_VALUE", None)
     monkeypatch.setattr(cm, "_GRAPH_CACHE_KEY", None)
     html_out = cm._render_graph(None)

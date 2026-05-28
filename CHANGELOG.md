@@ -7,6 +7,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.11] - 2026-05-28
+
+### Fixed
+
+- Kept dashboard graph neighborhoods functional when a user's installed
+  local graph export is valid but older than the packaged runtime graph. The
+  monitor still refuses to extract a mismatched packaged SQLite index, but now
+  falls back to the local `graph.json` instead of showing an empty graph.
+
 ## [1.0.10] - 2026-05-28
 
 ### Fixed
@@ -1599,6 +1608,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.11]: https://github.com/stevesolun/ctx/releases/tag/v1.0.11
 [1.0.10]: https://github.com/stevesolun/ctx/releases/tag/v1.0.10
 [1.0.9]: https://github.com/stevesolun/ctx/releases/tag/v1.0.9
 [1.0.8]: https://github.com/stevesolun/ctx/releases/tag/v1.0.8
