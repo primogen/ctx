@@ -66,12 +66,14 @@ import os
 import re
 import secrets
 import sqlite3
+import socket
 import sys
 import tarfile
 import threading
 import time
 import zlib
 from collections import defaultdict, deque
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -97,6 +99,7 @@ _WIKI_INDEX_LIMIT_PER_TYPE = 500
 _GRAPH_REPORT_RE = re.compile(r"Nodes:\s*([\d,]+)\s*\|\s*Edges:\s*([\d,]+)")
 _MAX_POST_BODY_BYTES = 64 * 1024
 _DASHBOARD_INDEX_MEMBER = "graphify-out/dashboard-neighborhoods.sqlite3"
+_READ_TOKEN_COOKIE = "ctx_monitor_read_token"
 
 
 # ─── Data sources ────────────────────────────────────────────────────────────
@@ -130,6 +133,18 @@ def _origin_host_name(origin: str) -> str:
     if parsed.scheme not in {"http", "https"}:
         return ""
     return (parsed.hostname or "").rstrip(".").lower()
+
+
+def _read_token_cookie(cookie_header: str) -> str:
+    if not cookie_header:
+        return ""
+    try:
+        cookie = SimpleCookie()
+        cookie.load(cookie_header)
+    except CookieError:
+        return ""
+    morsel = cookie.get(_READ_TOKEN_COOKIE)
+    return morsel.value if morsel is not None else ""
 
 
 def _claude_dir() -> Path:
@@ -4997,7 +5012,7 @@ def _render_docs_markdown(markdown_text: str, page_anchor: str) -> str:
     try:
         import markdown as markdown_lib  # type: ignore[import-untyped]
 
-        return str(markdown_lib.markdown(
+        rendered = str(markdown_lib.markdown(
             markdown_text,
             extensions=[
                 "admonition",
@@ -5024,14 +5039,75 @@ def _render_docs_markdown(markdown_text: str, page_anchor: str) -> str:
             },
             output_format="html5",
         ))
+        return _sanitize_docs_html(rendered)
     except Exception:
         return _render_wiki_markdown(markdown_text)
+
+
+def _sanitize_docs_html(rendered_html: str) -> str:
+    """Remove active HTML from local docs before embedding in the dashboard."""
+    dangerous_blocks = (
+        "script",
+        "style",
+        "iframe",
+        "object",
+        "embed",
+        "form",
+        "textarea",
+        "select",
+    )
+    dangerous_tags = (
+        "base",
+        "button",
+        "input",
+        "link",
+        "meta",
+    )
+
+    def escape_match(match: re.Match[str]) -> str:
+        return html.escape(match.group(0))
+
+    for tag in dangerous_blocks:
+        rendered_html = re.sub(
+            rf"<\s*{tag}\b[^>]*>.*?<\s*/\s*{tag}\s*>",
+            escape_match,
+            rendered_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        rendered_html = re.sub(
+            rf"<\s*/?\s*{tag}\b[^>]*>",
+            escape_match,
+            rendered_html,
+            flags=re.IGNORECASE,
+        )
+    for tag in dangerous_tags:
+        rendered_html = re.sub(
+            rf"<\s*/?\s*{tag}\b[^>]*>",
+            escape_match,
+            rendered_html,
+            flags=re.IGNORECASE,
+        )
+
+    rendered_html = re.sub(
+        r"\s+on[a-zA-Z0-9_-]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)",
+        "",
+        rendered_html,
+        flags=re.IGNORECASE,
+    )
+    rendered_html = re.sub(
+        r"\s+(href|src)\s*=\s*([\"'])\s*(javascript:|data:text/html)",
+        r" \1=\2#",
+        rendered_html,
+        flags=re.IGNORECASE,
+    )
+    return rendered_html
 
 
 def _docs_search_text(entry: dict[str, str]) -> str:
     text = f"{entry['title']} {entry['path']} {entry['summary']} {entry['body']}"
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     text = re.sub(r"!!!\s+\w+(?:\s+\"[^\"]+\")?", " ", text)
+    text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"[*_`#>\[\]().!:-]+", " ", text)
     return re.sub(r"\s+", " ", text).strip().lower()
 
@@ -6436,13 +6512,23 @@ class _MonitorHandler(BaseHTTPRequestHandler):
         request_host = _request_host_name(self.headers.get("Host", ""))
         if self._mutations_enabled():
             return _host_allows_mutations(request_host)
-        token = self.headers.get("X-CTX-Monitor-Token") or qs.get("token", "")
+        token = (
+            self.headers.get("X-CTX-Monitor-Token")
+            or qs.get("token", "")
+            or _read_token_cookie(self.headers.get("Cookie", ""))
+        )
         return bool(_MONITOR_TOKEN) and secrets.compare_digest(token, _MONITOR_TOKEN)
 
     def _send_security_headers(self, *, html_response: bool = False) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
+        if getattr(self, "_ctx_set_read_cookie", False):
+            self.send_header(
+                "Set-Cookie",
+                f"{_READ_TOKEN_COOKIE}={_MONITOR_TOKEN}; Path=/; "
+                "HttpOnly; SameSite=Strict",
+            )
         if html_response:
             self.send_header(
                 "Content-Security-Policy",
@@ -6507,6 +6593,7 @@ class _MonitorHandler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             qs = {k: v[0] for k, v in parse_qs(raw_query).items()}
         try:
+            self._ctx_set_read_cookie = False
             read_authorized = getattr(self, "_read_authorized", lambda _qs: True)
             if not read_authorized(qs):
                 if path.startswith("/api/"):
@@ -6521,6 +6608,13 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                         "<p>monitor read token required on non-loopback bind</p>",
                     )
                 return
+            query_token = qs.get("token", "")
+            self._ctx_set_read_cookie = (
+                not self._mutations_enabled()
+                and bool(query_token)
+                and bool(_MONITOR_TOKEN)
+                and secrets.compare_digest(query_token, _MONITOR_TOKEN)
+            )
             if path == "/":
                 self._send_html(_render_home())
             elif path == "/sessions":
@@ -6858,16 +6952,16 @@ def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
     """Run the monitor. Blocks until Ctrl+C."""
     global _MONITOR_TOKEN
     server = _make_monitor_server(host, port)
-    _MONITOR_TOKEN = (
-        secrets.token_urlsafe(32)
-        if bool(getattr(server, "_ctx_mutations_enabled", False))
-        else ""
-    )
-    url = f"http://{host}:{port}/"
+    _MONITOR_TOKEN = secrets.token_urlsafe(32)
+    mutations_enabled = bool(getattr(server, "_ctx_mutations_enabled", False))
+    url = f"http://{_monitor_display_host(host)}:{port}/"
+    if not mutations_enabled:
+        url = f"{url}?token={_MONITOR_TOKEN}"
     print(f"ctx-monitor serving at {url}  (Ctrl+C to stop)", flush=True)
-    if not bool(getattr(server, "_ctx_mutations_enabled", False)):
+    if not mutations_enabled:
         print(
-            "ctx-monitor: non-loopback bind; load/unload mutations disabled",
+            "ctx-monitor: non-loopback bind; read token required and "
+            "load/unload mutations disabled",
             flush=True,
         )
     try:
@@ -6876,6 +6970,21 @@ def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
         print("ctx-monitor: shutdown", flush=True)
     finally:
         server.server_close()
+
+
+def _monitor_display_host(host: str) -> str:
+    """Return a URL host users can paste into a browser."""
+    if host in {"0.0.0.0", "::"}:
+        try:
+            candidate = socket.gethostbyname(socket.gethostname())
+        except OSError:
+            candidate = ""
+        if candidate and not candidate.startswith("127."):
+            return candidate
+        return "localhost"
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
 
 
 def main(argv: list[str] | None = None) -> int:

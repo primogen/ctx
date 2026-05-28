@@ -943,9 +943,11 @@ def test_monitor_non_loopback_bind_is_read_only(
         ) as response:
             loaded_html = response.read().decode("utf-8")
             csp = response.headers.get("Content-Security-Policy", "")
+            cookie = response.headers.get("Set-Cookie", "")
         assert "browser-token" not in loaded_html
         assert "Read-only mode" in loaded_html
         assert "script-src 'self' 'unsafe-inline'" in csp
+        assert "ctx_monitor_read_token=browser-token" in cookie
 
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(
@@ -955,6 +957,17 @@ def test_monitor_non_loopback_bind_is_read_only(
         assert excinfo.value.code == 403
         body = json.loads(excinfo.value.read().decode("utf-8"))
         assert "read token required" in body["detail"]
+
+        status, body = _get_raw(
+            port,
+            "/api/manifest.json",
+            headers={
+                "Host": f"127.0.0.1:{port}",
+                "Cookie": "ctx_monitor_read_token=browser-token",
+            },
+        )
+        assert status == 200
+        assert body["load"] == []
 
         status, body = _post_json(
             port,
@@ -969,6 +982,34 @@ def test_monitor_non_loopback_bind_is_read_only(
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_serve_generates_read_token_for_non_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeServer:
+        _ctx_mutations_enabled = False
+
+        def serve_forever(self) -> None:
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            return None
+
+    monkeypatch.setattr(cm, "_MONITOR_TOKEN", "")
+    monkeypatch.setattr(cm, "_make_monitor_server", lambda _host, _port: FakeServer())
+    monkeypatch.setattr(cm.secrets, "token_urlsafe", lambda _size: "lan-token")
+    monkeypatch.setattr(cm.socket, "gethostname", lambda: "devbox")
+    monkeypatch.setattr(cm.socket, "gethostbyname", lambda _name: "192.168.1.50")
+
+    cm.serve(host="0.0.0.0", port=8765)
+
+    assert cm._MONITOR_TOKEN == "lan-token"
+    out = capsys.readouterr().out
+    assert "http://192.168.1.50:8765/?token=lan-token" in out
+    assert "http://0.0.0.0:8765" not in out
+    assert "read token required" in out
 
 
 def test_host_allows_mutations_only_for_loopback() -> None:
@@ -2886,6 +2927,31 @@ def test_render_docs_lists_repo_docs(
     assert "id='docs-search'" in html_out
     assert "https://stevesolun.github.io/ctx/" in html_out
     assert "doc-card" not in html_out
+
+
+def test_render_docs_sanitizes_active_html(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "mkdocs.yml").write_text(
+        "site_name: ctx\nnav:\n  - Home: index.md\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "index.md").write_text(
+        "# Home\n\n"
+        "<script>alert('x')</script>\n\n"
+        "<a href=\"javascript:alert('x')\" onclick=\"alert('x')\">bad</a>\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cm, "_docs_roots", lambda: [tmp_path])
+
+    html_out = cm._render_docs()
+
+    assert "<script>alert('x')</script>" not in html_out
+    assert "&lt;script" in html_out
+    assert "onclick=" not in html_out
+    assert "href=\"javascript:" not in html_out
 
 
 def test_render_docs_falls_back_to_public_docs(
