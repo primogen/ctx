@@ -7,6 +7,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.10] - 2026-05-28
+
+### Fixed
+
+- Sped up dashboard-heavy routes by deferring expensive home/KPI work,
+  preserving the runtime graph fast path, and caching expensive KPI summaries.
+- Paginated the dashboard sidecar browser instead of rendering the full
+  sidecar catalog on `/skills`.
+- Added cached sidecar filtering for `/skills` and `/api/sidecars.json`, with
+  cache invalidation when the sidecar catalog changes.
+
 ## [1.0.9] - 2026-05-26
 
 ### Added
@@ -1588,6 +1599,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.10]: https://github.com/stevesolun/ctx/releases/tag/v1.0.10
 [1.0.9]: https://github.com/stevesolun/ctx/releases/tag/v1.0.9
 [1.0.8]: https://github.com/stevesolun/ctx/releases/tag/v1.0.8
 [1.0.7]: https://github.com/stevesolun/ctx/releases/tag/v1.0.7
