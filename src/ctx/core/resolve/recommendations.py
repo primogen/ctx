@@ -241,6 +241,53 @@ def _slug_token_parts(label: str) -> list[str]:
     return [tok for tok in _SLUG_TOKEN_RE.split(label.lower()) if tok]
 
 
+def _text_tokens(value: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", value.lower())
+
+
+def _explicit_entity_match_boost(
+    label: str,
+    node_id: Any,
+    node_data: dict[str, Any],
+    signals: list[str],
+    query: str | None,
+) -> float:
+    """Boost exact entity-name requests before broader tag matches."""
+    aliases = {
+        label,
+        _node_name(node_id),
+        str(node_data.get("name") or ""),
+    }
+    signal_slugs = {"-".join(_text_tokens(signal)) for signal in signals}
+    query_tokens = _text_tokens(query or " ".join(signals))
+    query_raw = (query or "").lower()
+    query_phrase = f" {' '.join(query_tokens)} " if query_tokens else ""
+
+    boost = 0.0
+    for alias in aliases:
+        alias_tokens = _text_tokens(alias)
+        if not alias_tokens:
+            continue
+        alias_slug = "-".join(alias_tokens)
+        alias_phrase = " ".join(alias_tokens)
+        is_single_token = len(alias_tokens) == 1
+        exact_single_query = is_single_token and (
+            signals == [alias_slug] or query_tokens == alias_tokens
+        )
+        if alias_slug in signal_slugs and (not is_single_token or exact_single_query):
+            boost = max(boost, 2000.0 + (25.0 * len(alias_tokens)))
+        if not is_single_token and alias_slug in query_raw:
+            boost = max(boost, 1000.0 + (25.0 * len(alias_tokens)))
+        if (
+            not is_single_token
+            and len(alias_tokens) <= 2
+            and query_phrase
+            and f" {alias_phrase} " in query_phrase
+        ):
+            boost = max(boost, 1000.0 + (25.0 * len(alias_tokens)))
+    return boost
+
+
 def recommend_by_tags(
     graph: Any,
     tags: list[str],
@@ -268,6 +315,9 @@ def recommend_by_tags(
       - **Tag overlap**: ``+10 × (1 + IDF(tag))`` per matching tag.
       - **Graph centrality**: ``+log(1 + degree)`` to break ties in
         favour of well-connected entities.
+      - **Explicit entity-name match**: a large boost when the query
+        names an entity exactly, either as a slug or a natural-language
+        phrase.
 
     The IDF multiplier on tag matches mirrors the slug-token pass —
     a rare tag like ``rust`` should weigh more than a common one
@@ -332,6 +382,14 @@ def recommend_by_tags(
         for tag in matching_tags:
             score += 10.0 * (1.0 + idf.get(tag, 0.0))
 
+        score += _explicit_entity_match_boost(
+            label,
+            node_id,
+            node_data,
+            signals,
+            query,
+        )
+
         # Semantic boost: cosine ∈ [0, 1] × weight. With weight=100
         # and a strong cosine of 0.7, this contributes 70 — roughly
         # the same magnitude as a single high-IDF slug-token hit.
@@ -376,6 +434,9 @@ def recommend_by_tags(
             "installs": _safe_int(node_data.get("installs")),
             "detail_url": node_data.get("detail_url"),
             "install_command": node_data.get("install_command"),
+            "category": node_data.get("category"),
+            "invoke_command": node_data.get("invoke_command"),
+            "security_review": node_data.get("security_review"),
         })
         if len(graph_results) >= top_n:
             break
@@ -527,6 +588,9 @@ def _recommend_external_catalog(
             "installs": _safe_int(skill.get("installs")),
             "detail_url": skill.get("detail_url"),
             "install_command": skill.get("install_command"),
+            "category": skill.get("category"),
+            "invoke_command": skill.get("invoke_command"),
+            "security_review": skill.get("security_review"),
         }
         for score, skill, matching in ranked
     ]
