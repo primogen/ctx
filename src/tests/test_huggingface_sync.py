@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import gzip
-import json
+import hashlib
 import sys
+import tarfile
 from pathlib import Path
+
+import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
@@ -401,6 +403,53 @@ def test_hf_graph_validation_rejects_stale_exact_counts(
         raise AssertionError("expected stale graph artifact rejection")
 
 
+def test_hf_export_requires_hydrated_artifacts_to_match_lfs_pointer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    graph_dir = repo / "graph"
+    graph_dir.mkdir()
+    _write_small_hydrated_artifacts(repo)
+    artifact = graph_dir / "wiki-graph.tar.gz"
+    expected = b"\x1f\x8bcurrent-full-graph"
+    artifact.write_bytes(expected)
+    expected_oid = hashlib.sha256(expected).hexdigest()
+    pointer = (
+        "version https://git-lfs.github.com/spec/v1\n"
+        f"oid sha256:{expected_oid}\n"
+        f"size {len(expected)}\n"
+    )
+
+    monkeypatch.setattr(
+        sync_huggingface,
+        "HYDRATED_ARTIFACT_MIN_BYTES",
+        _tiny_hydrated_min_bytes(),
+    )
+    def fake_git(_repo: Path, *_args: str) -> str:
+        if _args[-1] == "HEAD:graph/wiki-graph.tar.gz":
+            return pointer
+        raise sync_huggingface.subprocess.CalledProcessError(1, list(_args))
+
+    monkeypatch.setattr(sync_huggingface, "_git", fake_git)
+    monkeypatch.setattr(
+        sync_huggingface,
+        "_validate_graph_artifact_integrity",
+        lambda _repo: None,
+    )
+
+    sync_huggingface._assert_hydrated_artifacts(repo)
+
+    artifact.write_bytes(b"\x1f\x8bstale-full-graph")
+    try:
+        sync_huggingface._assert_hydrated_artifacts(repo)
+    except RuntimeError as exc:
+        assert "does not match HEAD LFS pointer" in str(exc)
+    else:
+        raise AssertionError("expected stale LFS asset rejection")
+
+
 def test_hf_export_rejects_corrupt_large_graph_artifact(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -410,18 +459,36 @@ def test_hf_export_rejects_corrupt_large_graph_artifact(
     graph_dir.mkdir()
     _write_small_hydrated_artifacts(repo)
     (graph_dir / "wiki-graph.tar.gz").write_bytes(b"\x1f\x8bnot-a-valid-tar")
-    with gzip.open(graph_dir / "skills-sh-catalog.json.gz", "wt", encoding="utf-8") as f:
-        json.dump({"skills": []}, f)
-    (graph_dir / "communities.json").write_text("{}", encoding="utf-8")
+
+    def fake_validator(graph_path: Path, **_kwargs: object) -> object:
+        try:
+            with tarfile.open(graph_path / "wiki-graph.tar.gz", "r:gz"):
+                return object()
+        except tarfile.TarError as exc:
+            raise ValueError(f"wiki-graph.tar.gz corrupt: {exc}") from exc
+
     monkeypatch.setattr(
         sync_huggingface,
         "HYDRATED_ARTIFACT_MIN_BYTES",
         _tiny_hydrated_min_bytes(),
+    )
+    monkeypatch.setattr(
+        sync_huggingface,
+        "_load_graph_artifact_validator",
+        lambda _repo: fake_validator,
+    )
+    monkeypatch.setattr(
+        sync_huggingface,
+        "_git",
+        lambda *_args: (_ for _ in ()).throw(
+            sync_huggingface.subprocess.CalledProcessError(1, list(_args))
+        ),
     )
 
     try:
         sync_huggingface._assert_hydrated_artifacts(repo)
     except RuntimeError as exc:
         assert "graph artifact integrity validation failed" in str(exc)
+        assert "wiki-graph.tar.gz" in str(exc)
     else:
         raise AssertionError("expected corrupt graph artifact rejection")
