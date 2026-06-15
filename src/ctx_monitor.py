@@ -104,6 +104,8 @@ _KPI_SUMMARY_CACHE_VALUE: Any | None = None
 _KPI_SUMMARY_CACHE_AT = 0.0
 _DOCS_RENDER_CACHE_KEY: tuple[Any, ...] | None = None
 _DOCS_RENDER_CACHE_VALUE: str | None = None
+_WIKI_RENDER_CACHE_KEY: tuple[Any, ...] | None = None
+_WIKI_RENDER_CACHE_VALUE: str | None = None
 _WIKI_INDEX_LIMIT_PER_TYPE = 500
 _SKILLS_PAGE_DEFAULT_LIMIT = 100
 _SKILLS_PAGE_MAX_LIMIT = 500
@@ -4804,6 +4806,74 @@ def _grade_from_quality_score(value: Any) -> str:
     return ""
 
 
+def _wiki_render_cache_key(
+    selected_type: str | None,
+    query: str,
+) -> tuple[Any, ...] | None:
+    index_path = _dashboard_graph_index_path()
+    if not index_path.is_file() or not _dashboard_index_matches_manifest(index_path):
+        return None
+    try:
+        index_stat = index_path.stat()
+        source_stat = Path(__file__).stat()
+    except OSError:
+        return None
+    try:
+        css_hash = hashlib.sha256(
+            _monitor_asset_text("monitor.css").encode("utf-8")
+        ).hexdigest()
+    except Exception:
+        css_hash = ""
+    return (
+        "wiki-index-v1",
+        selected_type or "",
+        query,
+        str(index_path.resolve()),
+        index_stat.st_mtime_ns,
+        index_stat.st_size,
+        _dashboard_graph_manifest_export_id() or "",
+        source_stat.st_mtime_ns,
+        source_stat.st_size,
+        css_hash,
+    )
+
+
+def _wiki_render_cache_token(cache_key: tuple[Any, ...]) -> str:
+    return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
+
+
+def _wiki_render_disk_cache_path() -> Path:
+    return _claude_dir() / ".ctx-monitor-wiki-cache.json"
+
+
+def _read_wiki_render_disk_cache(cache_token: str) -> str | None:
+    try:
+        data = json.loads(_wiki_render_disk_cache_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
+        return None
+    html_text = data.get("html")
+    return html_text if isinstance(html_text, str) else None
+
+
+def _write_wiki_render_disk_cache(cache_token: str, html_text: str) -> None:
+    try:
+        _atomic_write_text(
+            _wiki_render_disk_cache_path(),
+            json.dumps({
+                "schema_version": 1,
+                "cache_token": cache_token,
+                "html": html_text,
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, TypeError, ValueError):
+        return
+
+
 def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
     """Card grid of every wiki entity — search + type filter + sidecar grades."""
     selected_type = _normalize_dashboard_entity_type(entity_type) if entity_type else None
@@ -4813,6 +4883,19 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
             f"<div class='error'>Unsupported entity type: {html.escape(entity_type)}</div>",
         )
     initial_query = query.strip()
+    cache_key = _wiki_render_cache_key(selected_type, initial_query)
+    global _WIKI_RENDER_CACHE_KEY, _WIKI_RENDER_CACHE_VALUE
+    if cache_key is not None:
+        if _WIKI_RENDER_CACHE_KEY == cache_key and _WIKI_RENDER_CACHE_VALUE is not None:
+            return _WIKI_RENDER_CACHE_VALUE
+        cache_token = _wiki_render_cache_token(cache_key)
+        cached = _read_wiki_render_disk_cache(cache_token)
+        if cached is not None:
+            _WIKI_RENDER_CACHE_KEY = cache_key
+            _WIKI_RENDER_CACHE_VALUE = cached
+            return cached
+    else:
+        cache_token = ""
     entries = _wiki_index_entries()
     wstats = _wiki_stats()
     total_available = int(wstats.get("total") or len(entries))
@@ -4933,7 +5016,12 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
         "wApply();\n"
         "</script>"
     )
-    return _layout("Wiki", body)
+    html_out = _layout("Wiki", body)
+    if cache_key is not None:
+        _write_wiki_render_disk_cache(cache_token, html_out)
+        _WIKI_RENDER_CACHE_KEY = cache_key
+        _WIKI_RENDER_CACHE_VALUE = html_out
+    return html_out
 
 
 def _docs_roots() -> list[Path]:

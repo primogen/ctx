@@ -36,6 +36,10 @@ def fake_claude(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
     monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
     monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_AT", 0.0)
+    monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_VALUE", None)
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
     return claude
 
 
@@ -2852,6 +2856,17 @@ def test_wiki_index_entries_use_dashboard_index_without_markdown_pages(
     assert "href='/wiki/python-patterns?type=skill'" in html_out
     assert "Idiomatic Python patterns" in html_out
     assert "grade-A" in html_out
+    assert (fake_claude / ".ctx-monitor-wiki-cache.json").is_file()
+
+    monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_VALUE", None)
+
+    def fail_entry_rebuild(*args: object, **kwargs: object) -> object:
+        raise AssertionError("fresh process should read the rendered wiki cache")
+
+    monkeypatch.setattr(cm, "_wiki_index_entries", fail_entry_rebuild)
+
+    assert cm._render_wiki_index(query="python") == html_out
 
 
 def test_render_wiki_index_supports_type_query_and_autocomplete(fake_claude: Path) -> None:
