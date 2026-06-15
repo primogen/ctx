@@ -4838,40 +4838,61 @@ def _wiki_render_cache_key(
     )
 
 
-def _wiki_render_cache_token(cache_key: tuple[Any, ...]) -> str:
+def _disk_cache_token(cache_key: tuple[Any, ...]) -> str:
     return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
 
 
-def _wiki_render_disk_cache_path() -> Path:
-    return _claude_dir() / ".ctx-monitor-wiki-cache.json"
-
-
-def _read_wiki_render_disk_cache(cache_token: str) -> str | None:
+def _read_disk_cache_payload(path: Path, cache_token: str) -> dict[str, Any] | None:
     try:
-        data = json.loads(_wiki_render_disk_cache_path().read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict):
         return None
     if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
         return None
-    html_text = data.get("html")
-    return html_text if isinstance(html_text, str) else None
+    return data
 
 
-def _write_wiki_render_disk_cache(cache_token: str, html_text: str) -> None:
+def _write_disk_cache_payload(
+    path: Path,
+    cache_token: str,
+    payload: dict[str, Any],
+    *,
+    sort_keys: bool = False,
+) -> None:
     try:
         _atomic_write_text(
-            _wiki_render_disk_cache_path(),
-            json.dumps({
-                "schema_version": 1,
-                "cache_token": cache_token,
-                "html": html_text,
-            }, ensure_ascii=False) + "\n",
+            path,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "cache_token": cache_token,
+                    **payload,
+                },
+                ensure_ascii=False,
+                sort_keys=sort_keys,
+            ) + "\n",
             encoding="utf-8",
         )
     except (OSError, TypeError, ValueError):
         return
+
+
+def _read_html_disk_cache(path: Path, cache_token: str) -> str | None:
+    data = _read_disk_cache_payload(path, cache_token)
+    if data is None:
+        return None
+    html_text = data.get("html")
+    return html_text if isinstance(html_text, str) else None
+
+
+def _write_html_disk_cache(path: Path, cache_token: str, html_text: str) -> None:
+    _write_disk_cache_payload(path, cache_token, {"html": html_text})
+
+
+def _wiki_render_disk_cache_path() -> Path:
+    return _claude_dir() / ".ctx-monitor-wiki-cache.json"
 
 
 def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
@@ -4888,8 +4909,8 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
     if cache_key is not None:
         if _WIKI_RENDER_CACHE_KEY == cache_key and _WIKI_RENDER_CACHE_VALUE is not None:
             return _WIKI_RENDER_CACHE_VALUE
-        cache_token = _wiki_render_cache_token(cache_key)
-        cached = _read_wiki_render_disk_cache(cache_token)
+        cache_token = _disk_cache_token(cache_key)
+        cached = _read_html_disk_cache(_wiki_render_disk_cache_path(), cache_token)
         if cached is not None:
             _WIKI_RENDER_CACHE_KEY = cache_key
             _WIKI_RENDER_CACHE_VALUE = cached
@@ -5018,7 +5039,7 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
     )
     html_out = _layout("Wiki", body)
     if cache_key is not None:
-        _write_wiki_render_disk_cache(cache_token, html_out)
+        _write_html_disk_cache(_wiki_render_disk_cache_path(), cache_token, html_out)
         _WIKI_RENDER_CACHE_KEY = cache_key
         _WIKI_RENDER_CACHE_VALUE = html_out
     return html_out
@@ -5078,40 +5099,8 @@ def _docs_render_cache_key() -> tuple[Any, ...]:
     return tuple(parts)
 
 
-def _docs_render_cache_token(cache_key: tuple[Any, ...]) -> str:
-    return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
-
-
 def _docs_render_disk_cache_path() -> Path:
     return _claude_dir() / ".ctx-monitor-docs-cache.json"
-
-
-def _read_docs_render_disk_cache(cache_token: str) -> str | None:
-    try:
-        data = json.loads(_docs_render_disk_cache_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
-        return None
-    html_text = data.get("html")
-    return html_text if isinstance(html_text, str) else None
-
-
-def _write_docs_render_disk_cache(cache_token: str, html_text: str) -> None:
-    try:
-        _atomic_write_text(
-            _docs_render_disk_cache_path(),
-            json.dumps({
-                "schema_version": 1,
-                "cache_token": cache_token,
-                "html": html_text,
-            }, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-    except (OSError, TypeError, ValueError):
-        return
 
 
 def _doc_title(text: str, fallback: str) -> str:
@@ -5614,8 +5603,8 @@ def _render_docs() -> str:
     global _DOCS_RENDER_CACHE_KEY, _DOCS_RENDER_CACHE_VALUE
     if _DOCS_RENDER_CACHE_KEY == cache_key and _DOCS_RENDER_CACHE_VALUE is not None:
         return _DOCS_RENDER_CACHE_VALUE
-    cache_token = _docs_render_cache_token(cache_key)
-    cached = _read_docs_render_disk_cache(cache_token)
+    cache_token = _disk_cache_token(cache_key)
+    cached = _read_html_disk_cache(_docs_render_disk_cache_path(), cache_token)
     if cached is not None:
         _DOCS_RENDER_CACHE_KEY = cache_key
         _DOCS_RENDER_CACHE_VALUE = cached
@@ -5632,7 +5621,7 @@ def _render_docs() -> str:
             f"<a href='{public_docs_url}'>{public_docs_url}</a>.</p></div>"
         )
         html_out = _layout("Docs", body)
-        _write_docs_render_disk_cache(cache_token, html_out)
+        _write_html_disk_cache(_docs_render_disk_cache_path(), cache_token, html_out)
         _DOCS_RENDER_CACHE_KEY = cache_key
         _DOCS_RENDER_CACHE_VALUE = html_out
         return html_out
@@ -5697,7 +5686,7 @@ def _render_docs() -> str:
         + "</div>"
     )
     html_out = _layout("Docs", body)
-    _write_docs_render_disk_cache(cache_token, html_out)
+    _write_html_disk_cache(_docs_render_disk_cache_path(), cache_token, html_out)
     _DOCS_RENDER_CACHE_KEY = cache_key
     _DOCS_RENDER_CACHE_VALUE = html_out
     return html_out
@@ -6093,10 +6082,6 @@ def _kpi_summary_cache_key(sidecar_dir: Path) -> tuple[Any, ...]:
     return tuple(parts)
 
 
-def _kpi_summary_cache_token(cache_key: tuple[Any, ...]) -> str:
-    return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
-
-
 def _kpi_summary_disk_cache_path(sidecar_dir: Path) -> Path:
     return sidecar_dir / ".dashboard-kpi-summary.json"
 
@@ -6136,15 +6121,8 @@ def _read_kpi_summary_disk_cache(
     cache_token: str,
     summary_cls: Any,
 ) -> Any | None:
-    try:
-        data = json.loads(
-            _kpi_summary_disk_cache_path(sidecar_dir).read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
+    data = _read_disk_cache_payload(_kpi_summary_disk_cache_path(sidecar_dir), cache_token)
+    if data is None:
         return None
     return _dashboard_summary_from_dict(summary_cls, data.get("summary"))
 
@@ -6154,19 +6132,12 @@ def _write_kpi_summary_disk_cache(
     cache_token: str,
     summary: Any,
 ) -> None:
-    try:
-        payload = {
-            "schema_version": 1,
-            "cache_token": cache_token,
-            "summary": summary.to_dict(),
-        }
-        _atomic_write_text(
-            _kpi_summary_disk_cache_path(sidecar_dir),
-            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-    except (OSError, TypeError, ValueError):
-        return
+    _write_disk_cache_payload(
+        _kpi_summary_disk_cache_path(sidecar_dir),
+        cache_token,
+        {"summary": summary.to_dict()},
+        sort_keys=True,
+    )
 
 
 def _kpi_summary():
@@ -6193,7 +6164,7 @@ def _kpi_summary():
         and time.monotonic() - _KPI_SUMMARY_CACHE_AT < _KPI_SUMMARY_CACHE_SECONDS
     ):
         return _KPI_SUMMARY_CACHE_VALUE
-    cache_token = _kpi_summary_cache_token(cache_key)
+    cache_token = _disk_cache_token(cache_key)
     summary = _read_kpi_summary_disk_cache(sidecar_dir, cache_token, DashboardSummary)
     if summary is not None:
         _KPI_SUMMARY_CACHE_KEY = cache_key
