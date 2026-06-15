@@ -3321,6 +3321,81 @@ def test_kpi_summary_cache_reuses_recent_summary(
     assert calls == 1
 
 
+def test_kpi_summary_reuses_disk_cache_after_process_cache_reset(
+    fake_claude: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kpi_dashboard as kd
+
+    _write_sidecar(fake_claude, "alpha", {
+        "slug": "alpha", "subject_type": "skill",
+        "grade": "A", "raw_score": 0.9, "score": 0.9,
+        "hard_floor": None, "computed_at": "2026-04-19T10:00:00+00:00",
+    })
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
+
+    first = cm._kpi_summary()
+    assert first is not None
+    assert cm._kpi_summary_disk_cache_path(fake_claude / "skill-quality").is_file()
+
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
+
+    def fail_generate(*args: object, **kwargs: object) -> object:
+        raise AssertionError("fresh process should read the KPI disk cache")
+
+    monkeypatch.setattr(kd, "generate", fail_generate)
+
+    second = cm._kpi_summary()
+    assert second is not None
+    assert second.total == first.total
+    assert second.grade_counts == first.grade_counts
+
+
+def test_kpi_summary_disk_cache_invalidates_on_sidecar_rewrite(
+    fake_claude: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kpi_dashboard as kd
+
+    _write_sidecar(fake_claude, "alpha", {
+        "slug": "alpha", "subject_type": "skill",
+        "grade": "A", "raw_score": 0.9, "score": 0.9,
+        "hard_floor": None, "computed_at": "2026-04-19T10:00:00+00:00",
+    })
+    sidecar = fake_claude / "skill-quality" / "alpha.json"
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
+    assert cm._kpi_summary() is not None
+
+    sidecar.write_text(
+        json.dumps({
+            "slug": "alpha", "subject_type": "skill",
+            "grade": "F", "raw_score": 0.1, "score": 0.1,
+            "hard_floor": None,
+            "computed_at": "2026-04-19T10:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+    os.utime(sidecar, (time.time() + 2.0, time.time() + 2.0))
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
+
+    real_generate = kd.generate
+    calls = 0
+
+    def wrapped_generate(*, sources, top_n=10, now=None):
+        nonlocal calls
+        calls += 1
+        return real_generate(sources=sources, top_n=top_n, now=now)
+
+    monkeypatch.setattr(kd, "generate", wrapped_generate)
+
+    summary = cm._kpi_summary()
+    assert summary is not None
+    assert summary.grade_counts.get("F") == 1
+    assert calls == 1
+
+
 def test_layout_nav_includes_wiki_and_kpi() -> None:
     """Every rendered page must include the new Wiki + KPI tabs in the
     top nav — the user explicitly asked for them to be accessible."""

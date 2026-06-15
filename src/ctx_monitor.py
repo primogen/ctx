@@ -5771,14 +5771,121 @@ def _render_harness_wizard() -> str:
 
 
 def _kpi_summary_cache_key(sidecar_dir: Path) -> tuple[Any, ...]:
-    parts: list[Any] = []
-    for path in (sidecar_dir, sidecar_dir / "mcp"):
+    parts: list[tuple[str, str, int, int, int, int]] = []
+    for root in (sidecar_dir, sidecar_dir / "mcp"):
         try:
-            stat = path.stat()
-            parts.extend((path.resolve(), stat.st_mtime_ns, stat.st_size))
+            root_name = str(root.resolve())
         except OSError:
-            parts.extend((path.resolve(), None, None))
+            root_name = str(root)
+        buckets = {
+            "quality": [0, 0, 0, 0],
+            "lifecycle": [0, 0, 0, 0],
+        }
+        try:
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    name = entry.name
+                    if (
+                        name.startswith(".")
+                        or not name.endswith(".json")
+                        or not entry.is_file(follow_symlinks=False)
+                    ):
+                        continue
+                    bucket = (
+                        "lifecycle"
+                        if name.endswith(".lifecycle.json")
+                        else "quality"
+                    )
+                    try:
+                        stat = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    data = buckets[bucket]
+                    data[0] += 1
+                    data[1] += int(stat.st_size)
+                    data[2] = max(data[2], int(stat.st_mtime_ns))
+                    data[3] = (data[3] + int(stat.st_mtime_ns)) & ((1 << 63) - 1)
+        except OSError:
+            pass
+        for bucket, values in buckets.items():
+            parts.append((root_name, bucket, values[0], values[1], values[2], values[3]))
     return tuple(parts)
+
+
+def _kpi_summary_cache_token(cache_key: tuple[Any, ...]) -> str:
+    return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
+
+
+def _kpi_summary_disk_cache_path(sidecar_dir: Path) -> Path:
+    return sidecar_dir / ".dashboard-kpi-summary.json"
+
+
+def _dashboard_summary_from_dict(summary_cls: Any, data: Any) -> Any | None:
+    if not isinstance(data, dict):
+        return None
+
+    def dict_field(name: str) -> dict[str, Any]:
+        value = data.get(name)
+        return dict(value) if isinstance(value, dict) else {}
+
+    def list_field(name: str) -> list[dict[str, Any]]:
+        value = data.get(name)
+        if not isinstance(value, list):
+            return []
+        return [dict(item) for item in value if isinstance(item, dict)]
+
+    try:
+        return summary_cls(
+            generated_at=str(data.get("generated_at") or ""),
+            total=int(data.get("total") or 0),
+            by_subject=dict_field("by_subject"),
+            grade_counts=dict_field("grade_counts"),
+            lifecycle_counts=dict_field("lifecycle_counts"),
+            category_breakdown=list_field("category_breakdown"),
+            hard_floor_counts=dict_field("hard_floor_counts"),
+            low_quality_candidates=list_field("low_quality_candidates"),
+            archived=list_field("archived"),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_kpi_summary_disk_cache(
+    sidecar_dir: Path,
+    cache_token: str,
+    summary_cls: Any,
+) -> Any | None:
+    try:
+        data = json.loads(
+            _kpi_summary_disk_cache_path(sidecar_dir).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
+        return None
+    return _dashboard_summary_from_dict(summary_cls, data.get("summary"))
+
+
+def _write_kpi_summary_disk_cache(
+    sidecar_dir: Path,
+    cache_token: str,
+    summary: Any,
+) -> None:
+    try:
+        payload = {
+            "schema_version": 1,
+            "cache_token": cache_token,
+            "summary": summary.to_dict(),
+        }
+        _atomic_write_text(
+            _kpi_summary_disk_cache_path(sidecar_dir),
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, TypeError, ValueError):
+        return
 
 
 def _kpi_summary():
@@ -5789,6 +5896,7 @@ def _kpi_summary():
     explanatory empty state instead of failing.
     """
     try:
+        from kpi_dashboard import DashboardSummary  # type: ignore
         from kpi_dashboard import generate  # type: ignore
         from ctx_lifecycle import LifecycleSources  # type: ignore
     except Exception:  # noqa: BLE001 — KPIs are advisory
@@ -5804,6 +5912,13 @@ def _kpi_summary():
         and time.monotonic() - _KPI_SUMMARY_CACHE_AT < _KPI_SUMMARY_CACHE_SECONDS
     ):
         return _KPI_SUMMARY_CACHE_VALUE
+    cache_token = _kpi_summary_cache_token(cache_key)
+    summary = _read_kpi_summary_disk_cache(sidecar_dir, cache_token, DashboardSummary)
+    if summary is not None:
+        _KPI_SUMMARY_CACHE_KEY = cache_key
+        _KPI_SUMMARY_CACHE_VALUE = summary
+        _KPI_SUMMARY_CACHE_AT = time.monotonic()
+        return summary
     try:
         from ctx_config import cfg  # type: ignore
         sources = LifecycleSources(
@@ -5821,6 +5936,7 @@ def _kpi_summary():
         summary = generate(sources=sources, top_n=25)
     except Exception:  # noqa: BLE001
         return None
+    _write_kpi_summary_disk_cache(sidecar_dir, cache_token, summary)
     _KPI_SUMMARY_CACHE_KEY = cache_key
     _KPI_SUMMARY_CACHE_VALUE = summary
     _KPI_SUMMARY_CACHE_AT = time.monotonic()
