@@ -5528,8 +5528,8 @@ def _sanitize_docs_html(rendered_html: str) -> str:
         flags=re.IGNORECASE,
     )
     rendered_html = re.sub(
-        r"\s+(href|src)\s*=\s*([\"'])\s*(javascript:|data:text/html)",
-        r" \1=\2#",
+        r"\s+(href|src)\s*=\s*(?:\"\s*(?:javascript:|data:text/html)[^\"]*\"|'\s*(?:javascript:|data:text/html)[^']*'|(?:javascript:|data:text/html)[^\s>]*)",
+        lambda match: f' {match.group(1)}="#"',
         rendered_html,
         flags=re.IGNORECASE,
     )
@@ -6808,6 +6808,7 @@ def _perform_load(
                 wiki_dir=_wiki_dir(),
                 skills_dir=_claude_dir() / "skills",
                 security_scan=True,
+                security_scan_required=True,
             )
     except ImportError as exc:
         return False, f"install import failed: {exc}"
