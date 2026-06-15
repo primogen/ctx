@@ -3484,10 +3484,21 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     assert "--accent" in out
 
 
+def _use_temp_docs_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
+    monkeypatch.setattr(
+        cm,
+        "_docs_render_disk_cache_path",
+        lambda: tmp_path / ".ctx-monitor-docs-cache.json",
+    )
+
+
 def test_render_docs_lists_repo_docs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_temp_docs_cache(tmp_path, monkeypatch)
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "harness").mkdir()
     (tmp_path / "graph").mkdir()
@@ -3604,6 +3615,7 @@ def test_render_docs_sanitizes_active_html(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_temp_docs_cache(tmp_path, monkeypatch)
     (tmp_path / "docs").mkdir()
     (tmp_path / "mkdocs.yml").write_text(
         "site_name: ctx\nnav:\n  - Home: index.md\n",
@@ -3628,6 +3640,37 @@ def test_render_docs_sanitizes_active_html(
     assert "href=\"javascript:" not in html_out
 
 
+def test_render_docs_reuses_disk_cache_after_process_cache_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_temp_docs_cache(tmp_path, monkeypatch)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "mkdocs.yml").write_text(
+        "site_name: ctx\nnav:\n  - Home: index.md\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "index.md").write_text(
+        "# Home\n\nDocs body.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cm, "_docs_roots", lambda: [tmp_path])
+
+    first = cm._render_docs()
+    assert (tmp_path / ".ctx-monitor-docs-cache.json").is_file()
+
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
+
+    def fail_render_markdown(*args: object, **kwargs: object) -> str:
+        raise AssertionError("fresh process should read the rendered docs cache")
+
+    monkeypatch.setattr(cm, "_render_docs_markdown", fail_render_markdown)
+
+    second = cm._render_docs()
+    assert second == first
+
+
 def test_render_docs_markdown_preserves_mkdocs_tab_controls() -> None:
     markdown_text = (
         '=== "One"\n\n'
@@ -3647,8 +3690,10 @@ def test_render_docs_markdown_preserves_mkdocs_tab_controls() -> None:
 
 
 def test_render_docs_falls_back_to_public_docs(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_temp_docs_cache(tmp_path, monkeypatch)
     monkeypatch.setattr(cm, "_docs_roots", lambda: [])
 
     html_out = cm._render_docs()

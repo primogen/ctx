@@ -102,6 +102,8 @@ _SIDECAR_FILTER_CACHE_VALUE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
 _KPI_SUMMARY_CACHE_KEY: tuple[Any, ...] | None = None
 _KPI_SUMMARY_CACHE_VALUE: Any | None = None
 _KPI_SUMMARY_CACHE_AT = 0.0
+_DOCS_RENDER_CACHE_KEY: tuple[Any, ...] | None = None
+_DOCS_RENDER_CACHE_VALUE: str | None = None
 _WIKI_INDEX_LIMIT_PER_TYPE = 500
 _SKILLS_PAGE_DEFAULT_LIMIT = 100
 _SKILLS_PAGE_MAX_LIMIT = 500
@@ -4942,6 +4944,88 @@ def _docs_roots() -> list[Path]:
     return roots
 
 
+def _docs_cache_files() -> list[Path]:
+    files: list[Path] = []
+    seen: set[Path] = set()
+    for root in _docs_roots():
+        candidates = [root / "README.md", root / "graph" / "README.md", root / "mkdocs.yml"]
+        docs_dir = root / "docs"
+        if docs_dir.is_dir():
+            candidates.extend(sorted(docs_dir.rglob("*.md")))
+        for path in candidates:
+            if not path.is_file():
+                continue
+            try:
+                resolved = path.resolve()
+            except OSError:
+                resolved = path
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            files.append(path)
+    return files
+
+
+def _docs_render_cache_key() -> tuple[Any, ...]:
+    parts: list[Any] = []
+    try:
+        stat = Path(__file__).stat()
+        parts.append(("ctx_monitor", stat.st_mtime_ns, stat.st_size))
+    except OSError:
+        parts.append(("ctx_monitor", None, None))
+    for asset_name in ("monitor.css", "monitor-docs.js"):
+        try:
+            asset_text = _monitor_asset_text(asset_name)
+            asset_hash = hashlib.sha256(asset_text.encode("utf-8")).hexdigest()
+        except Exception:
+            asset_hash = ""
+        parts.append(("asset", asset_name, asset_hash))
+    for path in _docs_cache_files():
+        try:
+            stat = path.stat()
+            path_name = str(path.resolve())
+            parts.append((path_name, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            continue
+    return tuple(parts)
+
+
+def _docs_render_cache_token(cache_key: tuple[Any, ...]) -> str:
+    return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
+
+
+def _docs_render_disk_cache_path() -> Path:
+    return _claude_dir() / ".ctx-monitor-docs-cache.json"
+
+
+def _read_docs_render_disk_cache(cache_token: str) -> str | None:
+    try:
+        data = json.loads(_docs_render_disk_cache_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
+        return None
+    html_text = data.get("html")
+    return html_text if isinstance(html_text, str) else None
+
+
+def _write_docs_render_disk_cache(cache_token: str, html_text: str) -> None:
+    try:
+        _atomic_write_text(
+            _docs_render_disk_cache_path(),
+            json.dumps({
+                "schema_version": 1,
+                "cache_token": cache_token,
+                "html": html_text,
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, TypeError, ValueError):
+        return
+
+
 def _doc_title(text: str, fallback: str) -> str:
     for line in text.splitlines():
         match = re.match(r"^#\s+(.+?)\s*$", line)
@@ -5438,6 +5522,17 @@ def _render_docs_page(
 
 
 def _render_docs() -> str:
+    cache_key = _docs_render_cache_key()
+    global _DOCS_RENDER_CACHE_KEY, _DOCS_RENDER_CACHE_VALUE
+    if _DOCS_RENDER_CACHE_KEY == cache_key and _DOCS_RENDER_CACHE_VALUE is not None:
+        return _DOCS_RENDER_CACHE_VALUE
+    cache_token = _docs_render_cache_token(cache_key)
+    cached = _read_docs_render_disk_cache(cache_token)
+    if cached is not None:
+        _DOCS_RENDER_CACHE_KEY = cache_key
+        _DOCS_RENDER_CACHE_VALUE = cached
+        return cached
+
     entries = _docs_index_entries()
     public_docs_url = "https://stevesolun.github.io/ctx/"
     tabs = _docs_tabs(entries)
@@ -5448,7 +5543,11 @@ def _render_docs() -> str:
             f"<p class='muted'>Open the public docs at "
             f"<a href='{public_docs_url}'>{public_docs_url}</a>.</p></div>"
         )
-        return _layout("Docs", body)
+        html_out = _layout("Docs", body)
+        _write_docs_render_disk_cache(cache_token, html_out)
+        _DOCS_RENDER_CACHE_KEY = cache_key
+        _DOCS_RENDER_CACHE_VALUE = html_out
+        return html_out
 
     tab_buttons = "".join(
         f"<button class='docs-tab-button{' active' if idx == 0 else ''}' "
@@ -5509,7 +5608,11 @@ def _render_docs() -> str:
         + _monitor_inline_script("monitor-docs.js")
         + "</div>"
     )
-    return _layout("Docs", body)
+    html_out = _layout("Docs", body)
+    _write_docs_render_disk_cache(cache_token, html_out)
+    _DOCS_RENDER_CACHE_KEY = cache_key
+    _DOCS_RENDER_CACHE_VALUE = html_out
+    return html_out
 
 
 def _render_manage(mutations_enabled: bool | None = None) -> str:
