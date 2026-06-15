@@ -2913,6 +2913,8 @@ def test_render_manage_includes_crud_and_upload_wizard(fake_claude: Path) -> Non
     assert "id='entity-editor-form'" in html_out
     assert "data-testid='entity-delete-button'" in html_out
     assert "Add or update entity" in html_out
+    assert "window.CTX_MONITOR_MANAGE" in html_out
+    assert cm._monitor_asset_text("monitor-manage.js").strip() in html_out
 
 
 def test_entity_search_and_detail_apis_support_edit_flow(

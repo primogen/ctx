@@ -197,6 +197,7 @@ py-modules = [
 packages = [
     "mcp_sources",
     "ctx",
+    "ctx.assets",
     "ctx.core",
     "ctx.core.graph",
     "ctx.core.quality",
