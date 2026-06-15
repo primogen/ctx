@@ -44,6 +44,7 @@ It is public and always reachable. The full live catalog runs locally inside
   <p id="ctx-catalog-count" class="ctx-catalog-muted"></p>
 
   <div id="ctx-catalog-grid" class="ctx-catalog-grid">
+<!-- ctx-catalog:begin -->
     <article class="ctx-catalog-card" data-type="skill" data-search="skill prompt workflow testing code review frontend backend security research">
       <span class="ctx-catalog-pill">Skills</span>
       <h3>Skills</h3>
@@ -149,6 +150,7 @@ It is public and always reachable. The full live catalog runs locally inside
       <a class="md-button" href="./?type=harness&q=tool+access">Filter tiles</a>
       <a class="md-button" href="../dashboard/#catalog-badge-links">Open full catalog locally</a>
     </article>
+<!-- ctx-catalog:end -->
   </div>
 </div>
 

@@ -625,6 +625,79 @@ _ENTITY_COUNT_REPLACEMENTS: tuple[tuple[str, str, str, str], ...] = (
     ("mcps", "MCPs", "mcp-server", r"badge/MCPs-[0-9,%]+-"),
     ("harnesses", "Harnesses", "harness", r"badge/Harnesses-[0-9,%]+-"),
 )
+_CATALOG_BEGIN = "<!-- ctx-catalog:begin -->"
+_CATALOG_END = "<!-- ctx-catalog:end -->"
+_CATALOG_FILTER_CARDS: tuple[tuple[str, str, str, str, str], ...] = (
+    ("skill", "Skills", "Code review skills", "code review review pr diff quality bug tests", "code+review"),
+    ("skill", "Skills", "Testing skills", "testing pytest unit browser smoke regression", "testing"),
+    ("skill", "Skills", "Frontend skills", "frontend ui dashboard css react browser", "frontend"),
+    ("agent", "Agents", "Architecture agents", "architecture design refactor planning", "architecture"),
+    ("agent", "Agents", "Security agents", "security audit supply chain secrets", "security"),
+    ("mcp-server", "MCPs", "GitHub MCPs", "github repo issues pull requests graphql", "github"),
+    ("mcp-server", "MCPs", "Cloud MCPs", "cloud google cloud aws azure deploy", "cloud"),
+    ("mcp-server", "MCPs", "Browser MCPs", "browser automation web scraping", "browser"),
+    ("harness", "Harnesses", "Local/API model harnesses", "local api openai ollama vllm model harness", "local+model"),
+    ("harness", "Harnesses", "Verification harnesses", "harness test eval guardrail validate verification", "verification"),
+    ("harness", "Harnesses", "Tool-access harnesses", "harness tools sandbox filesystem cloud tool access", "tool+access"),
+)
+
+
+def _catalog_card(
+    *,
+    entity_type: str,
+    pill: str,
+    title: str,
+    search: str,
+    query_href: str,
+    muted: str,
+) -> str:
+    return "\n".join([
+        f'    <article class="ctx-catalog-card" data-type="{entity_type}" data-search="{search}">',
+        f"      <span class=\"ctx-catalog-pill\">{pill}</span>",
+        f"      <h3>{title}</h3>",
+        f"      <p class=\"ctx-catalog-muted\">{muted}</p>",
+        f"      <a class=\"md-button\" href=\"{query_href}\">Filter tiles</a>",
+        "      <a class=\"md-button\" href=\"../dashboard/#catalog-badge-links\">Open full catalog locally</a>",
+        "    </article>",
+    ])
+
+
+def render_catalog_cards(stats: Mapping[str, int | None]) -> str | None:
+    """Render the generated public catalog tile block from graph stats."""
+    required = {
+        "skills": stats.get("skills"),
+        "agents": stats.get("agents"),
+        "mcps": stats.get("mcps"),
+        "harnesses": stats.get("harnesses"),
+    }
+    if any(value is None for value in required.values()):
+        return None
+    count_cards = (
+        ("skill", "Skills", "Skills", "skill prompt workflow testing code review frontend backend security research", "skills"),
+        ("agent", "Agents", "Agents", "agent reviewer planner architect debugger security research", "agents"),
+        ("mcp-server", "MCPs", "MCP servers", "mcp server github filesystem browser database api cloud", "mcps"),
+        ("harness", "Harnesses", "Harnesses", "harness local model api model llm orchestration verification", "harnesses"),
+    )
+    cards: list[str] = []
+    for entity_type, pill, title, search, key in count_cards:
+        cards.append(_catalog_card(
+            entity_type=entity_type,
+            pill=pill,
+            title=title,
+            search=search,
+            query_href=f"./?type={entity_type}",
+            muted=f"{int(required[key] or 0):,} entities",
+        ))
+    for entity_type, pill, title, search, query in _CATALOG_FILTER_CARDS:
+        cards.append(_catalog_card(
+            entity_type=entity_type,
+            pill=pill,
+            title=title,
+            search=search,
+            query_href=f"./?type={entity_type}&q={query}",
+            muted="Filtered catalog launcher",
+        ))
+    return _CATALOG_BEGIN + "\n" + "\n".join(cards) + "\n" + _CATALOG_END
 
 
 def _append_badge_target_replacements(reps: list[Replacement]) -> None:
@@ -678,6 +751,13 @@ def _append_entity_count_replacements(
             f"badge/{badge}-{count:,}-".replace(",", "%2C"),
         ))
         _append_catalog_card_count(reps, entity_type=entity_type, count=count)
+
+    catalog_cards = render_catalog_cards(stats)
+    if catalog_cards is not None:
+        reps.append((
+            re.compile(rf"{re.escape(_CATALOG_BEGIN)}[\s\S]*?{re.escape(_CATALOG_END)}"),
+            catalog_cards,
+        ))
 
 
 def build_replacements(

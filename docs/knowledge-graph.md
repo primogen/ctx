@@ -148,8 +148,8 @@ quality clusters for the recommendation use case.
 ctx-monitor serve              # http://127.0.0.1:8765
 ```
 
-Then open `/graph?slug=<entity-slug>&type=<entity-type>` for a
-cytoscape neighborhood view, or
+Then open `/graph?slug=<entity-slug>&type=<entity-type>` for the
+dashboard's interactive SVG neighborhood view, or
 `/api/graph/<slug>.json?type=<entity-type>&hops=1&limit=40` for the
 dashboard-shaped JSON. The `type` query is optional for unique slugs and
 recommended for duplicate slugs such as `langgraph`. See the

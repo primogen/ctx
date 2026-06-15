@@ -16,7 +16,8 @@ ctx-monitor serve --host 0.0.0.0 --port 8888  # LAN read-only with startup token
 Zero Python dependencies added by the dashboard. Everything runs on
 stdlib `http.server`, using daemon request threads so a live
 `/api/events.stream` client cannot block normal dashboard or JSON API
-requests. The graph page uses a built-in list renderer and does not load
+requests. The graph page uses a built-in dependency-free SVG neighborhood
+renderer with zoom, drag, hover details, and a list fallback. It does not load
 third-party JavaScript.
 
 ## Usage
@@ -130,10 +131,12 @@ frontmatter values are visibly marked as truncated.
 
 ### Explore the knowledge graph — `/graph`
 
-The graph tab is a built-in list view over the dashboard-supported
-skill/agent/MCP/harness graph. Imported skills are normal `skill`
-nodes in the graph. Harness nodes are browsable and filterable here;
-install/update actions remain in `ctx-harness-install`.
+The graph tab is a dependency-free interactive SVG view over the
+dashboard-supported skill/agent/MCP/harness graph. Imported skills are normal
+`skill` nodes in the graph. Harness nodes are browsable and filterable here;
+install/update actions remain in `ctx-harness-install`. If the SVG renderer
+cannot initialize, the dashboard falls back to a list view over the same graph
+payload.
 When you arrive with no
 slug selected, the page shows:
 
@@ -146,9 +149,9 @@ slug selected, the page shows:
 - the graph list panel itself, which activates as soon as you pick a
   seed
 
-Inside the graph list view, entity pills identify the node type. The
-focus row has `depth=0` in the page data, and neighbor rows are filterable
-by entity type and shared tag/token text.
+Inside the graph view, entity pills identify the node type. The focus node has
+`depth=0` in the page data, and neighbor rows remain filterable by entity type
+and shared tag/token text.
 
 The JSON endpoint still includes blended graph edge weights, combining
 semantic similarity, explicit tag overlap, and slug-token overlap where
