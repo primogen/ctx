@@ -31,6 +31,25 @@ Generic/API/local harnesses that call ctx-core validation tools write to
 the runtime lifecycle ledger. The dashboard exposes that ledger at
 `/runtime` and as JSON at `/api/runtime.json`.
 
+### Smoke-test the dashboard
+
+Use the repo smoke check after dashboard changes or before screenshots. It uses
+only stdlib HTTP calls against a running `ctx-monitor` instance and checks the
+core pages plus graph/wiki/catalog APIs.
+
+```bash
+ctx-monitor serve
+python scripts/dashboard_smoke.py --warm
+```
+
+To make latency regressions fail the command, add named thresholds:
+
+```bash
+python scripts/dashboard_smoke.py --warm \
+  --fail-on-slow graph-api-warm=1.0 \
+  --fail-on-slow kpi-warm=3.0
+```
+
 ### Check queue and artifact state - `/status`
 
 The status tab shows the durable wiki/graph maintenance queue and the
