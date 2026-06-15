@@ -2493,6 +2493,110 @@ def _dashboard_overlay_matches_known_release(overlay: Path) -> bool:
         return False
 
 
+def _dashboard_index_uncovered_overlay_nodes(
+    conn: sqlite3.Connection,
+    records: list[dict[str, Any]],
+    *,
+    require_edges: bool,
+) -> set[str] | None:
+    uncovered: set[str] = set()
+    neighbor_targets: dict[str, set[str]] = {}
+
+    def node_exists(node_id: str) -> bool:
+        return bool(conn.execute(
+            "SELECT 1 FROM nodes WHERE id=? LIMIT 1",
+            (node_id,),
+        ).fetchone())
+
+    def indexed_neighbors(node_id: str) -> set[str]:
+        cached = neighbor_targets.get(node_id)
+        if cached is not None:
+            return cached
+        row = conn.execute(
+            "SELECT payload FROM neighbors WHERE source=?",
+            (node_id,),
+        ).fetchone()
+        targets: set[str] = set()
+        if row is not None:
+            try:
+                payload = json.loads(zlib.decompress(row["payload"]).decode("utf-8"))
+            except (TypeError, json.JSONDecodeError, zlib.error):
+                payload = []
+            if isinstance(payload, list):
+                targets = {
+                    str(edge.get("target"))
+                    for edge in payload
+                    if isinstance(edge, dict) and isinstance(edge.get("target"), str)
+                }
+        neighbor_targets[node_id] = targets
+        return targets
+
+    for record in records:
+        nodes = record.get("nodes", [])
+        edges = record.get("edges", [])
+        if not isinstance(nodes, list) or not isinstance(edges, list):
+            return None
+        if not nodes and edges:
+            return None
+        for node in nodes:
+            if not isinstance(node, dict):
+                return None
+            node_id = node.get("id")
+            if not isinstance(node_id, str):
+                return None
+            if not node_exists(node_id):
+                uncovered.add(node_id)
+        if not require_edges:
+            continue
+        for edge in edges:
+            if not isinstance(edge, dict):
+                return None
+            source = edge.get("source")
+            target = edge.get("target")
+            if not isinstance(source, str) or not isinstance(target, str):
+                return None
+            source_exists = node_exists(source)
+            target_exists = node_exists(target)
+            if not source_exists:
+                uncovered.add(source)
+            if not target_exists:
+                uncovered.add(target)
+            if not source_exists or not target_exists:
+                uncovered.update((source, target))
+                continue
+            if target not in indexed_neighbors(source) and source not in indexed_neighbors(target):
+                uncovered.update((source, target))
+    return uncovered
+
+
+def _dashboard_uncovered_runtime_overlay_nodes(index_path: Path) -> set[str] | None:
+    overlay = _wiki_dir() / "graphify-out" / "entity-overlays.jsonl"
+    try:
+        if not overlay.is_file() or overlay.stat().st_size == 0:
+            return set()
+    except OSError:
+        return set()
+    if not index_path.is_file() or not _dashboard_index_matches_manifest(index_path):
+        return None
+    records = _active_dashboard_overlay_records(overlay)
+    if records is None:
+        return None
+    require_edges = not _dashboard_overlay_matches_known_release(overlay)
+    try:
+        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            return _dashboard_index_uncovered_overlay_nodes(
+                conn,
+                records,
+                require_edges=require_edges,
+            )
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, KeyError, TypeError):
+        return None
+
+
 def _dashboard_index_covers_runtime_overlays(index_path: Path) -> bool:
     """Return True when the shipped SQLite index already includes overlays.
 
@@ -2522,44 +2626,8 @@ def _dashboard_index_covers_runtime_overlays(index_path: Path) -> bool:
     ):
         return _OVERLAY_INDEX_COVERAGE_CACHE_VALUE
 
-    if not _dashboard_overlay_matches_known_release(overlay):
-        coverage = False
-    else:
-        records = _active_dashboard_overlay_records(overlay)
-        if records is None:
-            coverage = False
-        else:
-            coverage = True
-            try:
-                conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
-                conn.row_factory = sqlite3.Row
-                try:
-                    for record in records:
-                        nodes = record.get("nodes", [])
-                        edges = record.get("edges", [])
-                        if not isinstance(nodes, list) or not isinstance(edges, list):
-                            coverage = False
-                            break
-                        if not nodes and edges:
-                            coverage = False
-                            break
-                        for node in nodes:
-                            if not isinstance(node, dict):
-                                coverage = False
-                                break
-                            node_id = node.get("id")
-                            if not isinstance(node_id, str) or not conn.execute(
-                                "SELECT 1 FROM nodes WHERE id=? LIMIT 1",
-                                (node_id,),
-                            ).fetchone():
-                                coverage = False
-                                break
-                        if not coverage:
-                            break
-                finally:
-                    conn.close()
-            except (OSError, sqlite3.Error, KeyError, TypeError):
-                coverage = False
+    uncovered = _dashboard_uncovered_runtime_overlay_nodes(index_path)
+    coverage = uncovered == set()
 
     if cache_key is not None:
         _OVERLAY_INDEX_COVERAGE_CACHE_KEY = cache_key
@@ -2971,10 +3039,13 @@ def _graph_neighborhood(
     if "/" in slug or "\\" in slug or ".." in slug:
         return {"nodes": [], "edges": [], "center": None}
     normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
-    if (
-        not _dashboard_graph_has_runtime_overlays()
-        or _dashboard_index_covers_runtime_overlays(_dashboard_graph_index_path())
-    ):
+    index_path = _dashboard_graph_index_path()
+    has_runtime_overlays = _dashboard_graph_has_runtime_overlays()
+    index_covers_overlays = (
+        not has_runtime_overlays
+        or _dashboard_index_covers_runtime_overlays(index_path)
+    )
+    if index_covers_overlays:
         indexed = _graph_neighborhood_from_index(
             slug,
             hops=hops,
@@ -2983,6 +3054,18 @@ def _graph_neighborhood(
         )
         if indexed is not None:
             return indexed
+    elif hops == 1 and index_path.is_file() and _dashboard_index_matches_manifest(index_path):
+        indexed = _graph_neighborhood_from_index(
+            slug,
+            hops=hops,
+            limit=limit,
+            entity_type=normalized_entity_type,
+        )
+        center = indexed.get("center") if isinstance(indexed, dict) else None
+        uncovered = _dashboard_uncovered_runtime_overlay_nodes(index_path)
+        if indexed is not None and isinstance(center, str) and uncovered is not None:
+            if center not in uncovered:
+                return indexed
     try:
         G = _load_dashboard_graph()
     except Exception:  # noqa: BLE001 — graph is advisory; blank on error

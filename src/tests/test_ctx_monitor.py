@@ -1891,7 +1891,7 @@ def test_graph_neighborhood_uses_dashboard_index_when_overlay_is_already_indexed
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(cm, "_dashboard_overlay_matches_known_release", lambda overlay: True)
+    monkeypatch.setattr(cm, "_dashboard_overlay_matches_known_release", lambda overlay: False)
     monkeypatch.setattr(
         cm,
         "_load_dashboard_graph",
@@ -1976,18 +1976,21 @@ def test_graph_neighborhood_bypasses_index_for_local_overlay_even_when_node_exis
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        cm,
-        "_graph_neighborhood_from_index",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("index used")),
-    )
     G = nx.Graph()
     G.add_node("skill:existing", label="existing", type="skill", tags=[])
-    monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
+    graph_loads = 0
+
+    def load_graph():
+        nonlocal graph_loads
+        graph_loads += 1
+        return G
+
+    monkeypatch.setattr(cm, "_load_dashboard_graph", load_graph)
 
     result = cm._graph_neighborhood("existing", entity_type="skill")
 
     assert result["center"] == "skill:existing"
+    assert graph_loads == 1
 
 
 def test_graph_index_honors_requested_type_on_exact_slug(
