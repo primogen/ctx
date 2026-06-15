@@ -1547,6 +1547,8 @@ def test_render_graph_uses_builtin_3d_mount(monkeypatch: pytest.MonkeyPatch) -> 
     assert "button id=\"graph-zoom-in\"" in html_out
     assert "button id=\"graph-zoom-out\"" in html_out
     assert "data-testid=\"graph-edge-detail\"" in html_out
+    assert "id='graph-explanation'" in html_out
+    assert "g.explanations" in html_out
     assert "Graph renderer unavailable" not in html_out
     assert "Enter a slug to render the graph" in html_out
     # Initial slug must be embedded as JSON literal so the JS picks it up.
@@ -1820,6 +1822,29 @@ def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
         "skill:fastapi-pro",
     ]
     assert result["edges"][0]["data"]["shared_tags"] == ["python"]
+    assert result["schema"] == {
+        "name": "ctx.dashboard.graph.neighborhood",
+        "version": 1,
+    }
+    assert result["layout"] == {
+        "kind": "radial-3d",
+        "node_size_field": "node_size",
+        "node_size_min": 8.0,
+        "node_size_max": 24.0,
+        "edge_weight_field": "weight",
+    }
+    assert result["insights"] == {
+        "source": "dashboard-index",
+        "node_count": 2,
+        "edge_count": 1,
+        "by_type": {"skill": 2, "agent": 0, "mcp-server": 0, "harness": 0},
+        "max_degree": 10,
+        "center_degree": 10,
+    }
+    assert "cached dashboard index" in result["explanations"]["source"]
+    assert "exact or normalized slug" in result["explanations"]["search"]
+    assert "quality, usage, and graph degree" in result["explanations"]["layout"]
+    assert "shared_tags" in result["explanations"]["edges"]
     assert cm._graph_stats() == {"nodes": 2, "edges": 1, "available": True}
     assert cm._wiki_stats() == {
         "skills": 2,

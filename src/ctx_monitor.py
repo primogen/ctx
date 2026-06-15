@@ -80,7 +80,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
-from ctx import dashboard_docs, dashboard_entities
+from ctx import dashboard_docs, dashboard_entities, dashboard_graph
 from ctx.core import entity_types as core_entity_types
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
@@ -2882,13 +2882,13 @@ def _graph_neighborhood_from_index(
             frontier = next_frontier
             if len(nodes_out) >= limit:
                 break
-        return {
+        return dashboard_graph.enrich_neighborhood({
             "nodes": list(nodes_out.values()),
             "edges": edges_out,
             "center": center,
             "resolved": resolved or {"source": "dashboard-index"},
             "suggestions": [],
-        }
+        }, source="dashboard-index")
     except (OSError, sqlite3.Error, json.JSONDecodeError, zlib.error, KeyError, TypeError):
         return None
     finally:
@@ -3051,13 +3051,13 @@ def _graph_neighborhood(
         if len(nodes_out) >= limit:
             break
 
-    return {
+    return dashboard_graph.enrich_neighborhood({
         "nodes": list(nodes_out.values()),
         "edges": edges_out,
         "center": center,
         "resolved": resolved,
         "suggestions": suggestions,
-    }
+    }, source="networkx")
 
 
 def _graph_stats() -> dict:
@@ -3993,6 +3993,11 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "<span id='graph-match-count' class='muted'>—</span>"
         "</div>"
         "<div class='card'><span id='msg' class='muted'></span></div>"
+        "<div class='card'><strong>Why this view?</strong>"
+        "<p id='graph-explanation' class='muted' "
+        "style='font-size:0.78rem; margin:0.45rem 0 0 0;'>"
+        "Search a slug to see why ctx picked this neighborhood and how to read it."
+        "</p></div>"
         "</aside>"
         # Right: graph list panel
         "<div id='cy' style='width:100%; height:75vh; border:1px solid #ddd; "
@@ -4059,6 +4064,10 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "  const reasons = Array.from(d.reasons || []).join(', ') || 'graph score';\n"
         "  const weight = Number(d.weight || 0).toFixed(3);\n"
         "  return nodeSlug(d.source) + ' ↔ ' + nodeSlug(d.target) + ' · weight ' + weight + ' · shared: ' + tags + ' · reasons: ' + reasons;\n"
+        "}\n"
+        "function graphExplanation(g) {\n"
+        "  const e = g.explanations || {};\n"
+        "  return [e.focus, e.source, e.search, e.layout, e.edges].filter(Boolean).join(' ');\n"
         "}\n"
         "function renderGraph3d(g) {\n"
         "  const nodes = g.nodes || [];\n"
@@ -4207,6 +4216,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "  try { renderGraph3d(g); } catch (err) { renderFallback(g); }\n"
         "  const resolved = g.resolved && g.resolved.query !== g.resolved.slug ? ' · showing ' + g.resolved.slug + ' for ' + g.resolved.query : '';\n"
         "  document.getElementById('msg').textContent = fmtCount(g.nodes.length) + ' nodes · ' + fmtCount(g.edges.length) + ' edges' + resolved;\n"
+        "  document.getElementById('graph-explanation').textContent = graphExplanation(g);\n"
         "  applyFilters();\n"
         "}\n"
         "function selectedFocusType() { return document.getElementById('focus-type').value || ''; }\n"
