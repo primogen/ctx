@@ -36,6 +36,10 @@ def fake_claude(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
     monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
     monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_AT", 0.0)
+    monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_VALUE", None)
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
     return claude
 
 
@@ -1891,7 +1895,7 @@ def test_graph_neighborhood_uses_dashboard_index_when_overlay_is_already_indexed
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(cm, "_dashboard_overlay_matches_known_release", lambda overlay: True)
+    monkeypatch.setattr(cm, "_dashboard_overlay_matches_known_release", lambda overlay: False)
     monkeypatch.setattr(
         cm,
         "_load_dashboard_graph",
@@ -1976,18 +1980,21 @@ def test_graph_neighborhood_bypasses_index_for_local_overlay_even_when_node_exis
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        cm,
-        "_graph_neighborhood_from_index",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("index used")),
-    )
     G = nx.Graph()
     G.add_node("skill:existing", label="existing", type="skill", tags=[])
-    monkeypatch.setattr(cm, "_load_dashboard_graph", lambda: G)
+    graph_loads = 0
+
+    def load_graph():
+        nonlocal graph_loads
+        graph_loads += 1
+        return G
+
+    monkeypatch.setattr(cm, "_load_dashboard_graph", load_graph)
 
     result = cm._graph_neighborhood("existing", entity_type="skill")
 
     assert result["center"] == "skill:existing"
+    assert graph_loads == 1
 
 
 def test_graph_index_honors_requested_type_on_exact_slug(
@@ -2782,6 +2789,86 @@ def test_render_wiki_index_lists_entities(fake_claude: Path) -> None:
     assert "href='/wiki/code-reviewer?type=agent'" in html_out
 
 
+def test_wiki_index_entries_use_dashboard_index_without_markdown_pages(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_graph_manifest(fake_claude, "test-export")
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    index_path = graph_dir / "dashboard-neighborhoods.sqlite3"
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [
+                ("export_id", json.dumps("test-export")),
+                ("nodes_count", "2"),
+                ("edges_count", "0"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "skill:python-patterns",
+                    "python-patterns",
+                    "skill",
+                    '["python","patterns"]',
+                    "Idiomatic Python patterns",
+                    0.9,
+                    0.1,
+                    5,
+                ),
+                (
+                    "agent:code-reviewer",
+                    "code-reviewer",
+                    "agent",
+                    '["review","quality"]',
+                    "Reviews code for issues",
+                    0.8,
+                    0.1,
+                    4,
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    entries = cm._wiki_index_entries(limit_per_type=10)
+    slugs = {entry["slug"] for entry in entries}
+
+    assert slugs == {"python-patterns", "code-reviewer"}
+    assert entries[0]["description"] == "Idiomatic Python patterns"
+
+    def fail_sidecar_probe(*args: object, **kwargs: object) -> object:
+        raise AssertionError("index-backed wiki catalog should not probe sidecars")
+
+    monkeypatch.setattr(cm, "_load_sidecar", fail_sidecar_probe)
+
+    html_out = cm._render_wiki_index(query="python")
+    assert "href='/wiki/python-patterns?type=skill'" in html_out
+    assert "Idiomatic Python patterns" in html_out
+    assert "grade-A" in html_out
+    assert (fake_claude / ".ctx-monitor-wiki-cache.json").is_file()
+
+    monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_VALUE", None)
+
+    def fail_entry_rebuild(*args: object, **kwargs: object) -> object:
+        raise AssertionError("fresh process should read the rendered wiki cache")
+
+    monkeypatch.setattr(cm, "_wiki_index_entries", fail_entry_rebuild)
+
+    assert cm._render_wiki_index(query="python") == html_out
+
+
 def test_render_wiki_index_supports_type_query_and_autocomplete(fake_claude: Path) -> None:
     skills_dir = fake_claude / "skill-wiki" / "entities" / "skills"
     agents_dir = fake_claude / "skill-wiki" / "entities" / "agents"
@@ -3318,6 +3405,81 @@ def test_kpi_summary_cache_reuses_recent_summary(
     assert calls == 1
 
 
+def test_kpi_summary_reuses_disk_cache_after_process_cache_reset(
+    fake_claude: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kpi_dashboard as kd
+
+    _write_sidecar(fake_claude, "alpha", {
+        "slug": "alpha", "subject_type": "skill",
+        "grade": "A", "raw_score": 0.9, "score": 0.9,
+        "hard_floor": None, "computed_at": "2026-04-19T10:00:00+00:00",
+    })
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
+
+    first = cm._kpi_summary()
+    assert first is not None
+    assert cm._kpi_summary_disk_cache_path(fake_claude / "skill-quality").is_file()
+
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
+
+    def fail_generate(*args: object, **kwargs: object) -> object:
+        raise AssertionError("fresh process should read the KPI disk cache")
+
+    monkeypatch.setattr(kd, "generate", fail_generate)
+
+    second = cm._kpi_summary()
+    assert second is not None
+    assert second.total == first.total
+    assert second.grade_counts == first.grade_counts
+
+
+def test_kpi_summary_disk_cache_invalidates_on_sidecar_rewrite(
+    fake_claude: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kpi_dashboard as kd
+
+    _write_sidecar(fake_claude, "alpha", {
+        "slug": "alpha", "subject_type": "skill",
+        "grade": "A", "raw_score": 0.9, "score": 0.9,
+        "hard_floor": None, "computed_at": "2026-04-19T10:00:00+00:00",
+    })
+    sidecar = fake_claude / "skill-quality" / "alpha.json"
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
+    assert cm._kpi_summary() is not None
+
+    sidecar.write_text(
+        json.dumps({
+            "slug": "alpha", "subject_type": "skill",
+            "grade": "F", "raw_score": 0.1, "score": 0.1,
+            "hard_floor": None,
+            "computed_at": "2026-04-19T10:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+    os.utime(sidecar, (time.time() + 2.0, time.time() + 2.0))
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_VALUE", None)
+
+    real_generate = kd.generate
+    calls = 0
+
+    def wrapped_generate(*, sources, top_n=10, now=None):
+        nonlocal calls
+        calls += 1
+        return real_generate(sources=sources, top_n=top_n, now=now)
+
+    monkeypatch.setattr(kd, "generate", wrapped_generate)
+
+    summary = cm._kpi_summary()
+    assert summary is not None
+    assert summary.grade_counts.get("F") == 1
+    assert calls == 1
+
+
 def test_layout_nav_includes_wiki_and_kpi() -> None:
     """Every rendered page must include the new Wiki + KPI tabs in the
     top nav — the user explicitly asked for them to be accessible."""
@@ -3337,10 +3499,21 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     assert "--accent" in out
 
 
+def _use_temp_docs_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
+    monkeypatch.setattr(
+        cm,
+        "_docs_render_disk_cache_path",
+        lambda: tmp_path / ".ctx-monitor-docs-cache.json",
+    )
+
+
 def test_render_docs_lists_repo_docs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_temp_docs_cache(tmp_path, monkeypatch)
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "harness").mkdir()
     (tmp_path / "graph").mkdir()
@@ -3457,6 +3630,7 @@ def test_render_docs_sanitizes_active_html(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_temp_docs_cache(tmp_path, monkeypatch)
     (tmp_path / "docs").mkdir()
     (tmp_path / "mkdocs.yml").write_text(
         "site_name: ctx\nnav:\n  - Home: index.md\n",
@@ -3481,6 +3655,37 @@ def test_render_docs_sanitizes_active_html(
     assert "href=\"javascript:" not in html_out
 
 
+def test_render_docs_reuses_disk_cache_after_process_cache_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_temp_docs_cache(tmp_path, monkeypatch)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "mkdocs.yml").write_text(
+        "site_name: ctx\nnav:\n  - Home: index.md\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "index.md").write_text(
+        "# Home\n\nDocs body.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cm, "_docs_roots", lambda: [tmp_path])
+
+    first = cm._render_docs()
+    assert (tmp_path / ".ctx-monitor-docs-cache.json").is_file()
+
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
+
+    def fail_render_markdown(*args: object, **kwargs: object) -> str:
+        raise AssertionError("fresh process should read the rendered docs cache")
+
+    monkeypatch.setattr(cm, "_render_docs_markdown", fail_render_markdown)
+
+    second = cm._render_docs()
+    assert second == first
+
+
 def test_render_docs_markdown_preserves_mkdocs_tab_controls() -> None:
     markdown_text = (
         '=== "One"\n\n'
@@ -3500,8 +3705,10 @@ def test_render_docs_markdown_preserves_mkdocs_tab_controls() -> None:
 
 
 def test_render_docs_falls_back_to_public_docs(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_temp_docs_cache(tmp_path, monkeypatch)
     monkeypatch.setattr(cm, "_docs_roots", lambda: [])
 
     html_out = cm._render_docs()

@@ -102,6 +102,10 @@ _SIDECAR_FILTER_CACHE_VALUE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
 _KPI_SUMMARY_CACHE_KEY: tuple[Any, ...] | None = None
 _KPI_SUMMARY_CACHE_VALUE: Any | None = None
 _KPI_SUMMARY_CACHE_AT = 0.0
+_DOCS_RENDER_CACHE_KEY: tuple[Any, ...] | None = None
+_DOCS_RENDER_CACHE_VALUE: str | None = None
+_WIKI_RENDER_CACHE_KEY: tuple[Any, ...] | None = None
+_WIKI_RENDER_CACHE_VALUE: str | None = None
 _WIKI_INDEX_LIMIT_PER_TYPE = 500
 _SKILLS_PAGE_DEFAULT_LIMIT = 100
 _SKILLS_PAGE_MAX_LIMIT = 500
@@ -2493,6 +2497,110 @@ def _dashboard_overlay_matches_known_release(overlay: Path) -> bool:
         return False
 
 
+def _dashboard_index_uncovered_overlay_nodes(
+    conn: sqlite3.Connection,
+    records: list[dict[str, Any]],
+    *,
+    require_edges: bool,
+) -> set[str] | None:
+    uncovered: set[str] = set()
+    neighbor_targets: dict[str, set[str]] = {}
+
+    def node_exists(node_id: str) -> bool:
+        return bool(conn.execute(
+            "SELECT 1 FROM nodes WHERE id=? LIMIT 1",
+            (node_id,),
+        ).fetchone())
+
+    def indexed_neighbors(node_id: str) -> set[str]:
+        cached = neighbor_targets.get(node_id)
+        if cached is not None:
+            return cached
+        row = conn.execute(
+            "SELECT payload FROM neighbors WHERE source=?",
+            (node_id,),
+        ).fetchone()
+        targets: set[str] = set()
+        if row is not None:
+            try:
+                payload = json.loads(zlib.decompress(row["payload"]).decode("utf-8"))
+            except (TypeError, json.JSONDecodeError, zlib.error):
+                payload = []
+            if isinstance(payload, list):
+                targets = {
+                    str(edge.get("target"))
+                    for edge in payload
+                    if isinstance(edge, dict) and isinstance(edge.get("target"), str)
+                }
+        neighbor_targets[node_id] = targets
+        return targets
+
+    for record in records:
+        nodes = record.get("nodes", [])
+        edges = record.get("edges", [])
+        if not isinstance(nodes, list) or not isinstance(edges, list):
+            return None
+        if not nodes and edges:
+            return None
+        for node in nodes:
+            if not isinstance(node, dict):
+                return None
+            node_id = node.get("id")
+            if not isinstance(node_id, str):
+                return None
+            if not node_exists(node_id):
+                uncovered.add(node_id)
+        if not require_edges:
+            continue
+        for edge in edges:
+            if not isinstance(edge, dict):
+                return None
+            source = edge.get("source")
+            target = edge.get("target")
+            if not isinstance(source, str) or not isinstance(target, str):
+                return None
+            source_exists = node_exists(source)
+            target_exists = node_exists(target)
+            if not source_exists:
+                uncovered.add(source)
+            if not target_exists:
+                uncovered.add(target)
+            if not source_exists or not target_exists:
+                uncovered.update((source, target))
+                continue
+            if target not in indexed_neighbors(source) and source not in indexed_neighbors(target):
+                uncovered.update((source, target))
+    return uncovered
+
+
+def _dashboard_uncovered_runtime_overlay_nodes(index_path: Path) -> set[str] | None:
+    overlay = _wiki_dir() / "graphify-out" / "entity-overlays.jsonl"
+    try:
+        if not overlay.is_file() or overlay.stat().st_size == 0:
+            return set()
+    except OSError:
+        return set()
+    if not index_path.is_file() or not _dashboard_index_matches_manifest(index_path):
+        return None
+    records = _active_dashboard_overlay_records(overlay)
+    if records is None:
+        return None
+    require_edges = not _dashboard_overlay_matches_known_release(overlay)
+    try:
+        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            return _dashboard_index_uncovered_overlay_nodes(
+                conn,
+                records,
+                require_edges=require_edges,
+            )
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, KeyError, TypeError):
+        return None
+
+
 def _dashboard_index_covers_runtime_overlays(index_path: Path) -> bool:
     """Return True when the shipped SQLite index already includes overlays.
 
@@ -2522,44 +2630,8 @@ def _dashboard_index_covers_runtime_overlays(index_path: Path) -> bool:
     ):
         return _OVERLAY_INDEX_COVERAGE_CACHE_VALUE
 
-    if not _dashboard_overlay_matches_known_release(overlay):
-        coverage = False
-    else:
-        records = _active_dashboard_overlay_records(overlay)
-        if records is None:
-            coverage = False
-        else:
-            coverage = True
-            try:
-                conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
-                conn.row_factory = sqlite3.Row
-                try:
-                    for record in records:
-                        nodes = record.get("nodes", [])
-                        edges = record.get("edges", [])
-                        if not isinstance(nodes, list) or not isinstance(edges, list):
-                            coverage = False
-                            break
-                        if not nodes and edges:
-                            coverage = False
-                            break
-                        for node in nodes:
-                            if not isinstance(node, dict):
-                                coverage = False
-                                break
-                            node_id = node.get("id")
-                            if not isinstance(node_id, str) or not conn.execute(
-                                "SELECT 1 FROM nodes WHERE id=? LIMIT 1",
-                                (node_id,),
-                            ).fetchone():
-                                coverage = False
-                                break
-                        if not coverage:
-                            break
-                finally:
-                    conn.close()
-            except (OSError, sqlite3.Error, KeyError, TypeError):
-                coverage = False
+    uncovered = _dashboard_uncovered_runtime_overlay_nodes(index_path)
+    coverage = uncovered == set()
 
     if cache_key is not None:
         _OVERLAY_INDEX_COVERAGE_CACHE_KEY = cache_key
@@ -2971,10 +3043,13 @@ def _graph_neighborhood(
     if "/" in slug or "\\" in slug or ".." in slug:
         return {"nodes": [], "edges": [], "center": None}
     normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
-    if (
-        not _dashboard_graph_has_runtime_overlays()
-        or _dashboard_index_covers_runtime_overlays(_dashboard_graph_index_path())
-    ):
+    index_path = _dashboard_graph_index_path()
+    has_runtime_overlays = _dashboard_graph_has_runtime_overlays()
+    index_covers_overlays = (
+        not has_runtime_overlays
+        or _dashboard_index_covers_runtime_overlays(index_path)
+    )
+    if index_covers_overlays:
         indexed = _graph_neighborhood_from_index(
             slug,
             hops=hops,
@@ -2983,6 +3058,18 @@ def _graph_neighborhood(
         )
         if indexed is not None:
             return indexed
+    elif hops == 1 and index_path.is_file() and _dashboard_index_matches_manifest(index_path):
+        indexed = _graph_neighborhood_from_index(
+            slug,
+            hops=hops,
+            limit=limit,
+            entity_type=normalized_entity_type,
+        )
+        center = indexed.get("center") if isinstance(indexed, dict) else None
+        uncovered = _dashboard_uncovered_runtime_overlay_nodes(index_path)
+        if indexed is not None and isinstance(center, str) and uncovered is not None:
+            if center not in uncovered:
+                return indexed
     try:
         G = _load_dashboard_graph()
     except Exception:  # noqa: BLE001 — graph is advisory; blank on error
@@ -4588,6 +4675,10 @@ def _wiki_index_entries(
     is too large to render as one HTML page, so the dashboard samples
     a bounded number of pages per entity type.
     """
+    indexed = _wiki_index_entries_from_dashboard_index(limit_per_type)
+    if indexed is not None:
+        return indexed
+
     base = _wiki_dir() / "entities"
     if not base.is_dir():
         return []
@@ -4633,6 +4724,156 @@ def _wiki_index_entries(
     return out
 
 
+def _wiki_index_entries_from_dashboard_index(
+    limit_per_type: int | None,
+) -> list[dict] | None:
+    index_path = _dashboard_graph_index_path()
+    if not index_path.is_file() or not _dashboard_index_matches_manifest(index_path):
+        return None
+
+    out: list[dict] = []
+    try:
+        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+        try:
+            for _sub, entity_type, _recursive in _DASHBOARD_ENTITY_SOURCES:
+                params: list[Any] = [entity_type]
+                limit_sql = ""
+                if limit_per_type is not None:
+                    limit_sql = " LIMIT ?"
+                    params.append(max(0, int(limit_per_type)))
+                rows = conn.execute(
+                    "SELECT id,label,type,tags,description,quality_score FROM nodes "
+                    "WHERE type=? ORDER BY lower(label), id" + limit_sql,
+                    params,
+                )
+                for (
+                    node_id,
+                    label,
+                    row_type,
+                    tags_raw,
+                    description_raw,
+                    quality_score,
+                ) in rows:
+                    node_id_text = str(node_id)
+                    slug = (
+                        node_id_text.split(":", 1)[1]
+                        if ":" in node_id_text
+                        else str(label)
+                    )
+                    if not _is_safe_slug(slug):
+                        continue
+                    try:
+                        parsed_tags = json.loads(str(tags_raw or "[]"))
+                    except json.JSONDecodeError:
+                        parsed_tags = []
+                    all_tags = [
+                        str(tag) for tag in parsed_tags
+                        if isinstance(tag, str)
+                    ]
+                    description, _truncated = _truncate_text(
+                        _frontmatter_text(description_raw),
+                        200,
+                    )
+                    out.append({
+                        "slug": slug,
+                        "display_slug": _display_slug(str(label or slug)),
+                        "type": str(row_type or entity_type),
+                        "tags": all_tags[:6],
+                        "search_tags": all_tags,
+                        "description": description,
+                        "grade": _grade_from_quality_score(quality_score),
+                    })
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return None
+    return out
+
+
+def _grade_from_quality_score(value: Any) -> str:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if score >= 0.80:
+        return "A"
+    if score >= 0.60:
+        return "B"
+    if score >= 0.40:
+        return "C"
+    if score >= 0.0:
+        return "D"
+    return ""
+
+
+def _wiki_render_cache_key(
+    selected_type: str | None,
+    query: str,
+) -> tuple[Any, ...] | None:
+    index_path = _dashboard_graph_index_path()
+    if not index_path.is_file() or not _dashboard_index_matches_manifest(index_path):
+        return None
+    try:
+        index_stat = index_path.stat()
+        source_stat = Path(__file__).stat()
+    except OSError:
+        return None
+    try:
+        css_hash = hashlib.sha256(
+            _monitor_asset_text("monitor.css").encode("utf-8")
+        ).hexdigest()
+    except Exception:
+        css_hash = ""
+    return (
+        "wiki-index-v1",
+        selected_type or "",
+        query,
+        str(index_path.resolve()),
+        index_stat.st_mtime_ns,
+        index_stat.st_size,
+        _dashboard_graph_manifest_export_id() or "",
+        source_stat.st_mtime_ns,
+        source_stat.st_size,
+        css_hash,
+    )
+
+
+def _wiki_render_cache_token(cache_key: tuple[Any, ...]) -> str:
+    return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
+
+
+def _wiki_render_disk_cache_path() -> Path:
+    return _claude_dir() / ".ctx-monitor-wiki-cache.json"
+
+
+def _read_wiki_render_disk_cache(cache_token: str) -> str | None:
+    try:
+        data = json.loads(_wiki_render_disk_cache_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
+        return None
+    html_text = data.get("html")
+    return html_text if isinstance(html_text, str) else None
+
+
+def _write_wiki_render_disk_cache(cache_token: str, html_text: str) -> None:
+    try:
+        _atomic_write_text(
+            _wiki_render_disk_cache_path(),
+            json.dumps({
+                "schema_version": 1,
+                "cache_token": cache_token,
+                "html": html_text,
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, TypeError, ValueError):
+        return
+
+
 def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
     """Card grid of every wiki entity — search + type filter + sidecar grades."""
     selected_type = _normalize_dashboard_entity_type(entity_type) if entity_type else None
@@ -4642,6 +4883,19 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
             f"<div class='error'>Unsupported entity type: {html.escape(entity_type)}</div>",
         )
     initial_query = query.strip()
+    cache_key = _wiki_render_cache_key(selected_type, initial_query)
+    global _WIKI_RENDER_CACHE_KEY, _WIKI_RENDER_CACHE_VALUE
+    if cache_key is not None:
+        if _WIKI_RENDER_CACHE_KEY == cache_key and _WIKI_RENDER_CACHE_VALUE is not None:
+            return _WIKI_RENDER_CACHE_VALUE
+        cache_token = _wiki_render_cache_token(cache_key)
+        cached = _read_wiki_render_disk_cache(cache_token)
+        if cached is not None:
+            _WIKI_RENDER_CACHE_KEY = cache_key
+            _WIKI_RENDER_CACHE_VALUE = cached
+            return cached
+    else:
+        cache_token = ""
     entries = _wiki_index_entries()
     wstats = _wiki_stats()
     total_available = int(wstats.get("total") or len(entries))
@@ -4650,6 +4904,10 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
     for entry in entries:
         slug = str(entry["slug"])
         row_type = str(entry["type"])
+        grade = str(entry.get("grade") or "")
+        if grade:
+            grade_by_key[(slug, row_type)] = grade
+            continue
         sidecar = _load_sidecar(slug, entity_type=row_type)
         if sidecar:
             grade_by_key[(slug, row_type)] = str(sidecar.get("grade") or "")
@@ -4758,7 +5016,12 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
         "wApply();\n"
         "</script>"
     )
-    return _layout("Wiki", body)
+    html_out = _layout("Wiki", body)
+    if cache_key is not None:
+        _write_wiki_render_disk_cache(cache_token, html_out)
+        _WIKI_RENDER_CACHE_KEY = cache_key
+        _WIKI_RENDER_CACHE_VALUE = html_out
+    return html_out
 
 
 def _docs_roots() -> list[Path]:
@@ -4767,6 +5030,88 @@ def _docs_roots() -> list[Path]:
         if root not in roots and (root / "docs").is_dir():
             roots.append(root)
     return roots
+
+
+def _docs_cache_files() -> list[Path]:
+    files: list[Path] = []
+    seen: set[Path] = set()
+    for root in _docs_roots():
+        candidates = [root / "README.md", root / "graph" / "README.md", root / "mkdocs.yml"]
+        docs_dir = root / "docs"
+        if docs_dir.is_dir():
+            candidates.extend(sorted(docs_dir.rglob("*.md")))
+        for path in candidates:
+            if not path.is_file():
+                continue
+            try:
+                resolved = path.resolve()
+            except OSError:
+                resolved = path
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            files.append(path)
+    return files
+
+
+def _docs_render_cache_key() -> tuple[Any, ...]:
+    parts: list[Any] = []
+    try:
+        stat = Path(__file__).stat()
+        parts.append(("ctx_monitor", stat.st_mtime_ns, stat.st_size))
+    except OSError:
+        parts.append(("ctx_monitor", None, None))
+    for asset_name in ("monitor.css", "monitor-docs.js"):
+        try:
+            asset_text = _monitor_asset_text(asset_name)
+            asset_hash = hashlib.sha256(asset_text.encode("utf-8")).hexdigest()
+        except Exception:
+            asset_hash = ""
+        parts.append(("asset", asset_name, asset_hash))
+    for path in _docs_cache_files():
+        try:
+            stat = path.stat()
+            path_name = str(path.resolve())
+            parts.append((path_name, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            continue
+    return tuple(parts)
+
+
+def _docs_render_cache_token(cache_key: tuple[Any, ...]) -> str:
+    return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
+
+
+def _docs_render_disk_cache_path() -> Path:
+    return _claude_dir() / ".ctx-monitor-docs-cache.json"
+
+
+def _read_docs_render_disk_cache(cache_token: str) -> str | None:
+    try:
+        data = json.loads(_docs_render_disk_cache_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
+        return None
+    html_text = data.get("html")
+    return html_text if isinstance(html_text, str) else None
+
+
+def _write_docs_render_disk_cache(cache_token: str, html_text: str) -> None:
+    try:
+        _atomic_write_text(
+            _docs_render_disk_cache_path(),
+            json.dumps({
+                "schema_version": 1,
+                "cache_token": cache_token,
+                "html": html_text,
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, TypeError, ValueError):
+        return
 
 
 def _doc_title(text: str, fallback: str) -> str:
@@ -5265,6 +5610,17 @@ def _render_docs_page(
 
 
 def _render_docs() -> str:
+    cache_key = _docs_render_cache_key()
+    global _DOCS_RENDER_CACHE_KEY, _DOCS_RENDER_CACHE_VALUE
+    if _DOCS_RENDER_CACHE_KEY == cache_key and _DOCS_RENDER_CACHE_VALUE is not None:
+        return _DOCS_RENDER_CACHE_VALUE
+    cache_token = _docs_render_cache_token(cache_key)
+    cached = _read_docs_render_disk_cache(cache_token)
+    if cached is not None:
+        _DOCS_RENDER_CACHE_KEY = cache_key
+        _DOCS_RENDER_CACHE_VALUE = cached
+        return cached
+
     entries = _docs_index_entries()
     public_docs_url = "https://stevesolun.github.io/ctx/"
     tabs = _docs_tabs(entries)
@@ -5275,7 +5631,11 @@ def _render_docs() -> str:
             f"<p class='muted'>Open the public docs at "
             f"<a href='{public_docs_url}'>{public_docs_url}</a>.</p></div>"
         )
-        return _layout("Docs", body)
+        html_out = _layout("Docs", body)
+        _write_docs_render_disk_cache(cache_token, html_out)
+        _DOCS_RENDER_CACHE_KEY = cache_key
+        _DOCS_RENDER_CACHE_VALUE = html_out
+        return html_out
 
     tab_buttons = "".join(
         f"<button class='docs-tab-button{' active' if idx == 0 else ''}' "
@@ -5336,7 +5696,11 @@ def _render_docs() -> str:
         + _monitor_inline_script("monitor-docs.js")
         + "</div>"
     )
-    return _layout("Docs", body)
+    html_out = _layout("Docs", body)
+    _write_docs_render_disk_cache(cache_token, html_out)
+    _DOCS_RENDER_CACHE_KEY = cache_key
+    _DOCS_RENDER_CACHE_VALUE = html_out
+    return html_out
 
 
 def _render_manage(mutations_enabled: bool | None = None) -> str:
@@ -5688,14 +6052,121 @@ def _render_harness_wizard() -> str:
 
 
 def _kpi_summary_cache_key(sidecar_dir: Path) -> tuple[Any, ...]:
-    parts: list[Any] = []
-    for path in (sidecar_dir, sidecar_dir / "mcp"):
+    parts: list[tuple[str, str, int, int, int, int]] = []
+    for root in (sidecar_dir, sidecar_dir / "mcp"):
         try:
-            stat = path.stat()
-            parts.extend((path.resolve(), stat.st_mtime_ns, stat.st_size))
+            root_name = str(root.resolve())
         except OSError:
-            parts.extend((path.resolve(), None, None))
+            root_name = str(root)
+        buckets = {
+            "quality": [0, 0, 0, 0],
+            "lifecycle": [0, 0, 0, 0],
+        }
+        try:
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    name = entry.name
+                    if (
+                        name.startswith(".")
+                        or not name.endswith(".json")
+                        or not entry.is_file(follow_symlinks=False)
+                    ):
+                        continue
+                    bucket = (
+                        "lifecycle"
+                        if name.endswith(".lifecycle.json")
+                        else "quality"
+                    )
+                    try:
+                        stat = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    data = buckets[bucket]
+                    data[0] += 1
+                    data[1] += int(stat.st_size)
+                    data[2] = max(data[2], int(stat.st_mtime_ns))
+                    data[3] = (data[3] + int(stat.st_mtime_ns)) & ((1 << 63) - 1)
+        except OSError:
+            pass
+        for bucket, values in buckets.items():
+            parts.append((root_name, bucket, values[0], values[1], values[2], values[3]))
     return tuple(parts)
+
+
+def _kpi_summary_cache_token(cache_key: tuple[Any, ...]) -> str:
+    return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
+
+
+def _kpi_summary_disk_cache_path(sidecar_dir: Path) -> Path:
+    return sidecar_dir / ".dashboard-kpi-summary.json"
+
+
+def _dashboard_summary_from_dict(summary_cls: Any, data: Any) -> Any | None:
+    if not isinstance(data, dict):
+        return None
+
+    def dict_field(name: str) -> dict[str, Any]:
+        value = data.get(name)
+        return dict(value) if isinstance(value, dict) else {}
+
+    def list_field(name: str) -> list[dict[str, Any]]:
+        value = data.get(name)
+        if not isinstance(value, list):
+            return []
+        return [dict(item) for item in value if isinstance(item, dict)]
+
+    try:
+        return summary_cls(
+            generated_at=str(data.get("generated_at") or ""),
+            total=int(data.get("total") or 0),
+            by_subject=dict_field("by_subject"),
+            grade_counts=dict_field("grade_counts"),
+            lifecycle_counts=dict_field("lifecycle_counts"),
+            category_breakdown=list_field("category_breakdown"),
+            hard_floor_counts=dict_field("hard_floor_counts"),
+            low_quality_candidates=list_field("low_quality_candidates"),
+            archived=list_field("archived"),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_kpi_summary_disk_cache(
+    sidecar_dir: Path,
+    cache_token: str,
+    summary_cls: Any,
+) -> Any | None:
+    try:
+        data = json.loads(
+            _kpi_summary_disk_cache_path(sidecar_dir).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
+        return None
+    return _dashboard_summary_from_dict(summary_cls, data.get("summary"))
+
+
+def _write_kpi_summary_disk_cache(
+    sidecar_dir: Path,
+    cache_token: str,
+    summary: Any,
+) -> None:
+    try:
+        payload = {
+            "schema_version": 1,
+            "cache_token": cache_token,
+            "summary": summary.to_dict(),
+        }
+        _atomic_write_text(
+            _kpi_summary_disk_cache_path(sidecar_dir),
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, TypeError, ValueError):
+        return
 
 
 def _kpi_summary():
@@ -5706,6 +6177,7 @@ def _kpi_summary():
     explanatory empty state instead of failing.
     """
     try:
+        from kpi_dashboard import DashboardSummary  # type: ignore
         from kpi_dashboard import generate  # type: ignore
         from ctx_lifecycle import LifecycleSources  # type: ignore
     except Exception:  # noqa: BLE001 — KPIs are advisory
@@ -5721,6 +6193,13 @@ def _kpi_summary():
         and time.monotonic() - _KPI_SUMMARY_CACHE_AT < _KPI_SUMMARY_CACHE_SECONDS
     ):
         return _KPI_SUMMARY_CACHE_VALUE
+    cache_token = _kpi_summary_cache_token(cache_key)
+    summary = _read_kpi_summary_disk_cache(sidecar_dir, cache_token, DashboardSummary)
+    if summary is not None:
+        _KPI_SUMMARY_CACHE_KEY = cache_key
+        _KPI_SUMMARY_CACHE_VALUE = summary
+        _KPI_SUMMARY_CACHE_AT = time.monotonic()
+        return summary
     try:
         from ctx_config import cfg  # type: ignore
         sources = LifecycleSources(
@@ -5738,6 +6217,7 @@ def _kpi_summary():
         summary = generate(sources=sources, top_n=25)
     except Exception:  # noqa: BLE001
         return None
+    _write_kpi_summary_disk_cache(sidecar_dir, cache_token, summary)
     _KPI_SUMMARY_CACHE_KEY = cache_key
     _KPI_SUMMARY_CACHE_VALUE = summary
     _KPI_SUMMARY_CACHE_AT = time.monotonic()
