@@ -19,6 +19,7 @@ import pytest
 
 import ctx_monitor as cm
 import ctx_init as ci
+from ctx import dashboard_docs
 from ctx.core.wiki import wiki_queue
 
 
@@ -38,8 +39,7 @@ def fake_claude(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_AT", 0.0)
     monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_KEY", None)
     monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_VALUE", None)
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
+    dashboard_docs.reset_docs_render_cache()
     return claude
 
 
@@ -3500,8 +3500,7 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
 
 
 def _use_temp_docs_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
+    dashboard_docs.reset_docs_render_cache()
     monkeypatch.setattr(
         cm,
         "_docs_render_disk_cache_path",
@@ -3674,8 +3673,7 @@ def test_render_docs_reuses_disk_cache_after_process_cache_reset(
     first = cm._render_docs()
     assert (tmp_path / ".ctx-monitor-docs-cache.json").is_file()
 
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
+    dashboard_docs.reset_docs_render_cache()
 
     def fail_render_markdown(*args: object, **kwargs: object) -> str:
         raise AssertionError("fresh process should read the rendered docs cache")
@@ -3694,7 +3692,11 @@ def test_render_docs_markdown_preserves_mkdocs_tab_controls() -> None:
         "    Second body\n"
     )
 
-    html_out = cm._render_docs_markdown(markdown_text, "doc-home")
+    html_out = dashboard_docs.render_docs_markdown(
+        markdown_text,
+        "doc-home",
+        fallback_renderer=cm._render_wiki_markdown,
+    )
 
     assert "&lt;input" not in html_out
     assert 'type="radio"' in html_out
