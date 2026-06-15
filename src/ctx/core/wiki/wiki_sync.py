@@ -19,6 +19,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ctx.core.entity_types import (
+    ENTITY_TYPE_FOR_SUBJECT_TYPE,
+    INDEX_SECTION_FOR_SUBJECT,
+    SUBJECT_TYPE_FOR_ENTITY_TYPE,
+    entity_index_link,
+)
 from ctx.core.wiki.wiki_utils import SAFE_NAME_RE, get_field as _find_field
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_json, atomic_write_text
@@ -168,16 +174,8 @@ def _sanitize_yaml_value(value: str) -> str:
     return sanitized.strip()
 
 
-_SUBJECT_TYPE_FOR_ENTITY_TYPE: dict[str, str] = {
-    "skill": "skills",
-    "agent": "agents",
-    "mcp-server": "mcp-servers",
-    "plugin": "plugins",
-    "harness": "harnesses",
-}
-_ENTITY_TYPE_FOR_SUBJECT_TYPE: dict[str, str] = {
-    value: key for key, value in _SUBJECT_TYPE_FOR_ENTITY_TYPE.items()
-}
+_SUBJECT_TYPE_FOR_ENTITY_TYPE = SUBJECT_TYPE_FOR_ENTITY_TYPE
+_ENTITY_TYPE_FOR_SUBJECT_TYPE = ENTITY_TYPE_FOR_SUBJECT_TYPE
 
 
 def _subject_type_for_manifest_entry(entry: dict) -> str:
@@ -303,18 +301,11 @@ Detected and loaded by skill-router.
 
 
 
-# Section header used for each subject type in index.md. Adding a new
-# subject type requires extending this map and the entity-link helper
-# below. ``"skills"`` stays first so the default keyword arg for backward
-# compat (callers that predate the subject_type param) keeps writing
-# into the same section it always did.
-_INDEX_SECTION_FOR_SUBJECT: dict[str, str] = {
-    "skills": "## Skills",
-    "agents": "## Agents",
-    "mcp-servers": "## MCP Servers",
-    "plugins": "## Plugins",
-    "harnesses": "## Harnesses",
-}
+# Section header used for each subject type in index.md. The canonical map
+# lives in ctx.core.entity_types so wiki sync, graphify, and dashboard routing
+# stay aligned. ``"skills"`` stays first so the default keyword arg for
+# backward compat keeps writing into the same section it always did.
+_INDEX_SECTION_FOR_SUBJECT = INDEX_SECTION_FOR_SUBJECT
 
 
 def _entity_index_link(subject_type: str, slug: str) -> str:
@@ -325,11 +316,10 @@ def _entity_index_link(subject_type: str, slug: str) -> str:
     to keep ``ls`` and Obsidian fast at the projected ~12k+ scale —
     so their links must include the shard segment.
     """
-    if subject_type == "mcp-servers":
-        first = slug[0] if slug else ""
-        shard = first if first.isalpha() else "0-9"
-        return f"entities/mcp-servers/{shard}/{slug}"
-    return f"entities/{subject_type}/{slug}"
+    target = entity_index_link(subject_type, slug)
+    if target is None:
+        raise ValueError(f"unknown subject_type {subject_type!r}")
+    return target
 
 
 def update_index(

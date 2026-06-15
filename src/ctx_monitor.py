@@ -81,6 +81,7 @@ from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
 from ctx import dashboard_docs
+from ctx.core import entity_types as core_entity_types
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
 from ctx.utils._file_lock import file_lock
@@ -228,16 +229,10 @@ def _load_dashboard_graph() -> Any:
 
 
 def _mcp_shard(slug: str) -> str:
-    first = slug[0] if slug else ""
-    return first if first.isalpha() else "0-9"
+    return core_entity_types.mcp_shard(slug)
 
 
-_DASHBOARD_ENTITY_SOURCES: tuple[tuple[str, str, bool], ...] = (
-    ("skills", "skill", False),
-    ("agents", "agent", False),
-    ("mcp-servers", "mcp-server", True),
-    ("harnesses", "harness", False),
-)
+_DASHBOARD_ENTITY_SOURCES: tuple[tuple[str, str, bool], ...] = core_entity_types.entity_source_specs()
 _DASHBOARD_ENTITY_TYPES: tuple[str, ...] = tuple(
     entity_type for _, entity_type, _ in _DASHBOARD_ENTITY_SOURCES
 )
@@ -245,21 +240,10 @@ _DEFAULT_GRAPH_FOCUS_SLUG = "github"
 
 
 def _normalize_dashboard_entity_type(raw: object) -> str | None:
-    if raw is None:
-        return None
-    value = str(raw).strip()
-    normalized = {
-        "skills": "skill",
-        "skill": "skill",
-        "agents": "agent",
-        "agent": "agent",
-        "mcp": "mcp-server",
-        "mcp-server": "mcp-server",
-        "mcp-servers": "mcp-server",
-        "harness": "harness",
-        "harnesses": "harness",
-    }.get(value, value)
-    return normalized if normalized in _DASHBOARD_ENTITY_TYPES else None
+    return core_entity_types.normalize_entity_type(
+        raw,
+        allowed=_DASHBOARD_ENTITY_TYPES,
+    )
 
 
 def _audit_entity_type(row: dict) -> str | None:
@@ -290,14 +274,12 @@ def _wiki_entity_path(slug: str, entity_type: str | None = None) -> Path | None:
     # Validate slug so a crafted request can't escape the wiki tree.
     if not _is_safe_slug(slug):
         return None
-    for sub, current_type, recursive in _DASHBOARD_ENTITY_SOURCES:
+    for _sub, current_type, _recursive in _DASHBOARD_ENTITY_SOURCES:
         if entity_type is not None and entity_type != current_type:
             continue
-        p = (
-            _wiki_dir() / "entities" / sub / _mcp_shard(slug) / f"{slug}.md"
-            if recursive
-            else _wiki_dir() / "entities" / sub / f"{slug}.md"
-        )
+        p = core_entity_types.entity_page_path(_wiki_dir(), current_type, slug)
+        if p is None:
+            continue
         if p.exists():
             return p
     return None
@@ -310,13 +292,10 @@ def _wiki_entity_target_path(slug: str, entity_type: str) -> Path:
     normalized = _normalize_dashboard_entity_type(entity_type)
     if normalized is None:
         raise ValueError(f"unsupported entity_type: {entity_type!r}")
-    for sub, current_type, recursive in _DASHBOARD_ENTITY_SOURCES:
-        if normalized != current_type:
-            continue
-        if recursive:
-            return _wiki_dir() / "entities" / sub / _mcp_shard(slug) / f"{slug}.md"
-        return _wiki_dir() / "entities" / sub / f"{slug}.md"
-    raise ValueError(f"unsupported entity_type: {entity_type!r}")
+    path = core_entity_types.entity_page_path(_wiki_dir(), normalized, slug)
+    if path is None:
+        raise ValueError(f"unsupported entity_type: {entity_type!r}")
+    return path
 
 
 def _iter_wiki_entity_paths(

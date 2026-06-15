@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from ctx.core import entity_types
 from ctx.core.wiki import wiki_sync
 # ---------------------------------------------------------------------------
 # Helpers
@@ -587,6 +588,8 @@ class TestUpsertSkillPage:
 
 class TestEntityIndexLink:
     def test_skills_flat_path(self) -> None:
+        assert wiki_sync._SUBJECT_TYPE_FOR_ENTITY_TYPE is entity_types.SUBJECT_TYPE_FOR_ENTITY_TYPE
+        assert wiki_sync._INDEX_SECTION_FOR_SUBJECT is entity_types.INDEX_SECTION_FOR_SUBJECT
         result = wiki_sync._entity_index_link("skills", "my-skill")
         assert result == "entities/skills/my-skill"
 
