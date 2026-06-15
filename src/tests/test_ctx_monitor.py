@@ -3409,6 +3409,7 @@ def test_render_docs_lists_repo_docs(
     monkeypatch.setattr(cm, "_docs_roots", lambda: [tmp_path])
 
     html_out = cm._render_docs()
+    docs_script = cm._monitor_asset_text("monitor-docs.js")
 
     assert "<h1>Docs</h1>" in html_out
     assert "class='docs-shell'" in html_out
@@ -3436,6 +3437,7 @@ def test_render_docs_lists_repo_docs(
     assert 'href="#doc-other-docs-knowledge-graph-md"' in html_out
     assert 'data-doc-tab="other"' in html_out
     assert "id='docs-search-results'" in html_out
+    assert docs_script in html_out
     assert "jumpToDocTarget" in html_out
     assert "nested docs body" in html_out
     assert '<div class="grid cards">' in html_out
