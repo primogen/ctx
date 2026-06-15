@@ -13,6 +13,8 @@ and assert that the payload never appears in an executable form.
 
 from __future__ import annotations
 
+import builtins
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -38,6 +40,32 @@ def graph_with_hostile_labels() -> tuple[nx.Graph, dict]:
     G.add_edge("skill:evil", "skill:benign", weight=1)
     pos = {"skill:evil": (0.0, 0.0), "skill:benign": (1.0, 1.0)}
     return G, pos
+
+
+def test_html_visualizer_imports_without_optional_plotly(monkeypatch):
+    previous = sys.modules.pop("wiki_visualize", None)
+    real_import = builtins.__import__
+
+    def block_plotly(name, *args, **kwargs):
+        if name == "plotly" or name.startswith("plotly."):
+            raise ImportError("plotly intentionally unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", block_plotly)
+    try:
+        wv = importlib.import_module("wiki_visualize")
+        G = nx.Graph()
+        G.add_node("skill:a", label="alpha", type="skill", tags=["python"])
+        pos = {"skill:a": (0.0, 0.0)}
+
+        html = wv.build_html_with_filters(G, pos, title="Knowledge Graph")
+
+        assert "<title>Knowledge Graph</title>" in html
+        assert "alpha" in html
+    finally:
+        sys.modules.pop("wiki_visualize", None)
+        if previous is not None:
+            sys.modules["wiki_visualize"] = previous
 
 
 def test_title_is_html_escaped(graph_with_hostile_labels):

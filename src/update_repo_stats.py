@@ -617,13 +617,17 @@ def format_edges(n: int) -> str:
     return str(n)
 
 
-def build_replacements(
-    stats: Mapping[str, int | None],
-    tests: int | None,
-    converted: int | None,
-) -> list[tuple[re.Pattern, str]]:
-    """Return (regex, replacement) pairs for every stat."""
-    reps: list[tuple[re.Pattern, str]] = []
+Replacement = tuple[re.Pattern[str], str]
+
+_ENTITY_COUNT_REPLACEMENTS: tuple[tuple[str, str, str, str], ...] = (
+    ("skills", "Skills", "skill", r"badge/Skills-[0-9%,]+-"),
+    ("agents", "Agents", "agent", r"badge/Agents-[0-9%,]+-"),
+    ("mcps", "MCPs", "mcp-server", r"badge/MCPs-[0-9,%]+-"),
+    ("harnesses", "Harnesses", "harness", r"badge/Harnesses-[0-9,%]+-"),
+)
+
+
+def _append_badge_target_replacements(reps: list[Replacement]) -> None:
     # README badges are clicked from GitHub/Hugging Face, so they must point at
     # public documentation. The live searchable catalog remains
     # http://127.0.0.1:8765/wiki?type=... after `ctx-monitor serve`.
@@ -644,16 +648,50 @@ def build_replacements(
             rf"\1({href})",
         ))
 
+
+def _append_catalog_card_count(
+    reps: list[Replacement],
+    *,
+    entity_type: str,
+    count: int,
+) -> None:
+    reps.append((
+        re.compile(
+            rf'(<article class="ctx-catalog-card" data-type="{re.escape(entity_type)}"'
+            r'[\s\S]*?<p class="ctx-catalog-muted">)[\d,]+ entities(</p>)'
+        ),
+        rf"\g<1>{count:,} entities\2",
+    ))
+
+
+def _append_entity_count_replacements(
+    reps: list[Replacement],
+    stats: Mapping[str, int | None],
+) -> None:
+    for key, badge, entity_type, pattern in _ENTITY_COUNT_REPLACEMENTS:
+        value = stats.get(key)
+        if not value:
+            continue
+        count = int(value)
+        reps.append((
+            re.compile(pattern),
+            f"badge/{badge}-{count:,}-".replace(",", "%2C"),
+        ))
+        _append_catalog_card_count(reps, entity_type=entity_type, count=count)
+
+
+def build_replacements(
+    stats: Mapping[str, int | None],
+    tests: int | None,
+    converted: int | None,
+) -> list[Replacement]:
+    """Return (regex, replacement) pairs for every stat."""
+    reps: list[Replacement] = []
+    _append_badge_target_replacements(reps)
+    _append_entity_count_replacements(reps, stats)
+
     if stats["skills"]:
         s = stats["skills"]
-        reps.append((re.compile(r"badge/Skills-[0-9%,]+-"), f"badge/Skills-{s:,}-".replace(",", "%2C")))
-        reps.append((
-            re.compile(
-                r'(<article class="ctx-catalog-card" data-type="skill"'
-                r'[\s\S]*?<p class="ctx-catalog-muted">)[\d,]+ entities(</p>)'
-            ),
-            rf"\g<1>{s:,} entities\2",
-        ))
         # 4-type pattern: "92,815 skills, 464 agents, 10,787 MCP servers,
         # and 13 harnesses". Keep this before the 3-type fallback
         # so the README's harness-aware lead sentence stays machine-owned.
@@ -700,40 +738,8 @@ def build_replacements(
 
     if stats["agents"]:
         a = stats["agents"]
-        reps.append((re.compile(r"badge/Agents-[0-9%,]+-"), f"badge/Agents-{a:,}-".replace(",", "%2C")))
-        reps.append((
-            re.compile(
-                r'(<article class="ctx-catalog-card" data-type="agent"'
-                r'[\s\S]*?<p class="ctx-catalog-muted">)[\d,]+ entities(</p>)'
-            ),
-            rf"\g<1>{a:,} entities\2",
-        ))
         reps.append((re.compile(r"#\s*([\d,]+)\s+entity pages\s*\(one per agent\)"),
                      f"# {a} entity pages (one per agent)"))
-
-    if stats["mcps"]:
-        m = stats["mcps"]
-        reps.append((re.compile(r"badge/MCPs-[0-9,%]+-"),
-                     f"badge/MCPs-{m:,}-".replace(",", "%2C")))
-        reps.append((
-            re.compile(
-                r'(<article class="ctx-catalog-card" data-type="mcp-server"'
-                r'[\s\S]*?<p class="ctx-catalog-muted">)[\d,]+ entities(</p>)'
-            ),
-            rf"\g<1>{m:,} entities\2",
-        ))
-
-    if stats["harnesses"]:
-        h = stats["harnesses"]
-        reps.append((re.compile(r"badge/Harnesses-[0-9,%]+-"),
-                     f"badge/Harnesses-{h:,}-".replace(",", "%2C")))
-        reps.append((
-            re.compile(
-                r'(<article class="ctx-catalog-card" data-type="harness"'
-                r'[\s\S]*?<p class="ctx-catalog-muted">)[\d,]+ entities(</p>)'
-            ),
-            rf"\g<1>{h:,} entities\2",
-        ))
 
     if stats["nodes"] and stats["edges"]:
         n = stats["nodes"]

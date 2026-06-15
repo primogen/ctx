@@ -2913,6 +2913,8 @@ def test_render_manage_includes_crud_and_upload_wizard(fake_claude: Path) -> Non
     assert "id='entity-editor-form'" in html_out
     assert "data-testid='entity-delete-button'" in html_out
     assert "Add or update entity" in html_out
+    assert "window.CTX_MONITOR_MANAGE" in html_out
+    assert cm._monitor_asset_text("monitor-manage.js").strip() in html_out
 
 
 def test_entity_search_and_detail_apis_support_edit_flow(
@@ -3409,6 +3411,7 @@ def test_render_docs_lists_repo_docs(
     monkeypatch.setattr(cm, "_docs_roots", lambda: [tmp_path])
 
     html_out = cm._render_docs()
+    docs_script = cm._monitor_asset_text("monitor-docs.js")
 
     assert "<h1>Docs</h1>" in html_out
     assert "class='docs-shell'" in html_out
@@ -3436,6 +3439,7 @@ def test_render_docs_lists_repo_docs(
     assert 'href="#doc-other-docs-knowledge-graph-md"' in html_out
     assert 'data-doc-tab="other"' in html_out
     assert "id='docs-search-results'" in html_out
+    assert docs_script in html_out
     assert "jumpToDocTarget" in html_out
     assert "nested docs body" in html_out
     assert '<div class="grid cards">' in html_out
@@ -3508,12 +3512,18 @@ def test_render_docs_falls_back_to_public_docs(
 
 def test_layout_nav_tabs_are_draggable_and_persist_order() -> None:
     out = cm._layout("test", "<p>body</p>")
+    css = cm._monitor_asset_text("monitor.css")
 
     assert "name='viewport'" in out
+    assert css.startswith(":root")
+    assert f"<style>{css}</style>" in out
     assert "id='dashboard-nav'" in out
     assert "data-nav-storage-key='ctx-monitor-nav-order'" in out
+    assert "data-nav-default-keys=" in out
     assert "draggable='true'" in out
     assert "data-nav-key='graph'" in out
+    assert "const defaultKeys = JSON.parse(nav.dataset.navDefaultKeys || '[]');" in out
+    assert "const defaultKeys = [" not in out
     assert "localStorage.setItem(storageKey" in out
     assert "dragstart" in out
     assert "function insertionTarget" in out

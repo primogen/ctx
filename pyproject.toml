@@ -15,7 +15,6 @@ dependencies = [
     "markdown>=3.6,<4",
     "networkx>=3,<4",
     "numpy>=1.24,<3",
-    "plotly>=5,<7",
     "pymdown-extensions>=10,<11",
     "pyyaml>=6,<7",
 ]
@@ -93,6 +92,9 @@ dev = [
 ]
 browser = [
     "playwright>=1.52",
+]
+viz = [
+    "plotly>=5,<7",
 ]
 embeddings = [
     "sentence-transformers>=2,<4",
@@ -195,6 +197,7 @@ py-modules = [
 packages = [
     "mcp_sources",
     "ctx",
+    "ctx.assets",
     "ctx.core",
     "ctx.core.graph",
     "ctx.core.quality",
@@ -214,7 +217,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-ctx = ["config.json", "skill-registry.json"]
+ctx = ["config.json", "skill-registry.json", "assets/*.js", "assets/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/tests"]

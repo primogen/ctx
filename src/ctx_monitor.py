@@ -75,6 +75,7 @@ import zlib
 from collections import defaultdict, deque
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
@@ -2166,255 +2167,16 @@ def _session_detail(session_id: str) -> dict:
 # ─── HTML rendering ──────────────────────────────────────────────────────────
 
 
-_CSS = """
-:root {
-    color-scheme: light dark;
-    --bg: #f5f7fb;
-    --surface: #ffffff;
-    --surface-2: #f8fafc;
-    --surface-3: #eef2f7;
-    --text: #0f172a;
-    --muted-text: #64748b;
-    --border: #d8e1ee;
-    --accent: #2563eb;
-    --accent-strong: #1d4ed8;
-    --accent-soft: #dbeafe;
-    --ok: #059669;
-    --warning: #d97706;
-    --danger: #dc2626;
-    --radius: 8px;
-    --shadow: 0 12px 34px rgba(15, 23, 42, 0.08);
-}
-* { box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-       max-width: 1180px; margin: 0 auto; padding: 1.25rem 1rem 2.5rem;
-       line-height: 1.5; background: var(--bg); color: var(--text); }
-h1 { margin-top: 0; letter-spacing: 0; }
-h2, h3 { letter-spacing: 0; }
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid var(--border);
-         font-size: 0.92rem; }
-th { background: var(--surface-3); font-weight: 600; }
-tr:hover { background: rgba(0,0,0,0.02); }
-button, input, select, textarea {
-    font: inherit;
-    color: inherit;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-}
-button {
-    cursor: pointer;
-    padding: 0.38rem 0.7rem;
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
-    font-weight: 650;
-}
-button:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
-button.secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
-button.secondary:hover { background: var(--surface-3); }
-input, select, textarea { padding: 0.42rem 0.55rem; }
-input:focus, select:focus, textarea:focus, button:focus {
-    outline: 2px solid var(--accent-soft);
-    outline-offset: 2px;
-}
-.pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
-        font-size: 0.8rem; font-weight: 600; background: #e5e7eb; color: #111; }
-.entity-type-skill { background: #e0e7ff; color: #312e81; }
-.entity-type-agent { background: #fef3c7; color: #78350f; }
-.entity-type-mcp-server { background: #fee2e2; color: #7f1d1d; }
-.entity-type-harness { background: #dcfce7; color: #14532d; }
-.grade-A { background: #d1fae5; color: #065f46; }
-.grade-B { background: #dbeafe; color: #1e3a8a; }
-.grade-C { background: #fef3c7; color: #78350f; }
-.grade-D { background: #fed7aa; color: #7c2d12; }
-.grade-F { background: #fee2e2; color: #7f1d1d; }
-code, pre { background: rgba(15,23,42,0.06); padding: 0 0.3rem; border-radius: 3px;
-            font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.85rem; }
-pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
-.muted { color: var(--muted-text); font-size: 0.85rem; }
-.error { color: #991b1b; background: #fee2e2; border: 1px solid #fecaca;
-         border-radius: 6px; padding: 0.5rem 0.65rem; }
-.nav { display: flex; gap: 0.35rem; margin: 0 0 1.4rem; align-items: center; flex-wrap: wrap;
-       position: sticky; top: 0; z-index: 10; padding: 0.55rem 0.45rem;
-       border: 1px solid var(--border); border-radius: var(--radius);
-       background: rgba(255,255,255,0.92); box-shadow: var(--shadow); backdrop-filter: blur(10px); }
-.nav a[draggable="true"] { cursor: grab; border-radius: 6px; padding: 0.28rem 0.48rem;
-                           font-weight: 620; color: #334155; }
-.nav a[draggable="true"]:hover { background: var(--surface-3); text-decoration: none; }
-.nav a.nav-dragging { opacity: 0.45; cursor: grabbing; }
-.nav a.nav-drag-over { outline: 2px solid #93c5fd; background: rgba(147,197,253,0.18); }
-.nav-reset { border: 1px solid #d1d5db; border-radius: 4px; background: transparent;
-             color: #6b7280; cursor: pointer; padding: 0.1rem 0.35rem; font-size: 0.78rem; }
-.card { border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem;
-        margin-bottom: 1rem; background: var(--surface); box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
-.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
-.wiki-entity-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
-                    gap: 1rem; align-items: start; }
-.wiki-body { overflow-wrap: anywhere; }
-.wiki-body h1, .wiki-body h2, .wiki-body h3 { margin-top: 0.9rem; }
-.wiki-body h1:first-child, .wiki-body h2:first-child, .wiki-body h3:first-child { margin-top: 0; }
-.wiki-body ul, .wiki-body ol { padding-left: 1.35rem; }
-.wiki-body li { margin: 0.2rem 0; }
-.wiki-body pre { white-space: pre-wrap; }
-.frontmatter-table { table-layout: fixed; font-size: 0.85rem; }
-.frontmatter-table td:last-child code { white-space: normal; overflow-wrap: anywhere; }
-.entity-tabs { display: flex; gap: 0.4rem; margin: 0.8rem 0 1rem; flex-wrap: wrap; }
-.entity-tab-button { border: 1px solid #d1d5db; border-radius: 6px; background: #fff;
-                     color: inherit; cursor: pointer; padding: 0.35rem 0.7rem; }
-.entity-tab-button.active { background: #111827; color: #fff; border-color: #111827; }
-.entity-tab-panel[hidden] { display: none; }
-.docs-shell { display: flex; flex-direction: column; gap: 1rem; }
-.docs-hero { border: 1px solid var(--border); border-radius: 12px;
-             background: linear-gradient(135deg, #ffffff 0%, #f8fbff 62%, #eef6ff 100%);
-             box-shadow: var(--shadow); padding: 1.25rem; overflow: hidden; }
-.docs-hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1.25rem;
-                  align-items: end; }
-.docs-eyebrow { color: var(--accent); font-size: 0.78rem; font-weight: 750; margin-bottom: 0.35rem; }
-.docs-hero h1 { margin: 0; font-size: clamp(2rem, 4vw, 3.2rem); line-height: 1.04; }
-.docs-hero p { max-width: 52rem; margin: 0.65rem 0 0; color: var(--muted-text); font-size: 1rem; }
-.docs-hero-meta { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
-.docs-stat { border: 1px solid rgba(37,99,235,0.18); border-radius: 999px;
-             background: rgba(37,99,235,0.08); color: #1e3a8a; padding: 0.28rem 0.65rem;
-             font-size: 0.82rem; font-weight: 700; white-space: nowrap; }
-.docs-actions { display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap;
-                margin-top: 1rem; }
-.docs-search-wrap { flex: 1 1 22rem; max-width: 38rem; }
-.docs-search-wrap input { width: 100%; padding: 0.62rem 0.75rem; border-radius: var(--radius);
-                          border-color: rgba(37,99,235,0.24); background: rgba(255,255,255,0.86); }
-.docs-public-link { font-weight: 700; white-space: nowrap; }
-.docs-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0;
-             border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
-             padding: 0.45rem; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
-.docs-tab-button { border: 1px solid transparent; border-radius: 999px; background: transparent;
-                   color: var(--muted-text); padding: 0.42rem 0.85rem; }
-.docs-tab-button:hover { background: var(--surface-3); color: var(--text); }
-.docs-tab-button.active { background: #111827; color: #fff; border-color: #111827; }
-.docs-tab-panel[hidden] { display: none; }
-.docs-reader { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-               gap: 1rem; align-items: start; }
-.docs-page-list { position: sticky; top: 4.5rem; display: flex; flex-direction: column;
-                  gap: 0.25rem; border: 1px solid var(--border); border-radius: 12px;
-                  background: var(--surface); padding: 0.6rem; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
-.docs-toc-page { border-bottom: 1px solid var(--border); padding: 0.2rem 0 0.35rem; }
-.docs-toc-page:last-child { border-bottom: 0; }
-.docs-page-list a { display: block; padding: 0.38rem 0.55rem; border-radius: 8px;
-                    color: var(--muted-text); line-height: 1.25; }
-.docs-page-list a:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
-.docs-page-link { color: var(--text) !important; font-weight: 750; }
-.docs-heading-list { display: flex; flex-direction: column; gap: 0.05rem; margin: 0.1rem 0 0.2rem; }
-.docs-heading-link { font-size: 0.82rem; font-weight: 600; }
-.docs-heading-level-2 { margin-left: 0.45rem; }
-.docs-heading-level-3 { margin-left: 1.1rem; }
-.docs-heading-level-4 { margin-left: 1.75rem; font-size: 0.78rem; }
-.docs-page { border: 1px solid var(--border); border-radius: 12px;
-             background: var(--surface); padding: 1.25rem 1.45rem; margin-bottom: 1rem;
-             box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
-.docs-page-source { display: flex; justify-content: space-between; gap: 0.75rem;
-                    align-items: center; margin-bottom: 0.85rem; color: var(--muted-text); }
-.docs-page-source code { background: var(--surface-3); color: var(--text); }
-.docs-page .admonition { border-left: 4px solid var(--accent); background: var(--surface-2);
-                         border-radius: var(--radius); padding: 0.75rem 0.9rem; margin: 1rem 0; }
-.docs-page .admonition-title { font-weight: 750; margin: 0 0 0.45rem; }
-.docs-page .tabbed-set { border: 1px solid var(--border); border-radius: var(--radius);
-                         padding: 0.75rem; margin: 1rem 0; }
-.docs-page p, .docs-page li { line-height: 1.65; }
-.docs-page h1 { font-size: 2rem; line-height: 1.12; }
-.docs-page h2 { font-size: 1.45rem; margin-top: 1.45rem; }
-.docs-page h3 { font-size: 1.12rem; margin-top: 1.15rem; }
-.docs-page .grid.cards > ul { list-style: none; padding-left: 0; display: grid;
-                              grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-                              gap: 0.85rem; }
-.docs-page .grid.cards > ul > li { border: 1px solid var(--border); border-radius: 12px;
-                                   background: var(--surface-2); padding: 0.95rem 1rem;
-                                   box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
-.docs-page .grid.cards > ul > li:hover { border-color: rgba(37,99,235,0.32);
-                                         background: #ffffff; }
-.docs-page .grid.cards hr { border: 0; border-top: 1px solid var(--border); margin: 0.55rem 0; }
-.docs-page .headerlink { color: var(--muted-text); font-size: 0.78em; margin-left: 0.35rem; }
-.docs-search-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-                       gap: 0.45rem; margin-top: 0.75rem; }
-.docs-search-results[hidden] { display: none; }
-.docs-search-result { display: flex; flex-direction: column; gap: 0.12rem; text-align: left;
-                      background: var(--surface); color: var(--text); border-color: var(--border);
-                      border-radius: var(--radius); padding: 0.55rem 0.65rem; }
-.docs-search-result span { color: var(--muted-text); font-size: 0.78rem; font-weight: 500; }
-.docs-search-empty { color: var(--muted-text); font-size: 0.86rem; padding: 0.4rem 0.1rem; }
-.quality-signal-table { table-layout: fixed; }
-.quality-signal-table td:last-child code { white-space: pre-wrap; overflow-wrap: anywhere; }
-.wizard-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-                 gap: 1rem; align-items: start; }
-.wizard-step { border-left: 3px solid var(--accent); padding-left: 0.8rem; margin-bottom: 1rem; }
-.wizard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
-.wizard-grid label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.9rem; }
-.wizard-grid .wide { grid-column: 1 / -1; }
-.setup-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem;
-                align-items: end; margin-bottom: 1rem; }
-.setup-kicker { text-transform: uppercase; letter-spacing: 0; font-size: 0.74rem;
-                font-weight: 750; color: var(--muted-text); }
-.setup-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.55rem;
-              margin: 0.8rem 0 1rem; }
-.setup-flow-step { border: 1px solid var(--border); border-radius: var(--radius);
-                   background: var(--surface); padding: 0.7rem; min-height: 4.4rem; }
-.setup-flow-step strong { display: block; font-size: 0.88rem; margin-bottom: 0.2rem; }
-.command-box { background: #0f172a; color: #e2e8f0; border-radius: var(--radius);
-               padding: 0.85rem; white-space: pre-wrap; overflow-x: auto; min-height: 8rem; }
-.harness-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.8rem;
-                background: var(--surface); display: flex; flex-direction: column; gap: 0.35rem; }
-.harness-card[data-fit-hidden="true"] { display: none; }
-.harness-card.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
-.harness-card button { align-self: flex-start; }
-.manage-results { display: flex; flex-direction: column; gap: 0.45rem; max-height: 65vh; overflow-y: auto; }
-.manage-result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.25rem 0.5rem;
-                 text-align: left; border: 1px solid var(--border); border-radius: var(--radius);
-                 padding: 0.65rem 0.75rem; background: var(--surface); cursor: pointer; }
-.manage-result:hover { border-color: var(--accent); background: var(--surface-2); }
-.manage-result .muted { grid-column: 1 / -1; font-size: 0.82rem; }
-@media (max-width: 860px) {
-    .wiki-entity-grid { grid-template-columns: 1fr; }
-    .wizard-layout, .wizard-grid, .setup-header, .setup-flow { grid-template-columns: 1fr; }
-    .docs-hero-grid { grid-template-columns: 1fr; }
-    .docs-hero-meta { justify-content: flex-start; }
-    .docs-reader { grid-template-columns: 1fr; }
-    .docs-page-list { position: static; }
-}
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg: #0b1120;
-        --surface: #111827;
-        --surface-2: #0f172a;
-        --surface-3: #1f2937;
-        --text: #e5e7eb;
-        --muted-text: #94a3b8;
-        --border: #334155;
-        --accent: #60a5fa;
-        --accent-strong: #93c5fd;
-        --accent-soft: rgba(96,165,250,0.28);
-        --shadow: 0 12px 34px rgba(0,0,0,0.28);
-    }
-    body { background: var(--bg); color: var(--text); }
-    th { background: rgba(255,255,255,0.05); }
-    tr:hover { background: rgba(255,255,255,0.03); }
-    .nav { background: rgba(17,24,39,0.92); }
-    .nav a[draggable="true"] { color: #e5e7eb; }
-    .nav a[draggable="true"]:hover { background: #1f2937; }
-    .card { border-color: var(--border); }
-    .entity-tab-button { background: #0f172a; border-color: #334155; }
-    .entity-tab-button.active { background: #e2e8f0; color: #0f172a; }
-    .docs-hero { background: linear-gradient(135deg, #111827 0%, #0f172a 62%, #0b1120 100%); }
-    .docs-stat { border-color: rgba(96,165,250,0.28); background: rgba(96,165,250,0.12);
-                 color: #bfdbfe; }
-    .docs-search-wrap input { background: rgba(15,23,42,0.86); border-color: #334155; }
-    .docs-tab-button.active { background: #e2e8f0; color: #0f172a; }
-    .docs-page .grid.cards > ul > li:hover { background: #111827; }
-    code, pre { background: rgba(255,255,255,0.06); }
-    .error { color: #fecaca; background: rgba(127,29,29,0.25);
-             border-color: rgba(248,113,113,0.35); }
-}
-"""
+def _monitor_asset_text(name: str) -> str:
+    """Read a packaged dashboard asset."""
+    return files("ctx").joinpath("assets", name).read_text(encoding="utf-8")
+
+
+def _monitor_inline_script(name: str) -> str:
+    return f"<script>\n{_monitor_asset_text(name).rstrip()}\n</script>"
+
+
+_CSS = _monitor_asset_text("monitor.css")
 
 
 def _layout(title: str, body: str) -> str:
@@ -2442,86 +2204,9 @@ def _layout(title: str, body: str) -> str:
         f"{html.escape(label)}</a>"
         for key, label, href in nav_items
     )
-    nav_keys_json = json.dumps([key for key, _label, _href in nav_items])
-    nav_script = (
-        "<script>\n"
-        "(function () {\n"
-        "  const nav = document.getElementById('dashboard-nav');\n"
-        "  if (!nav) return;\n"
-        "  const storageKey = nav.dataset.navStorageKey;\n"
-        f"  const defaultKeys = {nav_keys_json};\n"
-        "  const reset = document.getElementById('nav-reset');\n"
-        "  function links() { return Array.from(nav.querySelectorAll('a[data-nav-key]')); }\n"
-        "  function linkFor(key) { return nav.querySelector('a[data-nav-key=\"' + CSS.escape(key) + '\"]'); }\n"
-        "  function applyOrder(order) {\n"
-        "    const valid = Array.isArray(order) ? order.filter(key => defaultKeys.includes(key)) : [];\n"
-        "    const merged = valid.concat(defaultKeys.filter(key => !valid.includes(key)));\n"
-        "    merged.forEach(key => { const link = linkFor(key); if (link) nav.appendChild(link); });\n"
-        "    if (reset) nav.appendChild(reset);\n"
-        "  }\n"
-        "  function saveOrder() {\n"
-        "    try { localStorage.setItem(storageKey, JSON.stringify(links().map(a => a.dataset.navKey))); } catch (_) {}\n"
-        "  }\n"
-        "  function clearDragState() {\n"
-        "    links().forEach(item => item.classList.remove('nav-drag-over', 'nav-dragging'));\n"
-        "  }\n"
-        "  function insertionTarget(clientX, clientY) {\n"
-        "    const candidates = links().filter(link => link !== dragged);\n"
-        "    if (!candidates.length) return reset;\n"
-        "    const sameRow = candidates.filter(link => {\n"
-        "      const rect = link.getBoundingClientRect();\n"
-        "      return clientY >= rect.top - 8 && clientY <= rect.bottom + 8;\n"
-        "    });\n"
-        "    const pool = sameRow.length ? sameRow : candidates;\n"
-        "    for (const link of pool) {\n"
-        "      const rect = link.getBoundingClientRect();\n"
-        "      if (clientX < rect.left + rect.width / 2) return link;\n"
-        "    }\n"
-        "    return reset;\n"
-        "  }\n"
-        "  function resetOrder() {\n"
-        "    try { localStorage.removeItem(storageKey); } catch (_) {}\n"
-        "    applyOrder(defaultKeys);\n"
-        "  }\n"
-        "  try { applyOrder(JSON.parse(localStorage.getItem(storageKey) || '[]')); } catch (_) { applyOrder(defaultKeys); }\n"
-        "  let dragged = null;\n"
-        "  links().forEach(link => {\n"
-        "    link.addEventListener('dragstart', event => {\n"
-        "      dragged = link;\n"
-        "      link.classList.add('nav-dragging');\n"
-        "      if (event.dataTransfer) {\n"
-        "        event.dataTransfer.effectAllowed = 'move';\n"
-        "        event.dataTransfer.setData('text/plain', link.dataset.navKey || '');\n"
-        "      }\n"
-        "    });\n"
-        "    link.addEventListener('dragend', () => {\n"
-        "      clearDragState();\n"
-        "      if (reset) nav.appendChild(reset);\n"
-        "      saveOrder();\n"
-        "      dragged = null;\n"
-        "    });\n"
-        "  });\n"
-        "  nav.addEventListener('dragover', event => {\n"
-        "    if (!dragged) return;\n"
-        "    event.preventDefault();\n"
-        "    const target = insertionTarget(event.clientX, event.clientY);\n"
-        "    links().forEach(item => item.classList.remove('nav-drag-over'));\n"
-        "    if (target && target !== dragged) {\n"
-        "      if (target.dataset && target.dataset.navKey) target.classList.add('nav-drag-over');\n"
-        "      nav.insertBefore(dragged, target);\n"
-        "      if (reset) nav.appendChild(reset);\n"
-        "    }\n"
-        "  });\n"
-        "  nav.addEventListener('drop', event => {\n"
-        "    if (!dragged) return;\n"
-        "    event.preventDefault();\n"
-        "    clearDragState();\n"
-        "    if (reset) nav.appendChild(reset);\n"
-        "    saveOrder();\n"
-        "  });\n"
-        "  if (reset) reset.addEventListener('click', resetOrder);\n"
-        "})();\n"
-        "</script>"
+    nav_default_keys = html.escape(
+        json.dumps([key for key, _label, _href in nav_items]),
+        quote=True,
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
@@ -2530,12 +2215,13 @@ def _layout(title: str, body: str) -> str:
         f"<style>{_CSS}</style></head><body>"
         "<div class='nav' id='dashboard-nav' "
         "data-nav-storage-key='ctx-monitor-nav-order' "
+        f"data-nav-default-keys='{nav_default_keys}' "
         "aria-label='Dashboard navigation'>"
         + nav_html
         + "<button type='button' id='nav-reset' class='nav-reset' "
           "title='Reset dashboard tab order'>reset</button>"
         "</div>"
-        + nav_script
+        + _monitor_inline_script("monitor-nav.js")
         + body
         + "</body></html>"
     )
@@ -5647,100 +5333,8 @@ def _render_docs() -> str:
         "</section>"
         f"<div class='docs-tabs' role='tablist'>{tab_buttons}</div>"
         + "".join(panels)
-        + "<script>\n"
-        "const docsSearch = document.getElementById('docs-search');\n"
-        "const docsSearchResults = document.getElementById('docs-search-results');\n"
-        "const docButtons = Array.from(document.querySelectorAll('.docs-tab-button'));\n"
-        "const docPanels = Array.from(document.querySelectorAll('.docs-tab-panel'));\n"
-        "const docLinks = Array.from(document.querySelectorAll('[data-doc-link]'));\n"
-        "function activeDocPanel() { return docPanels.find(panel => !panel.hidden); }\n"
-        "function jumpToDocTarget(tab, target) {\n"
-        "  activateDocTab(tab);\n"
-        "  if (target) history.replaceState(null, '', '#' + target);\n"
-        "  window.requestAnimationFrame(() => {\n"
-        "    const node = document.getElementById(target);\n"
-        "    if (node) {\n"
-        "      node.scrollIntoView({ block: 'start' });\n"
-        "    }\n"
-        "  });\n"
-        "}\n"
-        "function activateDocTab(key) {\n"
-        "  docButtons.forEach(button => button.classList.toggle('active', button.dataset.docTab === key));\n"
-        "  docPanels.forEach(panel => { panel.hidden = panel.dataset.docPanel !== key; });\n"
-        "  applyDocsFilter();\n"
-        "}\n"
-        "function renderDocsSearchResults(q) {\n"
-        "  if (!docsSearchResults) return;\n"
-        "  docsSearchResults.replaceChildren();\n"
-        "  docsSearchResults.hidden = !q;\n"
-        "  if (!q) return;\n"
-        "  function docSearchScore(link) {\n"
-        "    const label = (link.dataset.docLabel || link.textContent || '').toLowerCase();\n"
-        "    let score = 0;\n"
-        "    if (label === q) score += 200;\n"
-        "    if (label.includes(q)) score += 100;\n"
-        "    if (link.classList.contains('docs-heading-link')) score += 25;\n"
-        "    if ((link.dataset.docSearch || '').includes(q)) score += 1;\n"
-        "    return score;\n"
-        "  }\n"
-        "  const matches = docLinks.filter(link => (link.dataset.docSearch || '').includes(q))\n"
-        "    .sort((a, b) => docSearchScore(b) - docSearchScore(a))\n"
-        "    .slice(0, 12);\n"
-        "  if (!matches.length) {\n"
-        "    const empty = document.createElement('div');\n"
-        "    empty.className = 'docs-search-empty';\n"
-        "    empty.textContent = 'No local docs matches.';\n"
-        "    docsSearchResults.appendChild(empty);\n"
-        "    return;\n"
-        "  }\n"
-        "  matches.forEach(link => {\n"
-        "    const button = document.createElement('button');\n"
-        "    button.type = 'button';\n"
-        "    button.className = 'docs-search-result';\n"
-        "    button.dataset.docTab = link.dataset.docTab || '';\n"
-        "    button.dataset.docTarget = link.dataset.docTarget || '';\n"
-        "    button.textContent = link.dataset.docLabel || link.textContent || '';\n"
-        "    const meta = document.createElement('span');\n"
-        "    meta.textContent = (link.dataset.docTab || 'docs') + ' section';\n"
-        "    button.appendChild(meta);\n"
-        "    docsSearchResults.appendChild(button);\n"
-        "  });\n"
-        "}\n"
-        "function applyDocsFilter() {\n"
-        "  const panel = activeDocPanel();\n"
-        "  if (!panel) return;\n"
-        "  const q = (docsSearch.value || '').trim().toLowerCase();\n"
-        "  renderDocsSearchResults(q);\n"
-        "  Array.from(panel.querySelectorAll('[data-doc-page]')).forEach(page => {\n"
-        "    page.style.display = (!q || page.dataset.docPage.includes(q)) ? '' : 'none';\n"
-        "  });\n"
-        "}\n"
-        "docButtons.forEach(button => button.addEventListener('click', () => activateDocTab(button.dataset.docTab)));\n"
-        "document.addEventListener('click', event => {\n"
-        "  const link = event.target.closest('a[data-doc-target]');\n"
-        "  if (!link) return;\n"
-        "  event.preventDefault();\n"
-        "  jumpToDocTarget(link.dataset.docTab, link.dataset.docTarget);\n"
-        "});\n"
-        "if (docsSearchResults) docsSearchResults.addEventListener('click', event => {\n"
-        "  const button = event.target.closest('button[data-doc-target]');\n"
-        "  if (!button) return;\n"
-        "  jumpToDocTarget(button.dataset.docTab, button.dataset.docTarget);\n"
-        "});\n"
-        "if (docsSearch) docsSearch.addEventListener('input', applyDocsFilter);\n"
-        "if (docsSearch) docsSearch.addEventListener('keydown', event => {\n"
-        "  if (event.key !== 'Enter') return;\n"
-        "  const first = docsSearchResults ? docsSearchResults.querySelector('button[data-doc-target]') : null;\n"
-        "  if (first) jumpToDocTarget(first.dataset.docTab, first.dataset.docTarget);\n"
-        "});\n"
-        "const initialDocTab = (location.hash || '').replace('#doc-tab-', '');\n"
-        "if (initialDocTab && docButtons.some(button => button.dataset.docTab === initialDocTab)) activateDocTab(initialDocTab);\n"
-        "const initialDocTarget = (location.hash || '').replace('#', '');\n"
-        "const initialDocLink = initialDocTarget ? docLinks.find(link => link.dataset.docTarget === initialDocTarget) : null;\n"
-        "if (initialDocLink) activateDocTab(initialDocLink.dataset.docTab);\n"
-        "applyDocsFilter();\n"
-        "</script>"
-        "</div>"
+        + _monitor_inline_script("monitor-docs.js")
+        + "</div>"
     )
     return _layout("Docs", body)
 
@@ -5818,89 +5412,13 @@ def _render_manage(mutations_enabled: bool | None = None) -> str:
         "</section>"
         "</div>"
         "<script>\n"
-        f"const MANAGE_MUTATIONS_ENABLED = {json.dumps(mutations_enabled)};\n"
-        f"const MANAGE_TOKEN = {json.dumps(token)};\n"
-        f"let manageResults = {initial_json};\n"
-        "const resultsEl = document.getElementById('manage-results');\n"
-        "const statusEl = document.getElementById('manage-search-status');\n"
-        "const form = document.getElementById('entity-editor-form');\n"
-        "const editorStatus = document.getElementById('entity-editor-status');\n"
-        "let selected = null;\n"
-        "function escapeHtml(value) {\n"
-        "  return String(value ?? '').replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[ch]));\n"
-        "}\n"
-        "function displaySlug(slug) { return String(slug || '').replace(/^skills-sh-/, ''); }\n"
-        "function entityLabel(row) { return row.type + ':' + displaySlug(row.slug); }\n"
-        "function setStatus(text) { editorStatus.textContent = text || ''; }\n"
-        "function fillForm(detail) {\n"
-        "  selected = {slug: detail.slug, type: detail.type};\n"
-        "  const fm = detail.frontmatter || {};\n"
-        "  form.slug.value = detail.slug || '';\n"
-        "  form.entity_type.value = detail.type || 'skill';\n"
-        "  form.title.value = fm.title || fm.name || detail.slug || '';\n"
-        "  form.description.value = fm.description || '';\n"
-        "  form.tags.value = Array.isArray(fm.tags) ? fm.tags.join(', ') : (fm.tags || '');\n"
-        "  form.source_url.value = fm.source_url || fm.repo_url || fm.github_url || fm.homepage_url || '';\n"
-        "  form.body.value = detail.body || '';\n"
-        "  setStatus('editing ' + entityLabel(selected));\n"
-        "}\n"
-        "function renderResults(rows) {\n"
-        "  statusEl.textContent = rows.length + ' result' + (rows.length === 1 ? '' : 's');\n"
-        "  if (!rows.length) { resultsEl.innerHTML = '<p class=\"muted\">No entities found.</p>'; return; }\n"
-        "  resultsEl.innerHTML = rows.map(row => '<button type=\"button\" class=\"manage-result\" data-slug=\"' + escapeHtml(row.slug) + '\" data-type=\"' + escapeHtml(row.type) + '\"><strong>' + escapeHtml(row.display_slug || displaySlug(row.slug)) + '</strong><span class=\"pill entity-type-' + escapeHtml(row.type) + '\">' + escapeHtml(row.type) + '</span><span class=\"muted\">' + escapeHtml(row.description || row.title || '') + '</span></button>').join('');\n"
-        "  document.querySelectorAll('.manage-result').forEach(btn => btn.addEventListener('click', async () => {\n"
-        "    const slug = btn.dataset.slug; const type = btn.dataset.type;\n"
-        "    const res = await fetch('/api/entity/' + encodeURIComponent(slug) + '.json?type=' + encodeURIComponent(type));\n"
-        "    if (!res.ok) { setStatus('load failed: ' + res.statusText); return; }\n"
-        "    fillForm(await res.json());\n"
-        "  }));\n"
-        "}\n"
-        "let timer = null;\n"
-        "async function searchNow() {\n"
-        "  const q = document.getElementById('manage-search').value.trim();\n"
-        "  const type = document.getElementById('manage-type').value;\n"
-        "  const url = '/api/entities/search.json?q=' + encodeURIComponent(q) + (type ? '&type=' + encodeURIComponent(type) : '');\n"
-        "  statusEl.textContent = 'Searching...';\n"
-        "  const res = await fetch(url);\n"
-        "  if (!res.ok) { statusEl.textContent = 'Search failed: ' + res.statusText; return; }\n"
-        "  manageResults = (await res.json()).results || [];\n"
-        "  renderResults(manageResults);\n"
-        "}\n"
-        "function scheduleSearch() { clearTimeout(timer); timer = setTimeout(searchNow, 250); }\n"
-        "document.getElementById('manage-search').addEventListener('input', scheduleSearch);\n"
-        "document.getElementById('manage-type').addEventListener('change', searchNow);\n"
-        "document.getElementById('entity-new-button').addEventListener('click', () => { selected = null; form.reset(); setStatus('new entity'); });\n"
-        "async function post(url, payload) {\n"
-        "  if (!MANAGE_MUTATIONS_ENABLED) return {ok:false, detail:'mutations disabled on non-loopback bind'};\n"
-        "  const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json', 'X-CTX-Monitor-Token':MANAGE_TOKEN}, body:JSON.stringify(payload)});\n"
-        "  let data = {}; try { data = await res.json(); } catch (_) {}\n"
-        "  data.ok = res.ok && data.ok !== false;\n"
-        "  return data;\n"
-        "}\n"
-        "form.addEventListener('submit', async ev => {\n"
-        "  ev.preventDefault();\n"
-        "  const payload = Object.fromEntries(new FormData(form).entries());\n"
-        "  const isUpdate = selected && selected.slug === payload.slug && selected.type === payload.entity_type;\n"
-        "  if (isUpdate) {\n"
-        "    const ok = confirm('Update existing ' + payload.entity_type + ':' + payload.slug + '?\\n\\nBenefit: keeps the catalog current.\\nRisk: a lower-quality edit can degrade recommendations.');\n"
-        "    if (!ok) { setStatus('update cancelled'); return; }\n"
-        "    payload.confirm_update = 'true';\n"
-        "  }\n"
-        "  setStatus('saving...');\n"
-        "  const data = await post('/api/entity/upsert', payload);\n"
-        "  setStatus(data.detail || (data.ok ? 'saved' : 'save failed'));\n"
-        "  if (data.ok) searchNow();\n"
-        "});\n"
-        "document.getElementById('entity-delete-button').addEventListener('click', async () => {\n"
-        "  const slug = form.slug.value.trim(); const type = form.entity_type.value;\n"
-        "  if (!slug || !confirm('Delete ' + type + ':' + slug + ' from the wiki catalog?')) return;\n"
-        "  setStatus('deleting...');\n"
-        "  const data = await post('/api/entity/delete', {slug:slug, entity_type:type});\n"
-        "  setStatus(data.detail || (data.ok ? 'deleted' : 'delete failed'));\n"
-        "  if (data.ok) { selected = null; form.reset(); searchNow(); }\n"
-        "});\n"
-        "renderResults(manageResults);\n"
+        "window.CTX_MONITOR_MANAGE = {\n"
+        f"  mutationsEnabled: {json.dumps(mutations_enabled)},\n"
+        f"  token: {json.dumps(token)},\n"
+        f"  initialResults: {initial_json}\n"
+        "};\n"
         "</script>"
+        + _monitor_inline_script("monitor-manage.js")
     )
     return _layout("Manage catalog", body)
 
