@@ -2785,6 +2785,75 @@ def test_render_wiki_index_lists_entities(fake_claude: Path) -> None:
     assert "href='/wiki/code-reviewer?type=agent'" in html_out
 
 
+def test_wiki_index_entries_use_dashboard_index_without_markdown_pages(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_graph_manifest(fake_claude, "test-export")
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    index_path = graph_dir / "dashboard-neighborhoods.sqlite3"
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [
+                ("export_id", json.dumps("test-export")),
+                ("nodes_count", "2"),
+                ("edges_count", "0"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "skill:python-patterns",
+                    "python-patterns",
+                    "skill",
+                    '["python","patterns"]',
+                    "Idiomatic Python patterns",
+                    0.9,
+                    0.1,
+                    5,
+                ),
+                (
+                    "agent:code-reviewer",
+                    "code-reviewer",
+                    "agent",
+                    '["review","quality"]',
+                    "Reviews code for issues",
+                    0.8,
+                    0.1,
+                    4,
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    entries = cm._wiki_index_entries(limit_per_type=10)
+    slugs = {entry["slug"] for entry in entries}
+
+    assert slugs == {"python-patterns", "code-reviewer"}
+    assert entries[0]["description"] == "Idiomatic Python patterns"
+
+    def fail_sidecar_probe(*args: object, **kwargs: object) -> object:
+        raise AssertionError("index-backed wiki catalog should not probe sidecars")
+
+    monkeypatch.setattr(cm, "_load_sidecar", fail_sidecar_probe)
+
+    html_out = cm._render_wiki_index(query="python")
+    assert "href='/wiki/python-patterns?type=skill'" in html_out
+    assert "Idiomatic Python patterns" in html_out
+    assert "grade-A" in html_out
+
+
 def test_render_wiki_index_supports_type_query_and_autocomplete(fake_claude: Path) -> None:
     skills_dir = fake_claude / "skill-wiki" / "entities" / "skills"
     agents_dir = fake_claude / "skill-wiki" / "entities" / "agents"

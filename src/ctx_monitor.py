@@ -4671,6 +4671,10 @@ def _wiki_index_entries(
     is too large to render as one HTML page, so the dashboard samples
     a bounded number of pages per entity type.
     """
+    indexed = _wiki_index_entries_from_dashboard_index(limit_per_type)
+    if indexed is not None:
+        return indexed
+
     base = _wiki_dir() / "entities"
     if not base.is_dir():
         return []
@@ -4716,6 +4720,88 @@ def _wiki_index_entries(
     return out
 
 
+def _wiki_index_entries_from_dashboard_index(
+    limit_per_type: int | None,
+) -> list[dict] | None:
+    index_path = _dashboard_graph_index_path()
+    if not index_path.is_file() or not _dashboard_index_matches_manifest(index_path):
+        return None
+
+    out: list[dict] = []
+    try:
+        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+        try:
+            for _sub, entity_type, _recursive in _DASHBOARD_ENTITY_SOURCES:
+                params: list[Any] = [entity_type]
+                limit_sql = ""
+                if limit_per_type is not None:
+                    limit_sql = " LIMIT ?"
+                    params.append(max(0, int(limit_per_type)))
+                rows = conn.execute(
+                    "SELECT id,label,type,tags,description,quality_score FROM nodes "
+                    "WHERE type=? ORDER BY lower(label), id" + limit_sql,
+                    params,
+                )
+                for (
+                    node_id,
+                    label,
+                    row_type,
+                    tags_raw,
+                    description_raw,
+                    quality_score,
+                ) in rows:
+                    node_id_text = str(node_id)
+                    slug = (
+                        node_id_text.split(":", 1)[1]
+                        if ":" in node_id_text
+                        else str(label)
+                    )
+                    if not _is_safe_slug(slug):
+                        continue
+                    try:
+                        parsed_tags = json.loads(str(tags_raw or "[]"))
+                    except json.JSONDecodeError:
+                        parsed_tags = []
+                    all_tags = [
+                        str(tag) for tag in parsed_tags
+                        if isinstance(tag, str)
+                    ]
+                    description, _truncated = _truncate_text(
+                        _frontmatter_text(description_raw),
+                        200,
+                    )
+                    out.append({
+                        "slug": slug,
+                        "display_slug": _display_slug(str(label or slug)),
+                        "type": str(row_type or entity_type),
+                        "tags": all_tags[:6],
+                        "search_tags": all_tags,
+                        "description": description,
+                        "grade": _grade_from_quality_score(quality_score),
+                    })
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return None
+    return out
+
+
+def _grade_from_quality_score(value: Any) -> str:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if score >= 0.80:
+        return "A"
+    if score >= 0.60:
+        return "B"
+    if score >= 0.40:
+        return "C"
+    if score >= 0.0:
+        return "D"
+    return ""
+
+
 def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
     """Card grid of every wiki entity — search + type filter + sidecar grades."""
     selected_type = _normalize_dashboard_entity_type(entity_type) if entity_type else None
@@ -4733,6 +4819,10 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
     for entry in entries:
         slug = str(entry["slug"])
         row_type = str(entry["type"])
+        grade = str(entry.get("grade") or "")
+        if grade:
+            grade_by_key[(slug, row_type)] = grade
+            continue
         sidecar = _load_sidecar(slug, entity_type=row_type)
         if sidecar:
             grade_by_key[(slug, row_type)] = str(sidecar.get("grade") or "")
