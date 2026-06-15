@@ -151,22 +151,6 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def _seed_if_empty() -> ToolboxSet:
-    tset = load_global()
-    if tset.toolboxes:
-        return tset
-    starters = ["ship-it", "security-sweep", "refactor-safety",
-                "docs-review", "fresh-repo-init"]
-    for name in starters:
-        try:
-            raw = _load_template(name)
-        except FileNotFoundError as exc:
-            _print_err(f"[warn] {exc}")
-            continue
-        tset = tset.with_toolbox(Toolbox.from_dict(name, raw))
-    return tset
-
-
 def cmd_init(args: argparse.Namespace) -> int:
     tset = load_global()
     if tset.toolboxes and not args.force:

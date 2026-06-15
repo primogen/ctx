@@ -40,7 +40,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -66,24 +65,6 @@ _FILE_SIGNATURE_SAMPLE_BYTES = 64 * 1024
 
 FileSignature = tuple[int, int, str]
 GraphSignature = tuple[FileSignature | None, FileSignature | None]
-
-
-@dataclass(frozen=True)
-class BundleEntry:
-    """One row of a recommendation result.
-
-    ``score`` is the raw graph-walk weight; ``normalized_score`` is
-    that value divided by the top score in the same result set (so
-    the highest-ranked entry is always 1.0 — lets a caller apply a
-    0.0-1.0 cutoff without knowing the absolute graph scale).
-    """
-
-    name: str
-    entity_type: str   # 'skill' | 'agent' | 'mcp-server'
-    score: float
-    normalized_score: float
-    shared_tags: tuple[str, ...]
-    via: tuple[str, ...]
 
 
 class CtxCoreToolbox:
