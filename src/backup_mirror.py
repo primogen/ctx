@@ -212,12 +212,6 @@ def _iter_memory_files() -> Iterable[tuple[str, Path]]:
 # ── Hashing + atomic copy ───────────────────────────────────────────────────
 
 
-def _sha256_bytes(data: bytes) -> str:
-    h = hashlib.sha256()
-    h.update(data)
-    return h.hexdigest()
-
-
 def _sha256_file(path: Path) -> str:
     # Reject symlinks before reading so verify never hashes a file the
     # attacker has pointed out of the snapshot.

@@ -76,10 +76,12 @@ from collections import defaultdict, deque
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
+from ctx import dashboard_docs, dashboard_entities, dashboard_graph
+from ctx.core import entity_types as core_entity_types
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
 from ctx.utils._file_lock import file_lock
@@ -102,8 +104,6 @@ _SIDECAR_FILTER_CACHE_VALUE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
 _KPI_SUMMARY_CACHE_KEY: tuple[Any, ...] | None = None
 _KPI_SUMMARY_CACHE_VALUE: Any | None = None
 _KPI_SUMMARY_CACHE_AT = 0.0
-_DOCS_RENDER_CACHE_KEY: tuple[Any, ...] | None = None
-_DOCS_RENDER_CACHE_VALUE: str | None = None
 _WIKI_RENDER_CACHE_KEY: tuple[Any, ...] | None = None
 _WIKI_RENDER_CACHE_VALUE: str | None = None
 _WIKI_INDEX_LIMIT_PER_TYPE = 500
@@ -229,16 +229,10 @@ def _load_dashboard_graph() -> Any:
 
 
 def _mcp_shard(slug: str) -> str:
-    first = slug[0] if slug else ""
-    return first if first.isalpha() else "0-9"
+    return core_entity_types.mcp_shard(slug)
 
 
-_DASHBOARD_ENTITY_SOURCES: tuple[tuple[str, str, bool], ...] = (
-    ("skills", "skill", False),
-    ("agents", "agent", False),
-    ("mcp-servers", "mcp-server", True),
-    ("harnesses", "harness", False),
-)
+_DASHBOARD_ENTITY_SOURCES: tuple[tuple[str, str, bool], ...] = core_entity_types.entity_source_specs()
 _DASHBOARD_ENTITY_TYPES: tuple[str, ...] = tuple(
     entity_type for _, entity_type, _ in _DASHBOARD_ENTITY_SOURCES
 )
@@ -246,21 +240,10 @@ _DEFAULT_GRAPH_FOCUS_SLUG = "github"
 
 
 def _normalize_dashboard_entity_type(raw: object) -> str | None:
-    if raw is None:
-        return None
-    value = str(raw).strip()
-    normalized = {
-        "skills": "skill",
-        "skill": "skill",
-        "agents": "agent",
-        "agent": "agent",
-        "mcp": "mcp-server",
-        "mcp-server": "mcp-server",
-        "mcp-servers": "mcp-server",
-        "harness": "harness",
-        "harnesses": "harness",
-    }.get(value, value)
-    return normalized if normalized in _DASHBOARD_ENTITY_TYPES else None
+    return core_entity_types.normalize_entity_type(
+        raw,
+        allowed=_DASHBOARD_ENTITY_TYPES,
+    )
 
 
 def _audit_entity_type(row: dict) -> str | None:
@@ -291,14 +274,12 @@ def _wiki_entity_path(slug: str, entity_type: str | None = None) -> Path | None:
     # Validate slug so a crafted request can't escape the wiki tree.
     if not _is_safe_slug(slug):
         return None
-    for sub, current_type, recursive in _DASHBOARD_ENTITY_SOURCES:
+    for _sub, current_type, _recursive in _DASHBOARD_ENTITY_SOURCES:
         if entity_type is not None and entity_type != current_type:
             continue
-        p = (
-            _wiki_dir() / "entities" / sub / _mcp_shard(slug) / f"{slug}.md"
-            if recursive
-            else _wiki_dir() / "entities" / sub / f"{slug}.md"
-        )
+        p = core_entity_types.entity_page_path(_wiki_dir(), current_type, slug)
+        if p is None:
+            continue
         if p.exists():
             return p
     return None
@@ -311,13 +292,10 @@ def _wiki_entity_target_path(slug: str, entity_type: str) -> Path:
     normalized = _normalize_dashboard_entity_type(entity_type)
     if normalized is None:
         raise ValueError(f"unsupported entity_type: {entity_type!r}")
-    for sub, current_type, recursive in _DASHBOARD_ENTITY_SOURCES:
-        if normalized != current_type:
-            continue
-        if recursive:
-            return _wiki_dir() / "entities" / sub / _mcp_shard(slug) / f"{slug}.md"
-        return _wiki_dir() / "entities" / sub / f"{slug}.md"
-    raise ValueError(f"unsupported entity_type: {entity_type!r}")
+    path = core_entity_types.entity_page_path(_wiki_dir(), normalized, slug)
+    if path is None:
+        raise ValueError(f"unsupported entity_type: {entity_type!r}")
+    return path
 
 
 def _iter_wiki_entity_paths(
@@ -369,121 +347,12 @@ def _search_wiki_entities(
     *,
     limit: int = 80,
 ) -> list[dict[str, Any]]:
-    terms = [term for term in re.split(r"\s+", query.lower().strip()) if term]
-    results: list[dict[str, Any]] = []
-    for slug, current_type, path in _iter_wiki_entity_paths(entity_type):
-        try:
-            head = path.read_text(encoding="utf-8", errors="replace")[:4096]
-        except OSError:
-            continue
-        frontmatter, body = _parse_frontmatter(head)
-        tags = _frontmatter_tags(frontmatter.get("tags", ""), limit=None)
-        description = _frontmatter_text(frontmatter.get("description", ""))
-        display_slug = _display_slug(slug)
-        title = _display_label(
-            _frontmatter_text(frontmatter.get("title") or frontmatter.get("name") or slug),
-            fallback_slug=slug,
-        )
-        haystack = " ".join(
-            [slug, display_slug, current_type, title, description, " ".join(tags), body],
-        ).lower()
-        if terms and not all(term in haystack for term in terms):
-            continue
-        results.append({
-            "slug": slug,
-            "display_slug": display_slug,
-            "type": current_type,
-            "title": title,
-            "description": description,
-            "tags": tags[:12],
-            "path": str(path),
-            "href": _entity_wiki_href(slug, current_type),
-        })
-        if len(results) >= max(1, limit):
-            break
-    return results
-
-
-def _normalize_entity_tags(raw: Any) -> list[str]:
-    if isinstance(raw, list):
-        parts = raw
-    else:
-        parts = re.split(r"[,\n]+", str(raw or ""))
-    tags: list[str] = []
-    seen: set[str] = set()
-    for part in parts:
-        tag = re.sub(r"[^a-z0-9_.+-]+", "-", str(part).lower()).strip("-_.+")
-        if tag and tag not in seen:
-            seen.add(tag)
-            tags.append(tag)
-    return tags
-
-
-def _yaml_scalar(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return str(value)
-    text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not text:
-        return '""'
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _./:+@-]*", text):
-        return text
-    return json.dumps(text, ensure_ascii=False)
-
-
-def _frontmatter_to_text(frontmatter: dict[str, Any]) -> str:
-    lines = ["---"]
-    for key, value in frontmatter.items():
-        if value is None or value == "":
-            continue
-        if isinstance(value, list):
-            rendered = ", ".join(_yaml_scalar(item) for item in value)
-            lines.append(f"{key}: [{rendered}]")
-        else:
-            lines.append(f"{key}: {_yaml_scalar(value)}")
-    lines.append("---")
-    return "\n".join(lines) + "\n"
-
-
-def _entity_content_from_payload(
-    payload: dict[str, Any],
-    *,
-    existing: dict[str, Any] | None = None,
-) -> tuple[str, str, str]:
-    slug = str(payload.get("slug", "")).strip()
-    if not _is_safe_slug(slug):
-        raise ValueError(f"invalid slug: {slug!r}")
-    entity_type = str(payload.get("entity_type", "skill")).strip() or "skill"
-    normalized = _normalize_dashboard_entity_type(entity_type)
-    if normalized is None:
-        raise ValueError(f"unsupported entity_type: {entity_type!r}")
-    body = str(payload.get("body", "")).strip()
-    if not body:
-        raise ValueError("body is required")
-    title = str(payload.get("title") or slug).strip()
-    today = time.strftime("%Y-%m-%d", time.gmtime())
-    frontmatter = dict(existing or {})
-    frontmatter["title"] = title
-    frontmatter["type"] = normalized
-    frontmatter.setdefault("created", today)
-    frontmatter["updated"] = today
-    description = str(payload.get("description") or "").strip()
-    if description or "description" in payload:
-        frontmatter.pop("description", None)
-    if description:
-        frontmatter["description"] = description
-    tags = _normalize_entity_tags(payload.get("tags"))
-    if tags or "tags" in payload:
-        frontmatter.pop("tags", None)
-    if tags:
-        frontmatter["tags"] = tags
-    source_url = str(payload.get("source_url") or "").strip()
-    if source_url or "source_url" in payload:
-        frontmatter.pop("source_url", None)
-    if source_url:
-        frontmatter["source_url"] = source_url
-    return slug, normalized, _frontmatter_to_text(frontmatter) + body.rstrip() + "\n"
+    return dashboard_entities.search_wiki_entities(
+        query,
+        entity_type,
+        limit=limit,
+        deps=_entity_crud_deps(),
+    )
 
 
 def _queue_entity_refresh(
@@ -514,94 +383,59 @@ def _queue_entity_refresh(
     )
 
 
-def _upsert_wiki_entity(payload: dict[str, Any]) -> tuple[bool, str]:
-    try:
-        requested_slug = str(payload.get("slug", "")).strip()
-        requested_type = str(payload.get("entity_type", "skill")).strip() or "skill"
-        existing_detail = _wiki_entity_detail(requested_slug, requested_type)
-        existing_meta = (
-            existing_detail.get("frontmatter")
-            if isinstance(existing_detail, dict)
-            else None
-        )
-        confirm_update = str(payload.get("confirm_update", "")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "y",
-            "on",
-        }
-        if existing_detail is not None and not confirm_update:
-            return (
-                False,
-                f"existing {requested_type}:{requested_slug} found; review before "
-                "replacing. Benefit: keeps the catalog current. Risk: a lower-quality "
-                "manual edit can degrade recommendations. Resubmit with "
-                "confirm_update=true to apply.",
-            )
-        slug, entity_type, content = _entity_content_from_payload(
-            payload,
-            existing=existing_meta if isinstance(existing_meta, dict) else None,
-        )
-        path = _wiki_entity_target_path(slug, entity_type)
-        with file_lock(path):
-            _safe_atomic_write_text(path, content, encoding="utf-8")
-        _queue_entity_refresh(
+def _write_entity_text(path: Path, content: str) -> None:
+    _safe_atomic_write_text(path, content, encoding="utf-8")
+
+
+def _entity_crud_deps() -> dashboard_entities.EntityCrudDeps:
+    return dashboard_entities.EntityCrudDeps(
+        is_safe_slug=_is_safe_slug,
+        normalize_entity_type=_normalize_dashboard_entity_type,
+        wiki_entity_detail=_wiki_entity_detail,
+        wiki_entity_target_path=_wiki_entity_target_path,
+        wiki_entity_path=_wiki_entity_path,
+        iter_wiki_entity_paths=_iter_wiki_entity_paths,
+        read_manifest=_read_manifest,
+        perform_unload=_perform_unload,
+        queue_entity_refresh=lambda entity_type, slug, entity_path, content, action: _queue_entity_refresh(
             entity_type=entity_type,
             slug=slug,
-            entity_path=path,
+            entity_path=entity_path,
             content=content,
-            action="upsert",
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {exc}"
-    return True, f"saved {entity_type}:{slug} and queued graph refresh"
+            action=action,
+        ),
+        file_lock=file_lock,
+        write_entity_text=_write_entity_text,
+        parse_frontmatter=_parse_frontmatter,
+        frontmatter_tags=lambda value: _frontmatter_tags(value, limit=None),
+        frontmatter_text=_frontmatter_text,
+        display_slug=_display_slug,
+        display_label=lambda value: _display_label(value),
+        entity_wiki_href=_entity_wiki_href,
+    )
 
 
-def _entity_live_in_manifest(slug: str, entity_type: str) -> bool:
-    manifest = _read_manifest()
-    for entry in manifest.get("load", []):
-        if not isinstance(entry, dict):
-            continue
-        entry_slug = str(entry.get("skill") or entry.get("slug") or "")
-        entry_type = _normalize_dashboard_entity_type(
-            str(entry.get("entity_type") or entry.get("type") or "skill"),
-        )
-        if entry_slug == slug and entry_type == entity_type:
-            return True
-    return False
+def _entity_runtime_deps() -> dashboard_entities.EntityRuntimeDeps:
+    return dashboard_entities.EntityRuntimeDeps(
+        is_safe_slug=_is_safe_slug,
+        normalize_entity_type=_normalize_dashboard_entity_type,
+        wiki_dir=_wiki_dir,
+        claude_dir=_claude_dir,
+        log_dashboard_entity_event=_log_dashboard_entity_event,
+        remove_loaded_manifest_entry=_remove_loaded_manifest_entry,
+    )
+
+
+def _upsert_wiki_entity(payload: dict[str, Any]) -> tuple[bool, str]:
+    return dashboard_entities.upsert_wiki_entity(payload, deps=_entity_crud_deps())
 
 
 def _delete_wiki_entity(slug: str, entity_type: str) -> tuple[bool, str]:
-    try:
-        normalized = _normalize_dashboard_entity_type(entity_type)
-        if normalized is None:
-            raise ValueError(f"unsupported entity_type: {entity_type!r}")
-        if not _is_safe_slug(slug):
-            raise ValueError(f"invalid slug: {slug!r}")
-        path = _wiki_entity_path(slug, entity_type=normalized)
-        if path is None:
-            return False, f"no wiki entity found for {normalized}:{slug}"
-        if _entity_live_in_manifest(slug, normalized):
-            unloaded, unload_detail = _perform_unload(slug, normalized)
-            if not unloaded:
-                return (
-                    False,
-                    f"{normalized}:{slug} is loaded; unload before delete failed: "
-                    f"{unload_detail}",
-                )
-        with file_lock(path):
-            path.unlink()
-        _queue_entity_refresh(
-            entity_type=normalized,
-            slug=slug,
-            entity_path=path,
-            content="",
-            action="delete",
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {exc}"
-    return True, f"deleted {normalized}:{slug} and queued graph refresh"
+    return dashboard_entities.delete_wiki_entity(
+        slug,
+        entity_type,
+        deps=_entity_crud_deps(),
+    )
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -3015,13 +2849,13 @@ def _graph_neighborhood_from_index(
             frontier = next_frontier
             if len(nodes_out) >= limit:
                 break
-        return {
+        return dashboard_graph.enrich_neighborhood({
             "nodes": list(nodes_out.values()),
             "edges": edges_out,
             "center": center,
             "resolved": resolved or {"source": "dashboard-index"},
             "suggestions": [],
-        }
+        }, source="dashboard-index")
     except (OSError, sqlite3.Error, json.JSONDecodeError, zlib.error, KeyError, TypeError):
         return None
     finally:
@@ -3184,13 +3018,13 @@ def _graph_neighborhood(
         if len(nodes_out) >= limit:
             break
 
-    return {
+    return dashboard_graph.enrich_neighborhood({
         "nodes": list(nodes_out.values()),
         "edges": edges_out,
         "center": center,
         "resolved": resolved,
         "suggestions": suggestions,
-    }
+    }, source="networkx")
 
 
 def _graph_stats() -> dict:
@@ -4126,6 +3960,11 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "<span id='graph-match-count' class='muted'>—</span>"
         "</div>"
         "<div class='card'><span id='msg' class='muted'></span></div>"
+        "<div class='card'><strong>Why this view?</strong>"
+        "<p id='graph-explanation' class='muted' "
+        "style='font-size:0.78rem; margin:0.45rem 0 0 0;'>"
+        "Search a slug to see why ctx picked this neighborhood and how to read it."
+        "</p></div>"
         "</aside>"
         # Right: graph list panel
         "<div id='cy' style='width:100%; height:75vh; border:1px solid #ddd; "
@@ -4192,6 +4031,10 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "  const reasons = Array.from(d.reasons || []).join(', ') || 'graph score';\n"
         "  const weight = Number(d.weight || 0).toFixed(3);\n"
         "  return nodeSlug(d.source) + ' ↔ ' + nodeSlug(d.target) + ' · weight ' + weight + ' · shared: ' + tags + ' · reasons: ' + reasons;\n"
+        "}\n"
+        "function graphExplanation(g) {\n"
+        "  const e = g.explanations || {};\n"
+        "  return [e.focus, e.source, e.search, e.layout, e.edges].filter(Boolean).join(' ');\n"
         "}\n"
         "function renderGraph3d(g) {\n"
         "  const nodes = g.nodes || [];\n"
@@ -4340,6 +4183,7 @@ def _render_graph(focus: str | None = None, focus_type: str | None = None) -> st
         "  try { renderGraph3d(g); } catch (err) { renderFallback(g); }\n"
         "  const resolved = g.resolved && g.resolved.query !== g.resolved.slug ? ' · showing ' + g.resolved.slug + ' for ' + g.resolved.query : '';\n"
         "  document.getElementById('msg').textContent = fmtCount(g.nodes.length) + ' nodes · ' + fmtCount(g.edges.length) + ' edges' + resolved;\n"
+        "  document.getElementById('graph-explanation').textContent = graphExplanation(g);\n"
         "  applyFilters();\n"
         "}\n"
         "function selectedFocusType() { return document.getElementById('focus-type').value || ''; }\n"
@@ -4838,40 +4682,61 @@ def _wiki_render_cache_key(
     )
 
 
-def _wiki_render_cache_token(cache_key: tuple[Any, ...]) -> str:
+def _disk_cache_token(cache_key: tuple[Any, ...]) -> str:
     return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
 
 
-def _wiki_render_disk_cache_path() -> Path:
-    return _claude_dir() / ".ctx-monitor-wiki-cache.json"
-
-
-def _read_wiki_render_disk_cache(cache_token: str) -> str | None:
+def _read_disk_cache_payload(path: Path, cache_token: str) -> dict[str, Any] | None:
     try:
-        data = json.loads(_wiki_render_disk_cache_path().read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict):
         return None
     if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
         return None
-    html_text = data.get("html")
-    return html_text if isinstance(html_text, str) else None
+    return data
 
 
-def _write_wiki_render_disk_cache(cache_token: str, html_text: str) -> None:
+def _write_disk_cache_payload(
+    path: Path,
+    cache_token: str,
+    payload: dict[str, Any],
+    *,
+    sort_keys: bool = False,
+) -> None:
     try:
         _atomic_write_text(
-            _wiki_render_disk_cache_path(),
-            json.dumps({
-                "schema_version": 1,
-                "cache_token": cache_token,
-                "html": html_text,
-            }, ensure_ascii=False) + "\n",
+            path,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "cache_token": cache_token,
+                    **payload,
+                },
+                ensure_ascii=False,
+                sort_keys=sort_keys,
+            ) + "\n",
             encoding="utf-8",
         )
     except (OSError, TypeError, ValueError):
         return
+
+
+def _read_html_disk_cache(path: Path, cache_token: str) -> str | None:
+    data = _read_disk_cache_payload(path, cache_token)
+    if data is None:
+        return None
+    html_text = data.get("html")
+    return html_text if isinstance(html_text, str) else None
+
+
+def _write_html_disk_cache(path: Path, cache_token: str, html_text: str) -> None:
+    _write_disk_cache_payload(path, cache_token, {"html": html_text})
+
+
+def _wiki_render_disk_cache_path() -> Path:
+    return _claude_dir() / ".ctx-monitor-wiki-cache.json"
 
 
 def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
@@ -4888,8 +4753,8 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
     if cache_key is not None:
         if _WIKI_RENDER_CACHE_KEY == cache_key and _WIKI_RENDER_CACHE_VALUE is not None:
             return _WIKI_RENDER_CACHE_VALUE
-        cache_token = _wiki_render_cache_token(cache_key)
-        cached = _read_wiki_render_disk_cache(cache_token)
+        cache_token = _disk_cache_token(cache_key)
+        cached = _read_html_disk_cache(_wiki_render_disk_cache_path(), cache_token)
         if cached is not None:
             _WIKI_RENDER_CACHE_KEY = cache_key
             _WIKI_RENDER_CACHE_VALUE = cached
@@ -5018,689 +4883,51 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
     )
     html_out = _layout("Wiki", body)
     if cache_key is not None:
-        _write_wiki_render_disk_cache(cache_token, html_out)
+        _write_html_disk_cache(_wiki_render_disk_cache_path(), cache_token, html_out)
         _WIKI_RENDER_CACHE_KEY = cache_key
         _WIKI_RENDER_CACHE_VALUE = html_out
     return html_out
 
 
+
 def _docs_roots() -> list[Path]:
-    roots: list[Path] = []
-    for root in (Path.cwd(), Path(__file__).resolve().parent.parent):
-        if root not in roots and (root / "docs").is_dir():
-            roots.append(root)
-    return roots
-
-
-def _docs_cache_files() -> list[Path]:
-    files: list[Path] = []
-    seen: set[Path] = set()
-    for root in _docs_roots():
-        candidates = [root / "README.md", root / "graph" / "README.md", root / "mkdocs.yml"]
-        docs_dir = root / "docs"
-        if docs_dir.is_dir():
-            candidates.extend(sorted(docs_dir.rglob("*.md")))
-        for path in candidates:
-            if not path.is_file():
-                continue
-            try:
-                resolved = path.resolve()
-            except OSError:
-                resolved = path
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            files.append(path)
-    return files
-
-
-def _docs_render_cache_key() -> tuple[Any, ...]:
-    parts: list[Any] = []
-    try:
-        stat = Path(__file__).stat()
-        parts.append(("ctx_monitor", stat.st_mtime_ns, stat.st_size))
-    except OSError:
-        parts.append(("ctx_monitor", None, None))
-    for asset_name in ("monitor.css", "monitor-docs.js"):
-        try:
-            asset_text = _monitor_asset_text(asset_name)
-            asset_hash = hashlib.sha256(asset_text.encode("utf-8")).hexdigest()
-        except Exception:
-            asset_hash = ""
-        parts.append(("asset", asset_name, asset_hash))
-    for path in _docs_cache_files():
-        try:
-            stat = path.stat()
-            path_name = str(path.resolve())
-            parts.append((path_name, stat.st_mtime_ns, stat.st_size))
-        except OSError:
-            continue
-    return tuple(parts)
-
-
-def _docs_render_cache_token(cache_key: tuple[Any, ...]) -> str:
-    return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
+    return dashboard_docs.docs_roots(Path.cwd(), Path(__file__).resolve().parent.parent)
 
 
 def _docs_render_disk_cache_path() -> Path:
-    return _claude_dir() / ".ctx-monitor-docs-cache.json"
+    return dashboard_docs.docs_render_disk_cache_path(_claude_dir())
 
 
-def _read_docs_render_disk_cache(cache_token: str) -> str | None:
-    try:
-        data = json.loads(_docs_render_disk_cache_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
-        return None
-    html_text = data.get("html")
-    return html_text if isinstance(html_text, str) else None
+def _docs_index_entries() -> list[dict[str, Any]]:
+    return dashboard_docs.docs_index_entries(_docs_roots())
 
 
-def _write_docs_render_disk_cache(cache_token: str, html_text: str) -> None:
-    try:
-        _atomic_write_text(
-            _docs_render_disk_cache_path(),
-            json.dumps({
-                "schema_version": 1,
-                "cache_token": cache_token,
-                "html": html_text,
-            }, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-    except (OSError, TypeError, ValueError):
-        return
-
-
-def _doc_title(text: str, fallback: str) -> str:
-    for line in text.splitlines():
-        match = re.match(r"^#\s+(.+?)\s*$", line)
-        if match:
-            return match.group(1).strip()
-    return fallback
-
-
-def _doc_summary(text: str) -> str:
-    in_frontmatter = text.startswith("---\n")
-    for block in re.split(r"\n\s*\n", text):
-        chunk = block.strip()
-        if not chunk:
-            continue
-        if in_frontmatter:
-            if chunk == "---" or chunk.endswith("\n---"):
-                in_frontmatter = False
-            continue
-        if chunk.startswith("#") or chunk.startswith("```") or chunk.startswith("<!--"):
-            continue
-        summary = re.sub(r"\s+", " ", chunk)
-        summary, _truncated = _truncate_text(summary, 180)
-        return summary
-    return ""
-
-
-def _strip_doc_frontmatter(text: str) -> str:
-    if not text.startswith("---\n"):
-        return text
-    parts = text.split("---", 2)
-    return parts[2].lstrip() if len(parts) == 3 else text
-
-
-def _doc_anchor(value: str) -> str:
-    return _slugish(value) or "docs"
-
-
-def _docs_index_entries() -> list[dict[str, str]]:
-    entries: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for root in _docs_roots():
-        candidates = [root / "README.md", root / "graph" / "README.md"]
-        candidates.extend(sorted((root / "docs").rglob("*.md")))
-        for path in candidates:
-            if not path.is_file():
-                continue
-            rel = path.relative_to(root).as_posix()
-            if rel == "docs/SKILL.md":
-                continue
-            if rel in seen:
-                continue
-            seen.add(rel)
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            text = _strip_doc_frontmatter(text)
-            title = _doc_title(text, path.stem.replace("-", " ").title())
-            entries.append({
-                "title": title,
-                "path": rel,
-                "summary": _doc_summary(text),
-                "body": text,
-            })
-    return sorted(entries, key=lambda row: row["path"])
-
-
-def _docs_nav_from_mkdocs(
-    root: Path,
-    entries_by_path: dict[str, dict[str, str]],
-) -> list[dict[str, Any]]:
-    mkdocs_path = root / "mkdocs.yml"
-    if not mkdocs_path.is_file():
-        return []
-    try:
-        import yaml  # type: ignore[import-untyped]
-
-        data = yaml.load(mkdocs_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader) or {}
-    except Exception:
-        return []
-    raw_nav = data.get("nav")
-    if not isinstance(raw_nav, list):
-        return []
-
-    def pages_from_nav(value: Any) -> list[tuple[str, str]]:
-        if isinstance(value, str):
-            return [(Path(value).stem.replace("-", " ").title(), f"docs/{value}")]
-        if isinstance(value, list):
-            pages: list[tuple[str, str]] = []
-            for child in value:
-                pages.extend(pages_from_nav(child))
-            return pages
-        if isinstance(value, dict):
-            pages = []
-            for label, child in value.items():
-                if isinstance(child, str):
-                    pages.append((str(label), f"docs/{child}"))
-                else:
-                    pages.extend(pages_from_nav(child))
-            return pages
-        return []
-
-    tabs: list[dict[str, Any]] = []
-    for item in raw_nav:
-        if not isinstance(item, dict):
-            continue
-        for label, value in item.items():
-            pages = [
-                {**entries_by_path[path], "nav_title": page_label}
-                for page_label, path in pages_from_nav(value)
-                if path in entries_by_path
-            ]
-            if pages:
-                tabs.append({
-                    "label": str(label),
-                    "slug": _doc_anchor(str(label)),
-                    "pages": pages,
-                })
-    return tabs
-
-
-def _docs_tabs(entries: list[dict[str, str]]) -> list[dict[str, Any]]:
-    entries_by_path = {entry["path"]: entry for entry in entries}
-    tabs: list[dict[str, Any]] = []
-    used: set[str] = set()
-    for root in _docs_roots():
-        tabs = _docs_nav_from_mkdocs(root, entries_by_path)
-        if tabs:
-            break
-    for tab in tabs:
-        for page in tab["pages"]:
-            used.add(str(page["path"]))
-
-    repo_pages = [
-        entries_by_path[path]
-        for path in ("README.md", "graph/README.md")
-        if path in entries_by_path
-    ]
-    if repo_pages:
-        tabs.append({"label": "Repo", "slug": "repo", "pages": repo_pages})
-        used.update(str(page["path"]) for page in repo_pages)
-
-    other_pages = [
-        entry
-        for entry in entries
-        if entry["path"] not in used and entry["path"] != "docs/SKILL.md"
-    ]
-    if other_pages:
-        tabs.append({"label": "Other", "slug": "other", "pages": other_pages})
-    if not tabs and entries:
-        tabs.append({"label": "Docs", "slug": "docs", "pages": entries})
-    return tabs
-
-
-def _docs_heading_text(raw: str) -> str:
-    raw = re.sub(r"\s+\{#[^}]+\}\s*$", "", raw.strip())
-    raw = re.sub(r"`([^`]+)`", r"\1", raw)
-    raw = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", raw)
-    raw = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", raw)
-    raw = re.sub(r"[*_~]+", "", raw)
-    return re.sub(r"\s+", " ", raw).strip()
-
-
-def _docs_heading_id(page_anchor: str, title: str, seen: dict[str, int]) -> str:
-    base = f"{page_anchor}-{_doc_anchor(title)}"
-    count = seen.get(base, 0)
-    seen[base] = count + 1
-    return base if count == 0 else f"{base}_{count}"
-
-
-def _docs_heading_items(markdown_text: str, page_anchor: str) -> list[dict[str, Any]]:
-    headings: list[dict[str, Any]] = []
-    seen: dict[str, int] = {}
-    in_fence = False
-    for line in markdown_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("```", "~~~")):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
-        match = re.match(r"^(#{1,4})\s+(.+?)\s*#*\s*$", line)
-        if not match:
-            continue
-        level = len(match.group(1))
-        title = _docs_heading_text(match.group(2))
-        if not title:
-            continue
-        heading_id = _docs_heading_id(page_anchor, title, seen)
-        if level >= 2:
-            headings.append({"level": level, "title": title, "id": heading_id})
-    return headings
-
-
-def _docs_page_anchor(tab_slug: str, path: str) -> str:
-    return f"doc-{tab_slug}-{_doc_anchor(path)}"
-
-
-def _normalise_doc_path(path: str) -> str:
-    parts: list[str] = []
-    for part in PurePosixPath(path).parts:
-        if part in ("", "."):
-            continue
-        if part == "..":
-            if parts:
-                parts.pop()
-            continue
-        parts.append(part)
-    return PurePosixPath(*parts).as_posix() if parts else ""
-
-
-def _resolve_docs_link_path(source_path: str, href_path: str, page_anchors: dict[str, tuple[str, str]]) -> str | None:
-    base = PurePosixPath(source_path).parent
-    resolved = _normalise_doc_path((base / href_path).as_posix())
-    candidates = [resolved]
-    if not resolved.endswith(".md"):
-        stripped = resolved.rstrip("/")
-        candidates.extend([f"{stripped}.md", f"{stripped}/index.md"])
-    for candidate in candidates:
-        if candidate in page_anchors:
-            return candidate
-    return None
-
-
-def _docs_dashboard_link(
-    source_path: str,
-    source_tab: str,
-    source_anchor: str,
-    href: str,
-    page_anchors: dict[str, tuple[str, str]],
-) -> tuple[str, str, str] | None:
-    href = html.unescape(href).strip()
-    lowered = href.lower()
-    if (
-        not href
-        or lowered.startswith(("http://", "https://", "mailto:", "tel:", "javascript:"))
-        or href.startswith("/")
-    ):
-        return None
-    href_path, sep, fragment = href.partition("#")
-    if not href_path:
-        target_tab = source_tab
-        target_anchor = source_anchor
-    else:
-        resolved_path = _resolve_docs_link_path(source_path, href_path, page_anchors)
-        if resolved_path is None:
-            return None
-        target_tab, target_anchor = page_anchors[resolved_path]
-    if sep and fragment:
-        fragment_anchor = _doc_anchor(unquote(fragment))
-        if not fragment_anchor.startswith(target_anchor):
-            fragment_anchor = f"{target_anchor}-{fragment_anchor}"
-        return f"#{fragment_anchor}", target_tab, fragment_anchor
-    return f"#{target_anchor}", target_tab, target_anchor
-
-
-def _rewrite_docs_links(
-    rendered_html: str,
-    source_path: str,
-    source_tab: str,
-    source_anchor: str,
-    page_anchors: dict[str, tuple[str, str]],
-) -> str:
-    def replace_link(match: re.Match[str]) -> str:
-        before = match.group(1)
-        href = match.group(2)
-        after = match.group(3)
-        resolved = _docs_dashboard_link(source_path, source_tab, source_anchor, href, page_anchors)
-        if resolved is None:
-            return match.group(0)
-        dashboard_href, target_tab, target_anchor = resolved
-        return (
-            f"<a{before}href=\"{html.escape(dashboard_href, quote=True)}\""
-            f" data-doc-tab=\"{html.escape(target_tab, quote=True)}\""
-            f" data-doc-target=\"{html.escape(target_anchor, quote=True)}\"{after}>"
-        )
-
-    return re.sub(r"<a([^>]*?)href=\"([^\"]+)\"([^>]*)>", replace_link, rendered_html)
+def _docs_tabs(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return dashboard_docs.docs_tabs(entries, _docs_roots())
 
 
 def _render_docs_markdown(markdown_text: str, page_anchor: str) -> str:
-    """Render repo docs with MkDocs-like Markdown support when available."""
-    markdown_text = re.sub(r":octicons-arrow-right-24:", "->", markdown_text)
-    markdown_text = re.sub(r":octicons-[a-z0-9-]+:", "", markdown_text)
-    try:
-        import markdown as markdown_lib  # type: ignore[import-untyped]
-
-        rendered = str(markdown_lib.markdown(
-            markdown_text,
-            extensions=[
-                "admonition",
-                "attr_list",
-                "def_list",
-                "fenced_code",
-                "footnotes",
-                "md_in_html",
-                "tables",
-                "toc",
-                "pymdownx.details",
-                "pymdownx.superfences",
-                "pymdownx.tabbed",
-                "pymdownx.tasklist",
-                "pymdownx.inlinehilite",
-            ],
-            extension_configs={
-                "toc": {
-                    "permalink": True,
-                    "slugify": lambda value, separator: f"{page_anchor}-{_doc_anchor(value)}",
-                },
-                "pymdownx.tabbed": {"alternate_style": True},
-                "pymdownx.tasklist": {"custom_checkbox": True},
-            },
-            output_format="html5",
-        ))
-        return _sanitize_docs_html(rendered)
-    except Exception:
-        return _render_wiki_markdown(markdown_text)
-
-
-def _sanitize_docs_html(rendered_html: str) -> str:
-    """Remove active HTML from local docs before embedding in the dashboard."""
-    dangerous_blocks = (
-        "script",
-        "style",
-        "iframe",
-        "object",
-        "embed",
-        "form",
-        "textarea",
-        "select",
-    )
-    dangerous_tags = (
-        "base",
-        "button",
-        "input",
-        "link",
-        "meta",
-    )
-
-    def escape_match(match: re.Match[str]) -> str:
-        return html.escape(match.group(0))
-
-    def parse_attrs(tag_html: str) -> dict[str, str | None] | None:
-        attrs: dict[str, str | None] = {}
-        for match in re.finditer(
-            r"([a-zA-Z_:][\w:.-]*)(?:\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s\"'>]+))?",
-            tag_html,
-        ):
-            name = match.group(1).lower()
-            if name == "input":
-                continue
-            if name in attrs:
-                return None
-            raw_value = match.group(2)
-            if raw_value is None:
-                attrs[name] = None
-                continue
-            value = raw_value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                value = value[1:-1]
-            attrs[name] = html.unescape(value)
-        return attrs
-
-    def is_safe_tabbed_input(tag_html: str) -> bool:
-        attrs = parse_attrs(tag_html)
-        if attrs is None:
-            return False
-        if set(attrs) - {"checked", "id", "name", "type"}:
-            return False
-        input_type = (attrs.get("type") or "").lower()
-        input_id = attrs.get("id") or ""
-        input_name = attrs.get("name") or ""
-        if input_type != "radio":
-            return False
-        if not re.fullmatch(r"__tabbed_\d+_\d+", input_id):
-            return False
-        if not re.fullmatch(r"__tabbed_\d+", input_name):
-            return False
-        if not input_id.startswith(f"{input_name}_"):
-            return False
-        checked = attrs.get("checked")
-        return checked is None or checked.lower() == "checked"
-
-    def escape_input_unless_safe(match: re.Match[str]) -> str:
-        tag_html = match.group(0)
-        if is_safe_tabbed_input(tag_html):
-            return tag_html
-        return html.escape(tag_html)
-
-    for tag in dangerous_blocks:
-        rendered_html = re.sub(
-            rf"<\s*{tag}\b[^>]*>.*?<\s*/\s*{tag}\s*>",
-            escape_match,
-            rendered_html,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        rendered_html = re.sub(
-            rf"<\s*/?\s*{tag}\b[^>]*>",
-            escape_match,
-            rendered_html,
-            flags=re.IGNORECASE,
-        )
-    for tag in dangerous_tags:
-        if tag == "input":
-            rendered_html = re.sub(
-                rf"<\s*/?\s*{tag}\b[^>]*>",
-                escape_input_unless_safe,
-                rendered_html,
-                flags=re.IGNORECASE,
-            )
-            continue
-        rendered_html = re.sub(
-            rf"<\s*/?\s*{tag}\b[^>]*>",
-            escape_match,
-            rendered_html,
-            flags=re.IGNORECASE,
-        )
-
-    rendered_html = re.sub(
-        r"\s+on[a-zA-Z0-9_-]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)",
-        "",
-        rendered_html,
-        flags=re.IGNORECASE,
-    )
-    rendered_html = re.sub(
-        r"\s+(href|src)\s*=\s*([\"'])\s*(javascript:|data:text/html)",
-        r" \1=\2#",
-        rendered_html,
-        flags=re.IGNORECASE,
-    )
-    return rendered_html
-
-
-def _docs_search_text(entry: dict[str, str]) -> str:
-    text = f"{entry['title']} {entry['path']} {entry['summary']} {entry['body']}"
-    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
-    text = re.sub(r"!!!\s+\w+(?:\s+\"[^\"]+\")?", " ", text)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"[*_`#>\[\]().!:-]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip().lower()
-
-
-def _render_docs_sidebar_page(
-    entry: dict[str, str],
-    tab_slug: str,
-    page_anchors: dict[str, tuple[str, str]],
-) -> str:
-    page_anchor = page_anchors.get(entry["path"], (tab_slug, _docs_page_anchor(tab_slug, entry["path"])))[1]
-    title = str(entry.get("nav_title") or entry["title"])
-    page_search = _docs_search_text(entry)
-    heading_links = "".join(
-        "<a class='docs-heading-link "
-        f"docs-heading-level-{int(heading['level'])}' "
-        f"href='#{html.escape(str(heading['id']))}' "
-        f"data-doc-link data-doc-tab='{html.escape(tab_slug)}' "
-        f"data-doc-target='{html.escape(str(heading['id']))}' "
-        f"data-doc-search='{html.escape(str(heading['title']).lower())}' "
-        f"data-doc-label='{html.escape(title)} / {html.escape(str(heading['title']))}'>"
-        f"{html.escape(str(heading['title']))}</a>"
-        for heading in _docs_heading_items(entry["body"], page_anchor)
-    )
-    headings = f"<div class='docs-heading-list'>{heading_links}</div>" if heading_links else ""
-    return (
-        "<div class='docs-toc-page'>"
-        f"<a class='docs-page-link' href='#{html.escape(page_anchor)}' "
-        f"data-doc-link data-doc-tab='{html.escape(tab_slug)}' "
-        f"data-doc-target='{html.escape(page_anchor)}' "
-        f"data-doc-search='{html.escape(page_search)}' "
-        f"data-doc-label='{html.escape(title)}'>{html.escape(title)}</a>"
-        f"{headings}"
-        "</div>"
-    )
-
-
-def _render_docs_page(
-    entry: dict[str, str],
-    tab_slug: str,
-    page_anchors: dict[str, tuple[str, str]],
-) -> str:
-    page_anchor = page_anchors.get(entry["path"], (tab_slug, _docs_page_anchor(tab_slug, entry["path"])))[1]
-    source_url = f"https://github.com/stevesolun/ctx/blob/main/{quote(entry['path'])}"
-    body_html = _render_docs_markdown(entry["body"], page_anchor)
-    body_html = _rewrite_docs_links(body_html, entry["path"], tab_slug, page_anchor, page_anchors)
-    return (
-        f"<article id='{html.escape(page_anchor)}' class='docs-page wiki-body' "
-        f"data-doc-page='{html.escape(_docs_search_text(entry))}'>"
-        "<div class='docs-page-source'>"
-        f"<code>{html.escape(entry['path'])}</code>"
-        f"<a href='{html.escape(source_url)}'>source -></a>"
-        "</div>"
-        f"{body_html}"
-        "</article>"
+    return dashboard_docs.render_docs_markdown(
+        markdown_text,
+        page_anchor,
+        fallback_renderer=_render_wiki_markdown,
     )
 
 
 def _render_docs() -> str:
-    cache_key = _docs_render_cache_key()
-    global _DOCS_RENDER_CACHE_KEY, _DOCS_RENDER_CACHE_VALUE
-    if _DOCS_RENDER_CACHE_KEY == cache_key and _DOCS_RENDER_CACHE_VALUE is not None:
-        return _DOCS_RENDER_CACHE_VALUE
-    cache_token = _docs_render_cache_token(cache_key)
-    cached = _read_docs_render_disk_cache(cache_token)
-    if cached is not None:
-        _DOCS_RENDER_CACHE_KEY = cache_key
-        _DOCS_RENDER_CACHE_VALUE = cached
-        return cached
-
-    entries = _docs_index_entries()
-    public_docs_url = "https://stevesolun.github.io/ctx/"
-    tabs = _docs_tabs(entries)
-    if not tabs:
-        body = (
-            "<h1>Docs</h1>"
-            "<div class='card'><strong>No local docs found.</strong>"
-            f"<p class='muted'>Open the public docs at "
-            f"<a href='{public_docs_url}'>{public_docs_url}</a>.</p></div>"
-        )
-        html_out = _layout("Docs", body)
-        _write_docs_render_disk_cache(cache_token, html_out)
-        _DOCS_RENDER_CACHE_KEY = cache_key
-        _DOCS_RENDER_CACHE_VALUE = html_out
-        return html_out
-
-    tab_buttons = "".join(
-        f"<button class='docs-tab-button{' active' if idx == 0 else ''}' "
-        f"type='button' data-doc-tab='{html.escape(str(tab['slug']))}'>"
-        f"{html.escape(str(tab['label']))}</button>"
-        for idx, tab in enumerate(tabs)
+    return dashboard_docs.render_docs(
+        roots=_docs_roots(),
+        layout=_layout,
+        asset_text=_monitor_asset_text,
+        inline_script=_monitor_inline_script,
+        cache_path=_docs_render_disk_cache_path(),
+        fallback_markdown=_render_wiki_markdown,
+        cache_salt_paths=(Path(__file__),),
+        cache_extra=(id(_docs_index_entries), id(_docs_tabs)),
+        index_entries=_docs_index_entries,
+        tabs_for_entries=_docs_tabs,
+        render_markdown_func=_render_docs_markdown,
     )
-    panels: list[str] = []
-    page_count = sum(len(list(tab["pages"])) for tab in tabs)
-    page_anchors: dict[str, tuple[str, str]] = {}
-    for tab in tabs:
-        tab_slug = str(tab["slug"])
-        for page in list(tab["pages"]):
-            page_anchors[str(page["path"])] = (tab_slug, _docs_page_anchor(tab_slug, str(page["path"])))
-    for idx, tab in enumerate(tabs):
-        tab_slug = str(tab["slug"])
-        pages = list(tab["pages"])
-        page_links = "".join(
-            _render_docs_sidebar_page(page, tab_slug, page_anchors)
-            for page in pages
-        )
-        page_bodies = "".join(_render_docs_page(page, tab_slug, page_anchors) for page in pages)
-        hidden = " hidden" if idx else ""
-        panels.append(
-            f"<section class='docs-tab-panel' data-doc-panel='{html.escape(tab_slug)}'{hidden}>"
-            "<div class='docs-reader'>"
-            f"<aside class='docs-page-list'>{page_links}</aside>"
-            f"<div>{page_bodies}</div>"
-            "</div>"
-            "</section>"
-        )
-
-    body = (
-        "<div class='docs-shell'>"
-        "<section class='docs-hero'>"
-        "<div class='docs-hero-grid'>"
-        "<div>"
-        "<div class='docs-eyebrow'>Repo documentation</div>"
-        "<h1>Docs</h1>"
-        "<p>Read the same Markdown tree and MkDocs nav shipped with the repo. "
-        "Use tabs for sections, search across local docs, and jump to source when you need the exact file.</p>"
-        "</div>"
-        "<div class='docs-hero-meta'>"
-        f"<span class='docs-stat'>{len(tabs)} sections</span>"
-        f"<span class='docs-stat'>{page_count} pages</span>"
-        "</div>"
-        "</div>"
-        "<div class='docs-actions'>"
-        "<div class='docs-search-wrap'>"
-        "<input id='docs-search' type='text' placeholder='Search local docs...'>"
-        "</div>"
-        f"<a class='docs-public-link' href='{public_docs_url}'>public docs -></a>"
-        "</div>"
-        "<div id='docs-search-results' class='docs-search-results' hidden></div>"
-        "</section>"
-        f"<div class='docs-tabs' role='tablist'>{tab_buttons}</div>"
-        + "".join(panels)
-        + _monitor_inline_script("monitor-docs.js")
-        + "</div>"
-    )
-    html_out = _layout("Docs", body)
-    _write_docs_render_disk_cache(cache_token, html_out)
-    _DOCS_RENDER_CACHE_KEY = cache_key
-    _DOCS_RENDER_CACHE_VALUE = html_out
-    return html_out
 
 
 def _render_manage(mutations_enabled: bool | None = None) -> str:
@@ -6093,10 +5320,6 @@ def _kpi_summary_cache_key(sidecar_dir: Path) -> tuple[Any, ...]:
     return tuple(parts)
 
 
-def _kpi_summary_cache_token(cache_key: tuple[Any, ...]) -> str:
-    return json.dumps(cache_key, separators=(",", ":"), sort_keys=True)
-
-
 def _kpi_summary_disk_cache_path(sidecar_dir: Path) -> Path:
     return sidecar_dir / ".dashboard-kpi-summary.json"
 
@@ -6136,15 +5359,8 @@ def _read_kpi_summary_disk_cache(
     cache_token: str,
     summary_cls: Any,
 ) -> Any | None:
-    try:
-        data = json.loads(
-            _kpi_summary_disk_cache_path(sidecar_dir).read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    if data.get("schema_version") != 1 or data.get("cache_token") != cache_token:
+    data = _read_disk_cache_payload(_kpi_summary_disk_cache_path(sidecar_dir), cache_token)
+    if data is None:
         return None
     return _dashboard_summary_from_dict(summary_cls, data.get("summary"))
 
@@ -6154,19 +5370,12 @@ def _write_kpi_summary_disk_cache(
     cache_token: str,
     summary: Any,
 ) -> None:
-    try:
-        payload = {
-            "schema_version": 1,
-            "cache_token": cache_token,
-            "summary": summary.to_dict(),
-        }
-        _atomic_write_text(
-            _kpi_summary_disk_cache_path(sidecar_dir),
-            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-    except (OSError, TypeError, ValueError):
-        return
+    _write_disk_cache_payload(
+        _kpi_summary_disk_cache_path(sidecar_dir),
+        cache_token,
+        {"summary": summary.to_dict()},
+        sort_keys=True,
+    )
 
 
 def _kpi_summary():
@@ -6193,7 +5402,7 @@ def _kpi_summary():
         and time.monotonic() - _KPI_SUMMARY_CACHE_AT < _KPI_SUMMARY_CACHE_SECONDS
     ):
         return _KPI_SUMMARY_CACHE_VALUE
-    cache_token = _kpi_summary_cache_token(cache_key)
+    cache_token = _disk_cache_token(cache_key)
     summary = _read_kpi_summary_disk_cache(sidecar_dir, cache_token, DashboardSummary)
     if summary is not None:
         _KPI_SUMMARY_CACHE_KEY = cache_key
@@ -6799,119 +6008,21 @@ def _perform_load(
     command: str | None = None,
     json_config: str | None = None,
 ) -> tuple[bool, str]:
-    """Install/load one entity from the wiki. Returns (ok, message)."""
-    if not _is_safe_slug(slug):
-        return False, f"invalid slug: {slug!r}"
-    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
-    if normalized_entity_type is None:
-        return False, f"unsupported entity_type: {entity_type!r}"
-    entity_type = normalized_entity_type
-    if entity_type == "harness":
-        return (
-            False,
-            "harness installs are managed by ctx-harness-install; "
-            f"run: ctx-harness-install {slug} --dry-run",
-        )
-    result: Any
-    try:
-        if entity_type == "agent":
-            from ctx.adapters.claude_code.install.agent_install import install_agent
-            result = install_agent(
-                slug,
-                wiki_dir=_wiki_dir(),
-                agents_dir=_claude_dir() / "agents",
-            )
-        elif entity_type == "mcp-server":
-            from ctx.adapters.claude_code.install.mcp_install import install_mcp
-            result = install_mcp(
-                slug,
-                wiki_dir=_wiki_dir(),
-                command=command,
-                json_config=json_config,
-                auto=True,
-            )
-        else:
-            from ctx.adapters.claude_code.install.skill_install import install_skill
-            result = install_skill(
-                slug,
-                wiki_dir=_wiki_dir(),
-                skills_dir=_claude_dir() / "skills",
-                security_scan=True,
-            )
-    except ImportError as exc:
-        return False, f"install import failed: {exc}"
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {exc}"
-    if result.status not in ("installed", "skipped-existing"):
-        return False, f"load failed: {result.message or result.status}"
-    _log_dashboard_entity_event(entity_type, "loaded", slug)
-    message = result.message or f"loaded {entity_type}:{slug}"
-    scan = getattr(result, "security_scan", None)
-    scan_output = str(getattr(scan, "output", "") or "").strip()
-    if scan_output:
-        message = f"{message}\n\nSkillSpector report:\n{scan_output}"
-    return True, message
+    return dashboard_entities.perform_load(
+        slug,
+        entity_type,
+        command=command,
+        json_config=json_config,
+        deps=_entity_runtime_deps(),
+    )
 
 
 def _perform_unload(slug: str, entity_type: str = "skill") -> tuple[bool, str]:
-    """Unload the given entity.
-
-    Routes by ``entity_type``:
-      - ``skill`` / ``agent``: ``skill_unload.unload_from_session`` —
-        file-copy + manifest update, reversible via /api/load.
-      - ``mcp-server``: ``mcp_install.uninstall_mcp`` — wraps
-        ``claude mcp remove`` subprocess. Requires the claude CLI on
-        PATH; errors surface to the caller.
-    """
-    if not _is_safe_slug(slug):
-        return False, f"invalid slug: {slug!r}"
-    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
-    if normalized_entity_type is None:
-        return False, f"unsupported entity_type: {entity_type!r}"
-    entity_type = normalized_entity_type
-    if entity_type == "harness":
-        return (
-            False,
-            "harness installs are managed by ctx-harness-install; "
-            f"run: ctx-harness-install {slug} --uninstall --dry-run",
-        )
-    if entity_type == "mcp-server":
-        try:
-            from ctx.adapters.claude_code.install.mcp_install import uninstall_mcp
-        except ImportError as exc:
-            return False, f"mcp_install import failed: {exc}"
-        try:
-            result = uninstall_mcp(slug, wiki_dir=_wiki_dir())
-        except Exception as exc:  # noqa: BLE001
-            return False, f"{type(exc).__name__}: {exc}"
-        if result.status not in ("uninstalled",):
-            return False, f"uninstall failed: {result.message or result.status}"
-        _log_dashboard_entity_event("mcp-server", "unloaded", slug)
-        return True, f"unloaded mcp:{slug}"
-
-    if entity_type == "agent":
-        try:
-            removed_entries = _remove_loaded_manifest_entry(slug, "agent")
-        except Exception as exc:  # noqa: BLE001
-            return False, f"{type(exc).__name__}: {exc}"
-        if not removed_entries:
-            return False, f"{slug} was not in the loaded set"
-        _log_dashboard_entity_event("agent", "unloaded", slug)
-        return True, f"unloaded {slug}"
-
-    # Skills keep using the existing skill_unload module so skill-events.jsonl
-    # remains compatible with older usage and retention analytics.
-    try:
-        from ctx.adapters.claude_code.install.skill_unload import unload_from_session
-    except ImportError as exc:
-        return False, f"skill_unload import failed: {exc}"
-    try:
-        removed = unload_from_session([slug], entity_type=entity_type)
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {exc}"
-    if not removed:
-        return False, f"{slug} was not in the loaded set"
-    return True, f"unloaded {', '.join(removed)}"
+    return dashboard_entities.perform_unload(
+        slug,
+        entity_type,
+        deps=_entity_runtime_deps(),
+    )
 
 
 # ─── HTTP handler ────────────────────────────────────────────────────────────

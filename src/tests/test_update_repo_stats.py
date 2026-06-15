@@ -374,18 +374,13 @@ def test_patch_readme_checks_docs_and_catalog(
     docs_knowledge.write_text("| Total nodes | **10** |\n", encoding="utf-8")
     docs_catalog.write_text(
         "\n".join([
+            '<div id="ctx-catalog-grid" class="ctx-catalog-grid">',
+            "<!-- ctx-catalog:begin -->",
             '<article class="ctx-catalog-card" data-type="skill">',
             '<p class="ctx-catalog-muted">1 entities</p>',
             "</article>",
-            '<article class="ctx-catalog-card" data-type="agent">',
-            '<p class="ctx-catalog-muted">2 entities</p>',
-            "</article>",
-            '<article class="ctx-catalog-card" data-type="mcp-server">',
-            '<p class="ctx-catalog-muted">3 entities</p>',
-            "</article>",
-            '<article class="ctx-catalog-card" data-type="harness">',
-            '<p class="ctx-catalog-muted">4 entities</p>',
-            "</article>",
+            "<!-- ctx-catalog:end -->",
+            "</div>",
         ]),
         encoding="utf-8",
     )
@@ -418,6 +413,7 @@ def test_patch_readme_checks_docs_and_catalog(
     assert ">56 entities</p>" in patched
     assert ">7,890 entities</p>" in patched
     assert ">12 entities</p>" in patched
+    assert "./?type=harness&q=tool+access" in patched
 
 
 def test_read_test_count_prefers_project_python(

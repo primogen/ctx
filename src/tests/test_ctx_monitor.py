@@ -19,6 +19,8 @@ import pytest
 
 import ctx_monitor as cm
 import ctx_init as ci
+from ctx import dashboard_entities
+from ctx import dashboard_docs
 from ctx.core.wiki import wiki_queue
 
 
@@ -38,8 +40,7 @@ def fake_claude(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(cm, "_KPI_SUMMARY_CACHE_AT", 0.0)
     monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_KEY", None)
     monkeypatch.setattr(cm, "_WIKI_RENDER_CACHE_VALUE", None)
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
+    dashboard_docs.reset_docs_render_cache()
     return claude
 
 
@@ -690,6 +691,11 @@ def test_perform_load_rejects_invalid_slug() -> None:
     ok, msg = cm._perform_load("../etc/passwd")
     assert ok is False
     assert "invalid slug" in msg
+    helper_ok, helper_msg = dashboard_entities.perform_load(
+        "../etc/passwd",
+        deps=cm._entity_runtime_deps(),
+    )
+    assert (helper_ok, helper_msg) == (ok, msg)
 
 
 def test_perform_load_runs_skill_security_scan_and_surfaces_output(
@@ -1541,6 +1547,8 @@ def test_render_graph_uses_builtin_3d_mount(monkeypatch: pytest.MonkeyPatch) -> 
     assert "button id=\"graph-zoom-in\"" in html_out
     assert "button id=\"graph-zoom-out\"" in html_out
     assert "data-testid=\"graph-edge-detail\"" in html_out
+    assert "id='graph-explanation'" in html_out
+    assert "g.explanations" in html_out
     assert "Graph renderer unavailable" not in html_out
     assert "Enter a slug to render the graph" in html_out
     # Initial slug must be embedded as JSON literal so the JS picks it up.
@@ -1814,6 +1822,29 @@ def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
         "skill:fastapi-pro",
     ]
     assert result["edges"][0]["data"]["shared_tags"] == ["python"]
+    assert result["schema"] == {
+        "name": "ctx.dashboard.graph.neighborhood",
+        "version": 1,
+    }
+    assert result["layout"] == {
+        "kind": "radial-3d",
+        "node_size_field": "node_size",
+        "node_size_min": 8.0,
+        "node_size_max": 24.0,
+        "edge_weight_field": "weight",
+    }
+    assert result["insights"] == {
+        "source": "dashboard-index",
+        "node_count": 2,
+        "edge_count": 1,
+        "by_type": {"skill": 2, "agent": 0, "mcp-server": 0, "harness": 0},
+        "max_degree": 10,
+        "center_degree": 10,
+    }
+    assert "cached dashboard index" in result["explanations"]["source"]
+    assert "exact or normalized slug" in result["explanations"]["search"]
+    assert "quality, usage, and graph degree" in result["explanations"]["layout"]
+    assert "shared_tags" in result["explanations"]["edges"]
     assert cm._graph_stats() == {"nodes": 2, "edges": 1, "available": True}
     assert cm._wiki_stats() == {
         "skills": 2,
@@ -3238,6 +3269,7 @@ def test_entity_delete_unloads_live_entity_before_removing_page(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    assert dashboard_entities.normalize_entity_tags(["Code Review"]) == ["code-review"]
     skill_dir = fake_claude / "skill-wiki" / "entities" / "skills"
     skill_dir.mkdir(parents=True)
     entity_path = skill_dir / "python-patterns.md"
@@ -3500,8 +3532,7 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
 
 
 def _use_temp_docs_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
+    dashboard_docs.reset_docs_render_cache()
     monkeypatch.setattr(
         cm,
         "_docs_render_disk_cache_path",
@@ -3674,8 +3705,7 @@ def test_render_docs_reuses_disk_cache_after_process_cache_reset(
     first = cm._render_docs()
     assert (tmp_path / ".ctx-monitor-docs-cache.json").is_file()
 
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_KEY", None)
-    monkeypatch.setattr(cm, "_DOCS_RENDER_CACHE_VALUE", None)
+    dashboard_docs.reset_docs_render_cache()
 
     def fail_render_markdown(*args: object, **kwargs: object) -> str:
         raise AssertionError("fresh process should read the rendered docs cache")
@@ -3694,7 +3724,11 @@ def test_render_docs_markdown_preserves_mkdocs_tab_controls() -> None:
         "    Second body\n"
     )
 
-    html_out = cm._render_docs_markdown(markdown_text, "doc-home")
+    html_out = dashboard_docs.render_docs_markdown(
+        markdown_text,
+        "doc-home",
+        fallback_renderer=cm._render_wiki_markdown,
+    )
 
     assert "&lt;input" not in html_out
     assert 'type="radio"' in html_out

@@ -31,6 +31,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 import ctx_monitor as _cm
+from ctx.core import entity_types as _entity_types
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -161,6 +162,8 @@ class TestWikiIndexEntries:
         assert slugs == {"anthropic-python-sdk", "atlassian-cloud", "pulsemcp-meta"}
 
     def test_wiki_entity_path_resolves_sharded_mcp_pages(self, wiki_3type):
+        assert _entity_types.normalize_entity_type("mcp") == "mcp-server"
+        assert _cm._DASHBOARD_ENTITY_SOURCES == _entity_types.entity_source_specs()
         path = _cm._wiki_entity_path("anthropic-python-sdk")
         assert path == (
             wiki_3type / "entities" / "mcp-servers" / "a" / "anthropic-python-sdk.md"

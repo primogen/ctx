@@ -27,6 +27,7 @@ from urllib.request import url2pathname
 from ctx.core.entity_types import entity_page_path
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body, validate_skill_name
 from ctx.utils._fs_utils import atomic_write_json, atomic_write_text, reject_symlink_path
+from ctx.utils._secret_scan import redact_secret_text
 from ctx_config import cfg
 
 _COMMAND_ENV_ALLOWLIST = {
@@ -435,7 +436,7 @@ def _command_env() -> dict[str, str]:
 
 
 def _redact_output(text: str) -> str:
-    redacted = text or ""
+    redacted = redact_secret_text(text or "")
     for key, value in os.environ.items():
         if not value or len(value) < 8:
             continue

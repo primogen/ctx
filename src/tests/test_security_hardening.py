@@ -5,6 +5,7 @@ Security-hardening tests covering:
 2. Cross-process advisory file-lock behavior.
 3. YAML validate-path misroute (toolbox.validate now reads the given file,
    not .toolbox.yaml in its parent directory).
+4. Dashboard/install regressions for active HTML and secret persistence.
 
 Each test targets a specific fix from the Phase 4b-6 code-review pass.
 """
@@ -15,7 +16,9 @@ import json
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -24,8 +27,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import council_runner as cr  # noqa: E402
+import ctx_monitor as cm  # noqa: E402
+import harness_install  # noqa: E402
 import toolbox as tb  # noqa: E402
 import toolbox_verdict as tv  # noqa: E402
+from ctx import dashboard_docs  # noqa: E402
+from ctx.adapters.claude_code.install import install_utils  # noqa: E402
+from ctx.adapters.claude_code.install import mcp_install  # noqa: E402
 from ctx.utils._file_lock import file_lock  # noqa: E402
 
 
@@ -146,3 +154,115 @@ def test_validate_reads_supplied_yaml_file(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert rc == 0
     assert "1 toolbox(es)" in out
+
+
+# ── dashboard/install hardening ─────────────────────────────────────────────
+
+def _write_mcp_entity(wiki_dir: Path, slug: str, frontmatter: dict[str, str]) -> Path:
+    shard = slug[0] if slug and slug[0].isalpha() else "0-9"
+    path = wiki_dir / "entities" / "mcp-servers" / shard / f"{slug}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["---"]
+    lines.extend(f"{key}: {value}" for key, value in frontmatter.items())
+    lines.extend(["---", "", "# MCP"])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_docs_sanitizer_rewrites_unquoted_active_urls() -> None:
+    cleaned = dashboard_docs.sanitize_docs_html(
+        '<a href=javascript:alert(1)>bad</a>'
+        '<img src=data:text/html,<svg/onload=alert(1)>>'
+    )
+
+    assert "javascript:" not in cleaned.lower()
+    assert "data:text/html" not in cleaned.lower()
+
+
+def test_dashboard_skill_load_requires_security_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ctx.adapters.claude_code.install import skill_install
+
+    calls: list[dict[str, object]] = []
+
+    class Result:
+        status = "installed"
+        message = "installed"
+        security_scan = None
+
+    def fake_install_skill(*_args: object, **kwargs: object) -> Result:
+        calls.append(kwargs)
+        return Result()
+
+    monkeypatch.setattr(cm, "_wiki_dir", lambda: tmp_path / "wiki")
+    monkeypatch.setattr(cm, "_claude_dir", lambda: tmp_path / ".claude")
+    monkeypatch.setattr(skill_install, "install_skill", fake_install_skill)
+
+    ok, _msg = cm._perform_load("python-patterns", entity_type="skill")
+
+    assert ok is True
+    assert calls
+    assert calls[0]["security_scan"] is True
+    assert calls[0]["security_scan_required"] is True
+
+
+def test_mcp_skip_path_does_not_persist_inline_secret_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wiki = tmp_path / "wiki"
+    manifest = tmp_path / "skill-manifest.json"
+    monkeypatch.setattr(install_utils, "MANIFEST_PATH", manifest)
+    _write_mcp_entity(
+        wiki,
+        "gh",
+        {
+            "status": "installed",
+            "install_cmd": "npx -y pkg GITHUB_TOKEN=ghp_supersecret1234567890",
+        },
+    )
+
+    result = mcp_install.install_mcp("gh", wiki_dir=wiki, auto=True)
+
+    assert result.status == "skipped-existing"
+    manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+    assert manifest_data["load"] == [
+        {
+            "skill": "gh",
+            "entity_type": "mcp-server",
+            "source": "ctx-mcp-install",
+        }
+    ]
+
+
+@dataclass
+class _FakeRun:
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+
+def test_harness_run_redacts_token_shaped_output_not_present_in_parent_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    def fake_run(_cmd: list[str], **_kwargs: Any) -> _FakeRun:
+        return _FakeRun(
+            stdout=(
+                "created OPENAI_API_KEY=sk-testsecret1234567890 "
+                "and ghp_supersecret1234567890"
+            )
+        )
+
+    monkeypatch.setattr(harness_install.subprocess, "run", fake_run)
+
+    run = harness_install._run_command("python --version", cwd=tmp_path)
+
+    assert "sk-testsecret" not in run["stdout"]
+    assert "ghp_supersecret" not in run["stdout"]
+    assert harness_install._REDACTION in run["stdout"]

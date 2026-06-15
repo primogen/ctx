@@ -223,6 +223,26 @@ def _json_config_card_summary(parsed_config: object) -> str:
     return "; ".join(parts) if parts else "empty object"
 
 
+def _safe_manifest_command(command: object) -> str | None:
+    """Return command text safe enough to persist in advisory manifests."""
+    if not isinstance(command, str) or not command.strip():
+        return None
+    try:
+        tokens = _split_install_command(command)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    if _find_inline_secret_arg(tokens) is not None:
+        return None
+    executable = _normalized_executable(tokens[0])
+    if executable not in _ALLOWED_CMD_EXECS:
+        return None
+    if _rejects_banned_args(tokens) is not None:
+        return None
+    return _redact_output(command)
+
+
 @dataclass(frozen=True)
 class InstallResult:
     slug: str
@@ -415,8 +435,8 @@ def install_mcp(
 
     if existing_status == "installed" and not force:
         skipped_extra: dict[str, str] = {}
-        install_cmd = fm.get("install_cmd")
-        if isinstance(install_cmd, str) and install_cmd:
+        install_cmd = _safe_manifest_command(fm.get("install_cmd"))
+        if install_cmd:
             skipped_extra["command"] = install_cmd
         record_install(
             slug,
