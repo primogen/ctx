@@ -19,6 +19,7 @@ import pytest
 
 import ctx_monitor as cm
 import ctx_init as ci
+from ctx import dashboard_entities
 from ctx import dashboard_docs
 from ctx.core.wiki import wiki_queue
 
@@ -690,6 +691,11 @@ def test_perform_load_rejects_invalid_slug() -> None:
     ok, msg = cm._perform_load("../etc/passwd")
     assert ok is False
     assert "invalid slug" in msg
+    helper_ok, helper_msg = dashboard_entities.perform_load(
+        "../etc/passwd",
+        deps=cm._entity_runtime_deps(),
+    )
+    assert (helper_ok, helper_msg) == (ok, msg)
 
 
 def test_perform_load_runs_skill_security_scan_and_surfaces_output(
@@ -3238,6 +3244,9 @@ def test_entity_delete_unloads_live_entity_before_removing_page(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    assert cm._normalize_entity_tags(["Code Review"]) == dashboard_entities.normalize_entity_tags(
+        ["Code Review"],
+    )
     skill_dir = fake_claude / "skill-wiki" / "entities" / "skills"
     skill_dir.mkdir(parents=True)
     entity_path = skill_dir / "python-patterns.md"

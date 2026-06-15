@@ -80,7 +80,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
-from ctx import dashboard_docs
+from ctx import dashboard_docs, dashboard_entities
 from ctx.core import entity_types as core_entity_types
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
@@ -347,81 +347,24 @@ def _search_wiki_entities(
     *,
     limit: int = 80,
 ) -> list[dict[str, Any]]:
-    terms = [term for term in re.split(r"\s+", query.lower().strip()) if term]
-    results: list[dict[str, Any]] = []
-    for slug, current_type, path in _iter_wiki_entity_paths(entity_type):
-        try:
-            head = path.read_text(encoding="utf-8", errors="replace")[:4096]
-        except OSError:
-            continue
-        frontmatter, body = _parse_frontmatter(head)
-        tags = _frontmatter_tags(frontmatter.get("tags", ""), limit=None)
-        description = _frontmatter_text(frontmatter.get("description", ""))
-        display_slug = _display_slug(slug)
-        title = _display_label(
-            _frontmatter_text(frontmatter.get("title") or frontmatter.get("name") or slug),
-            fallback_slug=slug,
-        )
-        haystack = " ".join(
-            [slug, display_slug, current_type, title, description, " ".join(tags), body],
-        ).lower()
-        if terms and not all(term in haystack for term in terms):
-            continue
-        results.append({
-            "slug": slug,
-            "display_slug": display_slug,
-            "type": current_type,
-            "title": title,
-            "description": description,
-            "tags": tags[:12],
-            "path": str(path),
-            "href": _entity_wiki_href(slug, current_type),
-        })
-        if len(results) >= max(1, limit):
-            break
-    return results
+    return dashboard_entities.search_wiki_entities(
+        query,
+        entity_type,
+        limit=limit,
+        deps=_entity_crud_deps(),
+    )
 
 
 def _normalize_entity_tags(raw: Any) -> list[str]:
-    if isinstance(raw, list):
-        parts = raw
-    else:
-        parts = re.split(r"[,\n]+", str(raw or ""))
-    tags: list[str] = []
-    seen: set[str] = set()
-    for part in parts:
-        tag = re.sub(r"[^a-z0-9_.+-]+", "-", str(part).lower()).strip("-_.+")
-        if tag and tag not in seen:
-            seen.add(tag)
-            tags.append(tag)
-    return tags
+    return dashboard_entities.normalize_entity_tags(raw)
 
 
 def _yaml_scalar(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return str(value)
-    text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not text:
-        return '""'
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _./:+@-]*", text):
-        return text
-    return json.dumps(text, ensure_ascii=False)
+    return dashboard_entities.yaml_scalar(value)
 
 
 def _frontmatter_to_text(frontmatter: dict[str, Any]) -> str:
-    lines = ["---"]
-    for key, value in frontmatter.items():
-        if value is None or value == "":
-            continue
-        if isinstance(value, list):
-            rendered = ", ".join(_yaml_scalar(item) for item in value)
-            lines.append(f"{key}: [{rendered}]")
-        else:
-            lines.append(f"{key}: {_yaml_scalar(value)}")
-    lines.append("---")
-    return "\n".join(lines) + "\n"
+    return dashboard_entities.frontmatter_to_text(frontmatter)
 
 
 def _entity_content_from_payload(
@@ -429,39 +372,12 @@ def _entity_content_from_payload(
     *,
     existing: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
-    slug = str(payload.get("slug", "")).strip()
-    if not _is_safe_slug(slug):
-        raise ValueError(f"invalid slug: {slug!r}")
-    entity_type = str(payload.get("entity_type", "skill")).strip() or "skill"
-    normalized = _normalize_dashboard_entity_type(entity_type)
-    if normalized is None:
-        raise ValueError(f"unsupported entity_type: {entity_type!r}")
-    body = str(payload.get("body", "")).strip()
-    if not body:
-        raise ValueError("body is required")
-    title = str(payload.get("title") or slug).strip()
-    today = time.strftime("%Y-%m-%d", time.gmtime())
-    frontmatter = dict(existing or {})
-    frontmatter["title"] = title
-    frontmatter["type"] = normalized
-    frontmatter.setdefault("created", today)
-    frontmatter["updated"] = today
-    description = str(payload.get("description") or "").strip()
-    if description or "description" in payload:
-        frontmatter.pop("description", None)
-    if description:
-        frontmatter["description"] = description
-    tags = _normalize_entity_tags(payload.get("tags"))
-    if tags or "tags" in payload:
-        frontmatter.pop("tags", None)
-    if tags:
-        frontmatter["tags"] = tags
-    source_url = str(payload.get("source_url") or "").strip()
-    if source_url or "source_url" in payload:
-        frontmatter.pop("source_url", None)
-    if source_url:
-        frontmatter["source_url"] = source_url
-    return slug, normalized, _frontmatter_to_text(frontmatter) + body.rstrip() + "\n"
+    return dashboard_entities.entity_content_from_payload(
+        payload,
+        existing=existing,
+        is_safe_slug=_is_safe_slug,
+        normalize_entity_type=_normalize_dashboard_entity_type,
+    )
 
 
 def _queue_entity_refresh(
@@ -492,94 +408,67 @@ def _queue_entity_refresh(
     )
 
 
-def _upsert_wiki_entity(payload: dict[str, Any]) -> tuple[bool, str]:
-    try:
-        requested_slug = str(payload.get("slug", "")).strip()
-        requested_type = str(payload.get("entity_type", "skill")).strip() or "skill"
-        existing_detail = _wiki_entity_detail(requested_slug, requested_type)
-        existing_meta = (
-            existing_detail.get("frontmatter")
-            if isinstance(existing_detail, dict)
-            else None
-        )
-        confirm_update = str(payload.get("confirm_update", "")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "y",
-            "on",
-        }
-        if existing_detail is not None and not confirm_update:
-            return (
-                False,
-                f"existing {requested_type}:{requested_slug} found; review before "
-                "replacing. Benefit: keeps the catalog current. Risk: a lower-quality "
-                "manual edit can degrade recommendations. Resubmit with "
-                "confirm_update=true to apply.",
-            )
-        slug, entity_type, content = _entity_content_from_payload(
-            payload,
-            existing=existing_meta if isinstance(existing_meta, dict) else None,
-        )
-        path = _wiki_entity_target_path(slug, entity_type)
-        with file_lock(path):
-            _safe_atomic_write_text(path, content, encoding="utf-8")
-        _queue_entity_refresh(
+def _write_entity_text(path: Path, content: str) -> None:
+    _safe_atomic_write_text(path, content, encoding="utf-8")
+
+
+def _entity_crud_deps() -> dashboard_entities.EntityCrudDeps:
+    return dashboard_entities.EntityCrudDeps(
+        is_safe_slug=_is_safe_slug,
+        normalize_entity_type=_normalize_dashboard_entity_type,
+        wiki_entity_detail=_wiki_entity_detail,
+        wiki_entity_target_path=_wiki_entity_target_path,
+        wiki_entity_path=_wiki_entity_path,
+        iter_wiki_entity_paths=_iter_wiki_entity_paths,
+        read_manifest=_read_manifest,
+        perform_unload=_perform_unload,
+        queue_entity_refresh=lambda entity_type, slug, entity_path, content, action: _queue_entity_refresh(
             entity_type=entity_type,
             slug=slug,
-            entity_path=path,
+            entity_path=entity_path,
             content=content,
-            action="upsert",
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {exc}"
-    return True, f"saved {entity_type}:{slug} and queued graph refresh"
+            action=action,
+        ),
+        file_lock=file_lock,
+        write_entity_text=_write_entity_text,
+        parse_frontmatter=_parse_frontmatter,
+        frontmatter_tags=lambda value: _frontmatter_tags(value, limit=None),
+        frontmatter_text=_frontmatter_text,
+        display_slug=_display_slug,
+        display_label=lambda value: _display_label(value),
+        entity_wiki_href=_entity_wiki_href,
+    )
+
+
+def _entity_runtime_deps() -> dashboard_entities.EntityRuntimeDeps:
+    return dashboard_entities.EntityRuntimeDeps(
+        is_safe_slug=_is_safe_slug,
+        normalize_entity_type=_normalize_dashboard_entity_type,
+        wiki_dir=_wiki_dir,
+        claude_dir=_claude_dir,
+        log_dashboard_entity_event=_log_dashboard_entity_event,
+        remove_loaded_manifest_entry=_remove_loaded_manifest_entry,
+    )
+
+
+def _upsert_wiki_entity(payload: dict[str, Any]) -> tuple[bool, str]:
+    return dashboard_entities.upsert_wiki_entity(payload, deps=_entity_crud_deps())
 
 
 def _entity_live_in_manifest(slug: str, entity_type: str) -> bool:
-    manifest = _read_manifest()
-    for entry in manifest.get("load", []):
-        if not isinstance(entry, dict):
-            continue
-        entry_slug = str(entry.get("skill") or entry.get("slug") or "")
-        entry_type = _normalize_dashboard_entity_type(
-            str(entry.get("entity_type") or entry.get("type") or "skill"),
-        )
-        if entry_slug == slug and entry_type == entity_type:
-            return True
-    return False
+    return dashboard_entities.entity_live_in_manifest(
+        slug,
+        entity_type,
+        deps=_entity_crud_deps(),
+    )
 
 
 def _delete_wiki_entity(slug: str, entity_type: str) -> tuple[bool, str]:
-    try:
-        normalized = _normalize_dashboard_entity_type(entity_type)
-        if normalized is None:
-            raise ValueError(f"unsupported entity_type: {entity_type!r}")
-        if not _is_safe_slug(slug):
-            raise ValueError(f"invalid slug: {slug!r}")
-        path = _wiki_entity_path(slug, entity_type=normalized)
-        if path is None:
-            return False, f"no wiki entity found for {normalized}:{slug}"
-        if _entity_live_in_manifest(slug, normalized):
-            unloaded, unload_detail = _perform_unload(slug, normalized)
-            if not unloaded:
-                return (
-                    False,
-                    f"{normalized}:{slug} is loaded; unload before delete failed: "
-                    f"{unload_detail}",
-                )
-        with file_lock(path):
-            path.unlink()
-        _queue_entity_refresh(
-            entity_type=normalized,
-            slug=slug,
-            entity_path=path,
-            content="",
-            action="delete",
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {exc}"
-    return True, f"deleted {normalized}:{slug} and queued graph refresh"
+    return dashboard_entities.delete_wiki_entity(
+        slug,
+        entity_type,
+        deps=_entity_crud_deps(),
+    )
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -6158,120 +6047,21 @@ def _perform_load(
     command: str | None = None,
     json_config: str | None = None,
 ) -> tuple[bool, str]:
-    """Install/load one entity from the wiki. Returns (ok, message)."""
-    if not _is_safe_slug(slug):
-        return False, f"invalid slug: {slug!r}"
-    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
-    if normalized_entity_type is None:
-        return False, f"unsupported entity_type: {entity_type!r}"
-    entity_type = normalized_entity_type
-    if entity_type == "harness":
-        return (
-            False,
-            "harness installs are managed by ctx-harness-install; "
-            f"run: ctx-harness-install {slug} --dry-run",
-        )
-    result: Any
-    try:
-        if entity_type == "agent":
-            from ctx.adapters.claude_code.install.agent_install import install_agent
-            result = install_agent(
-                slug,
-                wiki_dir=_wiki_dir(),
-                agents_dir=_claude_dir() / "agents",
-            )
-        elif entity_type == "mcp-server":
-            from ctx.adapters.claude_code.install.mcp_install import install_mcp
-            result = install_mcp(
-                slug,
-                wiki_dir=_wiki_dir(),
-                command=command,
-                json_config=json_config,
-                auto=True,
-            )
-        else:
-            from ctx.adapters.claude_code.install.skill_install import install_skill
-            result = install_skill(
-                slug,
-                wiki_dir=_wiki_dir(),
-                skills_dir=_claude_dir() / "skills",
-                security_scan=True,
-                security_scan_required=True,
-            )
-    except ImportError as exc:
-        return False, f"install import failed: {exc}"
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {exc}"
-    if result.status not in ("installed", "skipped-existing"):
-        return False, f"load failed: {result.message or result.status}"
-    _log_dashboard_entity_event(entity_type, "loaded", slug)
-    message = result.message or f"loaded {entity_type}:{slug}"
-    scan = getattr(result, "security_scan", None)
-    scan_output = str(getattr(scan, "output", "") or "").strip()
-    if scan_output:
-        message = f"{message}\n\nSkillSpector report:\n{scan_output}"
-    return True, message
+    return dashboard_entities.perform_load(
+        slug,
+        entity_type,
+        command=command,
+        json_config=json_config,
+        deps=_entity_runtime_deps(),
+    )
 
 
 def _perform_unload(slug: str, entity_type: str = "skill") -> tuple[bool, str]:
-    """Unload the given entity.
-
-    Routes by ``entity_type``:
-      - ``skill`` / ``agent``: ``skill_unload.unload_from_session`` —
-        file-copy + manifest update, reversible via /api/load.
-      - ``mcp-server``: ``mcp_install.uninstall_mcp`` — wraps
-        ``claude mcp remove`` subprocess. Requires the claude CLI on
-        PATH; errors surface to the caller.
-    """
-    if not _is_safe_slug(slug):
-        return False, f"invalid slug: {slug!r}"
-    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
-    if normalized_entity_type is None:
-        return False, f"unsupported entity_type: {entity_type!r}"
-    entity_type = normalized_entity_type
-    if entity_type == "harness":
-        return (
-            False,
-            "harness installs are managed by ctx-harness-install; "
-            f"run: ctx-harness-install {slug} --uninstall --dry-run",
-        )
-    if entity_type == "mcp-server":
-        try:
-            from ctx.adapters.claude_code.install.mcp_install import uninstall_mcp
-        except ImportError as exc:
-            return False, f"mcp_install import failed: {exc}"
-        try:
-            result = uninstall_mcp(slug, wiki_dir=_wiki_dir())
-        except Exception as exc:  # noqa: BLE001
-            return False, f"{type(exc).__name__}: {exc}"
-        if result.status not in ("uninstalled",):
-            return False, f"uninstall failed: {result.message or result.status}"
-        _log_dashboard_entity_event("mcp-server", "unloaded", slug)
-        return True, f"unloaded mcp:{slug}"
-
-    if entity_type == "agent":
-        try:
-            removed_entries = _remove_loaded_manifest_entry(slug, "agent")
-        except Exception as exc:  # noqa: BLE001
-            return False, f"{type(exc).__name__}: {exc}"
-        if not removed_entries:
-            return False, f"{slug} was not in the loaded set"
-        _log_dashboard_entity_event("agent", "unloaded", slug)
-        return True, f"unloaded {slug}"
-
-    # Skills keep using the existing skill_unload module so skill-events.jsonl
-    # remains compatible with older usage and retention analytics.
-    try:
-        from ctx.adapters.claude_code.install.skill_unload import unload_from_session
-    except ImportError as exc:
-        return False, f"skill_unload import failed: {exc}"
-    try:
-        removed = unload_from_session([slug], entity_type=entity_type)
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {exc}"
-    if not removed:
-        return False, f"{slug} was not in the loaded set"
-    return True, f"unloaded {', '.join(removed)}"
+    return dashboard_entities.perform_unload(
+        slug,
+        entity_type,
+        deps=_entity_runtime_deps(),
+    )
 
 
 # ─── HTTP handler ────────────────────────────────────────────────────────────
