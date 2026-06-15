@@ -15,7 +15,6 @@ dependencies = [
     "markdown>=3.6,<4",
     "networkx>=3,<4",
     "numpy>=1.24,<3",
-    "plotly>=5,<7",
     "pymdown-extensions>=10,<11",
     "pyyaml>=6,<7",
 ]
@@ -93,6 +92,9 @@ dev = [
 ]
 browser = [
     "playwright>=1.52",
+]
+viz = [
+    "plotly>=5,<7",
 ]
 embeddings = [
     "sentence-transformers>=2,<4",

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-wiki_visualize.py -- Interactive knowledge graph visualization using plotly.
+wiki_visualize.py -- Interactive knowledge graph visualization.
 
 The full graph (2,167 nodes, 593K edges) is too large to render at once.
 Users MUST specify boundaries to get a feasible visualization.
@@ -33,6 +33,7 @@ import os
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 
 def _safe_json_for_script(obj) -> str:
@@ -47,10 +48,20 @@ def _safe_json_for_script(obj) -> str:
 try:
     import networkx as nx
     from networkx.readwrite import node_link_graph
-    import plotly.graph_objects as go
 except ImportError:
-    print("Required: pip install networkx plotly", file=sys.stderr)
+    print("Required: pip install networkx", file=sys.stderr)
     sys.exit(1)
+
+
+def _load_plotly_graph_objects() -> Any:
+    try:
+        import plotly.graph_objects as go
+    except ImportError as exc:
+        raise RuntimeError(
+            'Plotly is optional. Install it with: pip install "claude-ctx[viz]"'
+        ) from exc
+    return go
+
 
 WIKI_DIR = Path(os.path.expanduser("~/.claude/skill-wiki"))
 GRAPH_PATH = WIKI_DIR / "graphify-out" / "graph.json"
@@ -426,8 +437,9 @@ applyFilters();
 </script></body></html>"""
 
 
-def build_figure(G: nx.Graph, pos: dict, title: str = "Knowledge Graph") -> go.Figure:
+def build_figure(G: nx.Graph, pos: dict, title: str = "Knowledge Graph") -> Any:
     """Build an interactive plotly figure from the subgraph."""
+    go = _load_plotly_graph_objects()
     if G.number_of_nodes() == 0:
         fig = go.Figure()
         fig.add_annotation(text="No nodes match your query.", showarrow=False, font=dict(size=20))
