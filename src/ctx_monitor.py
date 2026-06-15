@@ -75,6 +75,7 @@ import zlib
 from collections import defaultdict, deque
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
@@ -2417,6 +2418,11 @@ pre { padding: 0.6rem 0.8rem; overflow-x: auto; }
 """
 
 
+def _monitor_asset_text(name: str) -> str:
+    """Read a packaged dashboard asset."""
+    return files("ctx").joinpath("assets", name).read_text(encoding="utf-8")
+
+
 def _layout(title: str, body: str) -> str:
     """Wrap body HTML in the standard page chrome."""
     nav_items = (
@@ -2442,86 +2448,9 @@ def _layout(title: str, body: str) -> str:
         f"{html.escape(label)}</a>"
         for key, label, href in nav_items
     )
-    nav_keys_json = json.dumps([key for key, _label, _href in nav_items])
-    nav_script = (
-        "<script>\n"
-        "(function () {\n"
-        "  const nav = document.getElementById('dashboard-nav');\n"
-        "  if (!nav) return;\n"
-        "  const storageKey = nav.dataset.navStorageKey;\n"
-        f"  const defaultKeys = {nav_keys_json};\n"
-        "  const reset = document.getElementById('nav-reset');\n"
-        "  function links() { return Array.from(nav.querySelectorAll('a[data-nav-key]')); }\n"
-        "  function linkFor(key) { return nav.querySelector('a[data-nav-key=\"' + CSS.escape(key) + '\"]'); }\n"
-        "  function applyOrder(order) {\n"
-        "    const valid = Array.isArray(order) ? order.filter(key => defaultKeys.includes(key)) : [];\n"
-        "    const merged = valid.concat(defaultKeys.filter(key => !valid.includes(key)));\n"
-        "    merged.forEach(key => { const link = linkFor(key); if (link) nav.appendChild(link); });\n"
-        "    if (reset) nav.appendChild(reset);\n"
-        "  }\n"
-        "  function saveOrder() {\n"
-        "    try { localStorage.setItem(storageKey, JSON.stringify(links().map(a => a.dataset.navKey))); } catch (_) {}\n"
-        "  }\n"
-        "  function clearDragState() {\n"
-        "    links().forEach(item => item.classList.remove('nav-drag-over', 'nav-dragging'));\n"
-        "  }\n"
-        "  function insertionTarget(clientX, clientY) {\n"
-        "    const candidates = links().filter(link => link !== dragged);\n"
-        "    if (!candidates.length) return reset;\n"
-        "    const sameRow = candidates.filter(link => {\n"
-        "      const rect = link.getBoundingClientRect();\n"
-        "      return clientY >= rect.top - 8 && clientY <= rect.bottom + 8;\n"
-        "    });\n"
-        "    const pool = sameRow.length ? sameRow : candidates;\n"
-        "    for (const link of pool) {\n"
-        "      const rect = link.getBoundingClientRect();\n"
-        "      if (clientX < rect.left + rect.width / 2) return link;\n"
-        "    }\n"
-        "    return reset;\n"
-        "  }\n"
-        "  function resetOrder() {\n"
-        "    try { localStorage.removeItem(storageKey); } catch (_) {}\n"
-        "    applyOrder(defaultKeys);\n"
-        "  }\n"
-        "  try { applyOrder(JSON.parse(localStorage.getItem(storageKey) || '[]')); } catch (_) { applyOrder(defaultKeys); }\n"
-        "  let dragged = null;\n"
-        "  links().forEach(link => {\n"
-        "    link.addEventListener('dragstart', event => {\n"
-        "      dragged = link;\n"
-        "      link.classList.add('nav-dragging');\n"
-        "      if (event.dataTransfer) {\n"
-        "        event.dataTransfer.effectAllowed = 'move';\n"
-        "        event.dataTransfer.setData('text/plain', link.dataset.navKey || '');\n"
-        "      }\n"
-        "    });\n"
-        "    link.addEventListener('dragend', () => {\n"
-        "      clearDragState();\n"
-        "      if (reset) nav.appendChild(reset);\n"
-        "      saveOrder();\n"
-        "      dragged = null;\n"
-        "    });\n"
-        "  });\n"
-        "  nav.addEventListener('dragover', event => {\n"
-        "    if (!dragged) return;\n"
-        "    event.preventDefault();\n"
-        "    const target = insertionTarget(event.clientX, event.clientY);\n"
-        "    links().forEach(item => item.classList.remove('nav-drag-over'));\n"
-        "    if (target && target !== dragged) {\n"
-        "      if (target.dataset && target.dataset.navKey) target.classList.add('nav-drag-over');\n"
-        "      nav.insertBefore(dragged, target);\n"
-        "      if (reset) nav.appendChild(reset);\n"
-        "    }\n"
-        "  });\n"
-        "  nav.addEventListener('drop', event => {\n"
-        "    if (!dragged) return;\n"
-        "    event.preventDefault();\n"
-        "    clearDragState();\n"
-        "    if (reset) nav.appendChild(reset);\n"
-        "    saveOrder();\n"
-        "  });\n"
-        "  if (reset) reset.addEventListener('click', resetOrder);\n"
-        "})();\n"
-        "</script>"
+    nav_default_keys = html.escape(
+        json.dumps([key for key, _label, _href in nav_items]),
+        quote=True,
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
@@ -2530,12 +2459,15 @@ def _layout(title: str, body: str) -> str:
         f"<style>{_CSS}</style></head><body>"
         "<div class='nav' id='dashboard-nav' "
         "data-nav-storage-key='ctx-monitor-nav-order' "
+        f"data-nav-default-keys='{nav_default_keys}' "
         "aria-label='Dashboard navigation'>"
         + nav_html
         + "<button type='button' id='nav-reset' class='nav-reset' "
           "title='Reset dashboard tab order'>reset</button>"
         "</div>"
-        + nav_script
+        + "<script>"
+        + _monitor_asset_text("monitor-nav.js")
+        + "</script>"
         + body
         + "</body></html>"
     )

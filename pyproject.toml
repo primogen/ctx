@@ -216,7 +216,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-ctx = ["config.json", "skill-registry.json"]
+ctx = ["config.json", "skill-registry.json", "assets/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/tests"]

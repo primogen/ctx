@@ -3512,8 +3512,11 @@ def test_layout_nav_tabs_are_draggable_and_persist_order() -> None:
     assert "name='viewport'" in out
     assert "id='dashboard-nav'" in out
     assert "data-nav-storage-key='ctx-monitor-nav-order'" in out
+    assert "data-nav-default-keys=" in out
     assert "draggable='true'" in out
     assert "data-nav-key='graph'" in out
+    assert "const defaultKeys = JSON.parse(nav.dataset.navDefaultKeys || '[]');" in out
+    assert "const defaultKeys = [" not in out
     assert "localStorage.setItem(storageKey" in out
     assert "dragstart" in out
     assert "function insertionTarget" in out
