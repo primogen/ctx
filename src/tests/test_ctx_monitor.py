@@ -3508,8 +3508,11 @@ def test_render_docs_falls_back_to_public_docs(
 
 def test_layout_nav_tabs_are_draggable_and_persist_order() -> None:
     out = cm._layout("test", "<p>body</p>")
+    css = cm._monitor_asset_text("monitor.css")
 
     assert "name='viewport'" in out
+    assert css.startswith(":root")
+    assert f"<style>{css}</style>" in out
     assert "id='dashboard-nav'" in out
     assert "data-nav-storage-key='ctx-monitor-nav-order'" in out
     assert "data-nav-default-keys=" in out
