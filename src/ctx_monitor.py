@@ -355,31 +355,6 @@ def _search_wiki_entities(
     )
 
 
-def _normalize_entity_tags(raw: Any) -> list[str]:
-    return dashboard_entities.normalize_entity_tags(raw)
-
-
-def _yaml_scalar(value: Any) -> str:
-    return dashboard_entities.yaml_scalar(value)
-
-
-def _frontmatter_to_text(frontmatter: dict[str, Any]) -> str:
-    return dashboard_entities.frontmatter_to_text(frontmatter)
-
-
-def _entity_content_from_payload(
-    payload: dict[str, Any],
-    *,
-    existing: dict[str, Any] | None = None,
-) -> tuple[str, str, str]:
-    return dashboard_entities.entity_content_from_payload(
-        payload,
-        existing=existing,
-        is_safe_slug=_is_safe_slug,
-        normalize_entity_type=_normalize_dashboard_entity_type,
-    )
-
-
 def _queue_entity_refresh(
     *,
     entity_type: str,
@@ -453,14 +428,6 @@ def _entity_runtime_deps() -> dashboard_entities.EntityRuntimeDeps:
 
 def _upsert_wiki_entity(payload: dict[str, Any]) -> tuple[bool, str]:
     return dashboard_entities.upsert_wiki_entity(payload, deps=_entity_crud_deps())
-
-
-def _entity_live_in_manifest(slug: str, entity_type: str) -> bool:
-    return dashboard_entities.entity_live_in_manifest(
-        slug,
-        entity_type,
-        deps=_entity_crud_deps(),
-    )
 
 
 def _delete_wiki_entity(slug: str, entity_type: str) -> tuple[bool, str]:
@@ -4931,10 +4898,6 @@ def _docs_render_disk_cache_path() -> Path:
     return dashboard_docs.docs_render_disk_cache_path(_claude_dir())
 
 
-def _doc_anchor(value: str) -> str:
-    return dashboard_docs.doc_anchor(value)
-
-
 def _docs_index_entries() -> list[dict[str, Any]]:
     return dashboard_docs.docs_index_entries(_docs_roots())
 
@@ -4943,24 +4906,12 @@ def _docs_tabs(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return dashboard_docs.docs_tabs(entries, _docs_roots())
 
 
-def _docs_page_anchor(tab_slug: str, path: str) -> str:
-    return dashboard_docs.docs_page_anchor(tab_slug, path)
-
-
-def _docs_heading_items(markdown_text: str, page_anchor: str) -> list[dict[str, Any]]:
-    return dashboard_docs.docs_heading_items(markdown_text, page_anchor)
-
-
 def _render_docs_markdown(markdown_text: str, page_anchor: str) -> str:
     return dashboard_docs.render_docs_markdown(
         markdown_text,
         page_anchor,
         fallback_renderer=_render_wiki_markdown,
     )
-
-
-def _sanitize_docs_html(rendered_html: str) -> str:
-    return dashboard_docs.sanitize_docs_html(rendered_html)
 
 
 def _render_docs() -> str:

@@ -31,6 +31,7 @@ import ctx_monitor as cm  # noqa: E402
 import harness_install  # noqa: E402
 import toolbox as tb  # noqa: E402
 import toolbox_verdict as tv  # noqa: E402
+from ctx import dashboard_docs  # noqa: E402
 from ctx.adapters.claude_code.install import install_utils  # noqa: E402
 from ctx.adapters.claude_code.install import mcp_install  # noqa: E402
 from ctx.utils._file_lock import file_lock  # noqa: E402
@@ -169,7 +170,7 @@ def _write_mcp_entity(wiki_dir: Path, slug: str, frontmatter: dict[str, str]) ->
 
 
 def test_docs_sanitizer_rewrites_unquoted_active_urls() -> None:
-    cleaned = cm._sanitize_docs_html(
+    cleaned = dashboard_docs.sanitize_docs_html(
         '<a href=javascript:alert(1)>bad</a>'
         '<img src=data:text/html,<svg/onload=alert(1)>>'
     )

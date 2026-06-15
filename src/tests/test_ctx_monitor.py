@@ -3269,9 +3269,7 @@ def test_entity_delete_unloads_live_entity_before_removing_page(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert cm._normalize_entity_tags(["Code Review"]) == dashboard_entities.normalize_entity_tags(
-        ["Code Review"],
-    )
+    assert dashboard_entities.normalize_entity_tags(["Code Review"]) == ["code-review"]
     skill_dir = fake_claude / "skill-wiki" / "entities" / "skills"
     skill_dir.mkdir(parents=True)
     entity_path = skill_dir / "python-patterns.md"
