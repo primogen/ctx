@@ -125,7 +125,7 @@ def scan_directory(repo_path: str, max_depth: int = MAX_DEPTH) -> dict:
 def read_json_safe(path: str) -> dict | None:
     """Read a JSON file, return None on failure."""
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception as exc:
         print(f"Warning: failed to read JSON file {path}: {exc}", file=sys.stderr)

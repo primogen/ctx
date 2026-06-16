@@ -288,7 +288,11 @@ def load_graph(
     """
     graph_path = path if path is not None else GRAPH_PATH
     if not graph_path.exists():
-        logger.warning("graph.json not found at %s; returning empty graph", graph_path)
+        message = "graph.json not found at %s; returning empty graph"
+        if os.environ.get("CTX_ALLOW_MISSING_GRAPH") == "1":
+            logger.debug(message, graph_path)
+        else:
+            logger.warning(message, graph_path)
         return nx.Graph()
     try:
         with open(graph_path, encoding="utf-8") as f:

@@ -167,6 +167,7 @@ def test_isolated_env_does_not_inherit_caller_secrets(
     assert "GITHUB_TOKEN" not in env
     assert "CTX_WIKI_DIR" not in env
     assert "CLAUDE_HOME" not in env
+    assert env["CTX_ALLOW_MISSING_GRAPH"] == "1"
 
 
 def test_assert_inside_rejects_escape(tmp_path: Path) -> None:

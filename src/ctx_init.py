@@ -988,6 +988,7 @@ _PROVIDER_KEY_ENV: dict[str, str] = {
     "openrouter": "OPENROUTER_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "huggingface": "HF_TOKEN",
     "gemini": "GEMINI_API_KEY",
     "mistral": "MISTRAL_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
@@ -1003,6 +1004,7 @@ _HARNESS_REQUIREMENT_FIELDS = (
     ("verification", "harness_verify"),
     ("privacy", "harness_privacy"),
     ("attach_mode", "harness_attach_mode"),
+    ("api_key_env", "api_key_env"),
 )
 
 _HARNESS_REQUIREMENT_FLAGS = {
@@ -1012,6 +1014,7 @@ _HARNESS_REQUIREMENT_FLAGS = {
     "verification": "--harness-verify",
     "privacy": "--harness-privacy",
     "attach_mode": "--harness-attach-mode",
+    "api_key_env": "--api-key-env",
 }
 
 
@@ -1062,7 +1065,7 @@ def recommend_harnesses(
         )
         from ctx_config import cfg  # noqa: PLC0415
 
-        graph = _load_recommendation_graph()
+        graph = _load_harness_recommendation_graph()
         if graph.number_of_nodes() == 0:
             return []
         limit = max(1, min(int(top_k), cfg.recommendation_top_k))
@@ -1512,6 +1515,63 @@ def _harness_frontmatter_from_wiki(slug: str) -> dict[str, Any]:
         return fm
     except Exception:
         return {}
+
+
+def _load_harness_recommendation_graph() -> Any:
+    """Load a tiny harness-only graph for interactive onboarding.
+
+    ``ctx-init`` and ``ctx-harness-install --recommend`` are user-facing
+    wizard paths. Loading the full 100k-node graph there is unnecessary and
+    can take tens of seconds on slower hosts; harness fit only needs harness
+    entity metadata.
+    """
+    graph = _load_harness_catalog_graph()
+    try:
+        if graph.number_of_nodes() > 0:
+            return graph
+    except Exception:
+        pass
+    return _load_recommendation_graph()
+
+
+def _load_harness_catalog_graph() -> Any:
+    try:
+        import networkx as nx  # noqa: PLC0415
+        from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body  # noqa: PLC0415
+        from ctx_config import cfg  # noqa: PLC0415
+    except Exception:
+        return _empty_harness_graph()
+
+    graph = nx.Graph()
+    harness_dir = cfg.wiki_dir / "entities" / "harnesses"
+    if not harness_dir.is_dir():
+        return graph
+    for page in sorted(harness_dir.glob("*.md")):
+        try:
+            fm, _body = parse_frontmatter_and_body(
+                page.read_text(encoding="utf-8", errors="replace"),
+            )
+        except OSError:
+            continue
+        slug = page.stem
+        data = dict(fm) if isinstance(fm, dict) else {}
+        display_name = str(data.get("name") or data.get("title") or slug).strip() or slug
+        data.update({
+            "label": slug,
+            "display_name": display_name,
+            "type": "harness",
+            "source": data.get("source") or "wiki",
+        })
+        graph.add_node(f"harness:{slug}", **data)
+    return graph
+
+
+def _empty_harness_graph() -> Any:
+    class _EmptyHarnessGraph:
+        def number_of_nodes(self) -> int:
+            return 0
+
+    return _EmptyHarnessGraph()
 
 
 def _load_recommendation_graph() -> Any:

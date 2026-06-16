@@ -1539,6 +1539,7 @@ def test_render_graph_uses_builtin_3d_mount(monkeypatch: pytest.MonkeyPatch) -> 
         "_graph_stats",
         lambda: {"nodes": 0, "edges": 0, "available": False},
     )
+    monkeypatch.setattr(cm, "_graph_match_default_min_percent", lambda: 7)
     html_out = cm._render_graph("python-patterns")
     assert "id='cy'" in html_out
     assert "https://unpkg.com" not in html_out
@@ -1546,7 +1547,80 @@ def test_render_graph_uses_builtin_3d_mount(monkeypatch: pytest.MonkeyPatch) -> 
     assert "data-testid=\"graph-3d\"" in html_out
     assert "button id=\"graph-zoom-in\"" in html_out
     assert "button id=\"graph-zoom-out\"" in html_out
+    assert "id='cy' class='graph-stage'" in html_out
+    assert "height:75vh" not in html_out
     assert "data-testid=\"graph-edge-detail\"" in html_out
+    assert "data-testid=\"graph-live-results\"" in html_out
+    assert "data-testid=\"graph-inspector-resize\"" in html_out
+    assert "id='match-filter-min'" in html_out
+    assert "id='match-filter-max'" in html_out
+    assert "class='card graph-match-card'" in html_out
+    assert "data-testid=\"match-histogram\"" in html_out
+    assert "data-testid=\"match-range-control\"" in html_out
+    assert "id='match-filter-min-value'" in html_out
+    assert "id='match-filter-max-value'" in html_out
+    assert "id='match-filter-value'" not in html_out
+    assert "value='7'" in html_out
+    assert "max='100'" in html_out
+    assert "<span>99%+</span>" not in html_out
+    assert "<span>100%</span>" in html_out
+    assert "function clampInspectorHeight" in html_out
+    assert "ctx-monitor-graph-inspector-height" in html_out
+    assert "ArrowUp" in html_out
+    assert "ArrowDown" in html_out
+    assert "data-testid=\"graph-node-detail-tree\"" in html_out
+    assert "function renderNodeTree" in html_out
+    assert "function scheduleLiveSearch" in html_out
+    assert "function qualityText" in html_out
+    assert "function nodeShapeSvg" in html_out
+    assert "data-node-shape=" in html_out
+    assert "<polygon" in html_out
+    assert "<rect" in html_out
+    assert "function isGraphOnlyEdge" in html_out
+    assert "function isWeakGraphOnlyEdge" in html_out
+    assert "return clampedUnit(value) == null ? 'unknown' : percentText(value);" in html_out
+    assert "Number(value).toFixed(3)" not in html_out
+    assert "focus.addEventListener('input', scheduleLiveSearch)" in html_out
+    assert "function drillIntoNode" in html_out
+    assert "function restorePreviousGraph" in html_out
+    assert "let nodeClickTimer" in html_out
+    assert "function scheduleNodeClick" in html_out
+    assert "function handleNodeDoubleClick" in html_out
+    assert "svg.addEventListener('click', ev => {" not in html_out
+    assert "graph-fallback-label" in html_out
+    assert "class=\"graph-toolbar\"" in html_out
+    assert "class=\"graph-inspector-grid\"" in html_out
+    assert "graph-edge-detail-inline" in html_out
+    assert "background:transparent" in html_out
+    assert "fill=\"transparent\" pointer-events=\"all\"" in html_out
+    assert "onmouseup=" not in html_out
+    assert "onpointerup=" not in html_out
+    assert "querySelectorAll('[data-testid=\"graph-svg-edge\"]')" in html_out
+    assert "data-edge-weight=" in html_out
+    assert "nodePassesMatch" in html_out
+    assert "function currentMatchWindow" in html_out
+    assert "function renderMatchRange" in html_out
+    assert "function renderMatchHistogram" in html_out
+    assert "function setMatchWindow" in html_out
+    assert "data-match-bin-min" in html_out
+    assert "aria-label=\"Filter match " in html_out
+    assert "bar.addEventListener('click', useBin)" in html_out
+    assert "function edgeInMatchWindow" in html_out
+    assert "highPct >= 99 ? 1" not in html_out
+    assert "max: highPct / 100" in html_out
+    assert "document.getElementById('match-filter-min').addEventListener('input', applyFilters)" in html_out
+    assert "document.getElementById('match-filter-max').addEventListener('input', applyFilters)" in html_out
+    assert "No neighbors in this view." in html_out
+    assert "graph neighbor" in html_out
+    assert "<strong>match</strong>" in html_out
+    assert "These links have no shared tags" not in html_out
+    assert "unproven links filtered" not in html_out
+    assert "Connections: " in html_out
+    assert "raw score clamped" in html_out
+    assert "graph score" not in html_out
+    assert "renderFallback(g); return;" in html_out
+    assert "renderFallback(g);\n  const list" not in html_out
+    assert "data-testid=\"graph-list\" class=\"graph-list-panel\" hidden" in html_out
     assert "id='graph-explanation'" in html_out
     assert "g.explanations" in html_out
     assert "Graph renderer unavailable" not in html_out
@@ -1564,7 +1638,8 @@ def test_render_graph_focus_controls_preserve_type(monkeypatch: pytest.MonkeyPat
     html_out = cm._render_graph("langgraph", focus_type="harness")
     assert "id='focus-type'" in html_out
     assert "<option value='harness' selected>harness</option>" in html_out
-    assert "load(document.getElementById('focus').value.trim(), selectedFocusType())" in html_out
+    assert "document.getElementById('go').addEventListener('click', () => load(focus.value.trim(), selectedFocusType()))" in html_out
+    assert "focus.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') load(ev.target.value.trim(), selectedFocusType()); })" in html_out
 
 
 def test_graph_neighborhood_rejects_unsafe_slug() -> None:
@@ -1679,6 +1754,13 @@ def test_graph_neighborhood_sizes_nodes_by_score_usage_and_popularity(
     assert "quality 0.950" in hub["size_reason"]
     assert "usage 0.800" in hub["size_reason"]
     assert "popularity" in hub["size_reason"]
+
+
+def test_dashboard_score_payload_clamps_raw_outliers() -> None:
+    payload = cm._dashboard_score_payload("quality_score", 18.0)
+
+    assert payload == {"quality_score": 1.0, "quality_score_raw": 18.0}
+    assert cm._dashboard_score_payload("quality_score", None) == {"quality_score": None}
 
 
 def test_graph_neighborhood_uses_direct_sidecar_scores_without_global_index(
@@ -3075,6 +3157,45 @@ def test_entity_search_and_detail_apis_support_edit_flow(
         server.server_close()
 
 
+def test_entity_search_uses_dashboard_index_for_live_graph_search(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_path = fake_claude / "skill-wiki" / "graphify-out" / "dashboard-neighborhoods.sqlite3"
+    index_path.parent.mkdir(parents=True)
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute(
+            "CREATE TABLE nodes("
+            "id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,description TEXT,"
+            "quality_score REAL,usage_score REAL,degree INTEGER)",
+        )
+        conn.execute(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            (
+                "skill:brainstorming",
+                "brainstorming",
+                "skill",
+                json.dumps(["planning", "creative"]),
+                "Generate better project options before implementation.",
+                0.91,
+                0.4,
+                17,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setattr(cm, "_dashboard_graph_index_path", lambda: index_path)
+    monkeypatch.setattr(cm, "_dashboard_index_matches_manifest", lambda _path: True)
+
+    results = cm._search_wiki_entities("brainstorm", "skill", limit=5)
+
+    assert results[0]["slug"] == "brainstorming"
+    assert results[0]["type"] == "skill"
+    assert results[0]["tags"] == ["planning", "creative"]
+
+
 def test_entity_search_api_rejects_bad_type_and_clamps_limit(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3522,6 +3643,9 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     assert "href='/kpi'" in out
     assert "href='/graph'" in out
     assert "href='/config'" in out
+    assert "class='app-shell'" in out
+    assert "class='app-header'" in out
+    assert "class='app-brand'" in out
     assert ">Wiki<" in out
     assert ">Harness Setup<" in out
     assert ">Docs<" in out
@@ -3759,6 +3883,42 @@ def test_layout_nav_tabs_are_draggable_and_persist_order() -> None:
     assert css.startswith(":root")
     assert f"<style>{css}</style>" in out
     assert "id='dashboard-nav'" in out
+    assert "app-shell" in out
+    assert ".app-shell" in css
+    assert ".graph-canvas-wrap [data-3d-node-id]:focus" in css
+    assert ".graph-stage { width: 100%; height: calc(100vh - 2rem); height: calc(100dvh - 2rem);" in css
+    assert ".graph-canvas-wrap { position: relative; min-height: 0; background: transparent; cursor: grab; }" in css
+    assert ".graph-canvas-wrap:active { cursor: grabbing; }" in css
+    assert ".graph-canvas-wrap [data-edge-detail] { cursor: help; }" in css
+    assert ".graph-match-histogram" in css
+    assert ".graph-match-bar:hover" in css
+    assert ".graph-range-wrap" in css
+    assert ".graph-range-fill" in css
+    assert "width: 1rem; height: 1rem" in css
+    assert "margin-top: calc((0.3rem - 1rem) / 2);" in css
+    assert 'background: transparent; border: 0; box-shadow: none;' in css
+    assert '.graph-range-wrap input[type="range"]:focus-visible,' in css
+    assert "outline: none !important; box-shadow: none !important;" in css
+    assert '.graph-range-wrap input[type="range"]::-moz-focus-outer { border: 0; }' in css
+    assert 'border: 0; box-shadow: none; }' in css
+    assert 'outline: none;' in css
+    assert 'box-shadow: 0 0 0 0.24rem var(--accent-ring)' in css
+    assert "font-size: 0.72rem; line-height: 1; margin-top: 0.22rem;" in css
+    assert "pointer-events: none" in css
+    assert "pointer-events: auto" in css
+    assert "cursor: none" not in css
+    assert "grid-template-rows: auto minmax(18rem, 1fr) 0.65rem minmax(10rem, var(--graph-inspector-height))" in css
+    assert "grid-template-columns: minmax(0,1fr)" in css
+    assert "clamp(18rem, 34vw, 30rem)" not in css
+    assert ".graph-resize-handle" in css
+    assert "cursor: ns-resize" in css
+    assert "[data-testid=\"graph-edge-detail\"] { min-height: 0; max-height: 100%; overflow: auto; }" in css
+    assert ".graph-edge-detail-inline" in css
+    assert "border-left: 1px solid var(--border)" not in css
+    assert "minmax(180px, 0.42fr) 30%" not in css
+    assert ".graph-node-selected [data-testid=\"graph-svg-node\"]" in css
+    assert "fill: #facc15" in css
+    assert "outline: none" in css
     assert "data-nav-storage-key='ctx-monitor-nav-order'" in out
     assert "data-nav-default-keys=" in out
     assert "draggable='true'" in out
@@ -3913,6 +4073,7 @@ def test_render_config_posts_only_dirty_fields_and_can_clear_overrides(
 
     assert "Saves only changed fields" in html_out
     assert "data-original-value='4'" in html_out
+    assert "data-config-path='intake.enabled' data-original-value='true'" in html_out
     assert "data-config-clear='resolver.recommendation_top_k'" in html_out
     assert "no config changes to save" in html_out
     assert "el.dataset.originalValue" in html_out

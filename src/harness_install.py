@@ -1039,6 +1039,7 @@ def _format_harness_requirement_lines(
         "verification": "Verification",
         "privacy": "Privacy/network",
         "attach_mode": "Preferred ctx attachment",
+        "api_key_env": "API key env var",
     }
     return [
         f"- {label}: {requirements[key]}"
@@ -1110,6 +1111,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--goal", help="What you want to build or automate")
     parser.add_argument("--model-provider", help="Model provider prefix, e.g. openai or ollama")
     parser.add_argument("--model", help="Model slug, e.g. openrouter/openai/gpt-5.5")
+    parser.add_argument(
+        "--api-key-env",
+        help="Environment variable that stores the custom provider API key",
+    )
     parser.add_argument("--harness-runtime", help="Runtime/OS target for harness fit")
     parser.add_argument("--harness-autonomy", help="Desired autonomy level")
     parser.add_argument("--harness-tools", help="Allowed tools/access for the harness")

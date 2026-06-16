@@ -179,6 +179,7 @@ def isolated_env(paths: ContractPaths, *, extra_pythonpath: Path | None = None) 
         "XDG_CONFIG_HOME": str(paths.xdg_config),
         "XDG_CACHE_HOME": str(paths.xdg_cache),
         "PIP_CACHE_DIR": str(paths.pip_cache),
+        "CTX_ALLOW_MISSING_GRAPH": "1",
         "PYTHONUTF8": "1",
     })
     if extra_pythonpath is not None:

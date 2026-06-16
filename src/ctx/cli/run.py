@@ -73,6 +73,7 @@ _PROVIDER_KEY_ENV: dict[str, str] = {
     "openrouter": "OPENROUTER_API_KEY",
     "anthropic":  "ANTHROPIC_API_KEY",
     "openai":     "OPENAI_API_KEY",
+    "huggingface": "HF_TOKEN",
     "gemini":     "GEMINI_API_KEY",
     "mistral":    "MISTRAL_API_KEY",
     "deepseek":   "DEEPSEEK_API_KEY",

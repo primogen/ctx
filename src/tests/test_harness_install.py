@@ -991,6 +991,8 @@ def test_recommend_mode_passes_structured_harness_requirements(
         "build a code agent",
         "--model",
         "openai/gpt-5.5",
+        "--api-key-env",
+        "OPENAI_API_KEY",
         "--harness-runtime",
         "windows python",
         "--harness-autonomy",
@@ -1013,6 +1015,7 @@ def test_recommend_mode_passes_structured_harness_requirements(
         "verification": "pytest ruff",
         "privacy": "private repo no secrets",
         "attach_mode": "mcp",
+        "api_key_env": "OPENAI_API_KEY",
     }
 
 
@@ -1097,6 +1100,32 @@ def test_recommend_no_fit_prints_custom_harness_plan(
     assert "Allowed tools/access: filesystem shell" in output
     assert "Verification: pytest" in output
     assert "Privacy/network: offline source code" in output
+
+
+def test_recommend_mode_accepts_huggingface_api_key_env(
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    monkeypatch.setattr(harness_install, "recommend_harnesses_for_cli", lambda **_: [])
+
+    rc = harness_install.main([
+        "--recommend",
+        "--goal",
+        "build a code review harness for a small hosted model",
+        "--model-provider",
+        "huggingface",
+        "--model",
+        "HuggingFaceTB/SmolLM2-135M-Instruct",
+        "--api-key-env",
+        "HF_TOKEN",
+        "--plan-on-no-fit",
+    ])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "Model provider: huggingface" in output
+    assert "API key env var: HF_TOKEN" in output
+    assert "hf_" not in output
 
 
 def test_recommend_no_fit_writes_custom_harness_plan(

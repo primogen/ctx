@@ -124,9 +124,11 @@ class TestResolveApiKeyEnv:
     def test_inferred_from_model_prefix(self) -> None:
         assert _resolve_api_key_env(None, "openrouter/x", None) == "OPENROUTER_API_KEY"
         assert _resolve_api_key_env(None, "anthropic/claude", None) == "ANTHROPIC_API_KEY"
+        assert _resolve_api_key_env(None, "huggingface/org-model", None) == "HF_TOKEN"
 
     def test_inferred_from_provider_flag(self) -> None:
         assert _resolve_api_key_env(None, "custom-x", "openai") == "OPENAI_API_KEY"
+        assert _resolve_api_key_env(None, "custom-x", "huggingface") == "HF_TOKEN"
 
     def test_ollama_returns_none(self) -> None:
         assert _resolve_api_key_env(None, "ollama/llama3", None) is None

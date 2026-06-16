@@ -116,7 +116,7 @@ def set_frontmatter_field(filepath: Path, field: str, value: str) -> bool:
     return False
 
 
-def find_entity_page(name: str) -> Path | None:
+def find_entity_page(name: str, entity_type: str | None = None) -> Path | None:
     """Find entity page for a skill or agent by name.
 
     Hardened against path traversal (CWE-22): name is validated against
@@ -126,6 +126,12 @@ def find_entity_page(name: str) -> Path | None:
         validate_skill_name(name)
     except ValueError:
         return None
+    if entity_type == "agent":
+        agent_page = AGENT_ENTITIES / f"{name}.md"
+        return agent_page if agent_page.exists() else None
+    if entity_type == "skill":
+        skill_page = SKILL_ENTITIES / f"{name}.md"
+        return skill_page if skill_page.exists() else None
     skill_page = SKILL_ENTITIES / f"{name}.md"
     if skill_page.exists():
         return skill_page
@@ -168,6 +174,7 @@ def unload_from_session(
     with file_lock(MANIFEST_PATH):
         manifest = load_manifest()
         removed: list[str] = []
+        removed_entries: list[dict] = []
         remaining = []
         for entry in manifest.get("load", []):
             entry_type = entry.get("entity_type", "skill")
@@ -176,6 +183,7 @@ def unload_from_session(
                 and (entity_type is None or entry_type == entity_type)
             ):
                 removed.append(entry["skill"])
+                removed_entries.append(dict(entry))
                 manifest.setdefault("unload", []).append(entry)
             else:
                 remaining.append(entry)
@@ -191,11 +199,13 @@ def unload_from_session(
         try:
             events_path.parent.mkdir(parents=True, exist_ok=True)
             with events_path.open("a", encoding="utf-8") as fh:
-                for slug in removed:
+                for entry in removed_entries:
+                    slug = str(entry.get("skill") or "")
                     fh.write(json.dumps({
                         "event": "unload",
                         "event_id": uuid.uuid4().hex,
                         "meta": {"source": "skill_unload"},
+                        "entity_type": entry.get("entity_type", "skill"),
                         "session_id": session_id,
                         "skill": slug,
                         "timestamp": now_iso,
@@ -204,9 +214,11 @@ def unload_from_session(
             print(f"Warning: failed to log unload events: {exc}", file=sys.stderr)
         try:
             from ctx_audit_log import log_skill_event
-            for slug in removed:
+            for entry in removed_entries:
+                slug = str(entry.get("skill") or "")
+                entry_type = str(entry.get("entity_type") or "skill")
                 log_skill_event(
-                    "skill.unloaded", slug,
+                    f"{entry_type}.unloaded", slug,
                     actor="cli", session_id=session_id,
                     meta={"via": "skill_unload"},
                 )
@@ -216,11 +228,11 @@ def unload_from_session(
     return removed
 
 
-def set_never_load(names: list[str]) -> list[str]:
+def set_never_load(names: list[str], *, entity_type: str | None = None) -> list[str]:
     """Set never_load: true in wiki entity pages."""
     updated: list[str] = []
     for name in names:
-        page = find_entity_page(name)
+        page = find_entity_page(name, entity_type=entity_type)
         if page:
             changed = set_frontmatter_field(page, "never_load", "true")
             graph_changed = _sync_graph_never_load(name, page, True)
@@ -236,11 +248,11 @@ def set_never_load(names: list[str]) -> list[str]:
     return updated
 
 
-def restore_load(names: list[str]) -> list[str]:
+def restore_load(names: list[str], *, entity_type: str | None = None) -> list[str]:
     """Remove never_load flag from wiki entity pages."""
     restored: list[str] = []
     for name in names:
-        page = find_entity_page(name)
+        page = find_entity_page(name, entity_type=entity_type)
         if page:
             changed = set_frontmatter_field(page, "never_load", "false")
             graph_changed = _sync_graph_never_load(name, page, False)
@@ -256,10 +268,15 @@ def restore_load(names: list[str]) -> list[str]:
     return restored
 
 
-def get_stale_skills() -> list[str]:
+def get_stale_skills(*, entity_type: str | None = None) -> list[str]:
     """Find all skills with status: stale in their entity pages."""
     stale: list[str] = []
-    for entity_dir in [SKILL_ENTITIES, AGENT_ENTITIES]:
+    entity_dirs = [SKILL_ENTITIES, AGENT_ENTITIES]
+    if entity_type == "skill":
+        entity_dirs = [SKILL_ENTITIES]
+    elif entity_type == "agent":
+        entity_dirs = [AGENT_ENTITIES]
+    for entity_dir in entity_dirs:
         if not entity_dir.exists():
             continue
         for page in entity_dir.glob("*.md"):
@@ -269,10 +286,13 @@ def get_stale_skills() -> list[str]:
     return stale
 
 
-def list_loaded() -> None:
+def list_loaded(*, entity_type: str | None = None) -> None:
     """Show currently loaded skills/agents."""
     manifest = load_manifest()
-    loaded = manifest.get("load", [])
+    loaded = [
+        entry for entry in manifest.get("load", [])
+        if entity_type is None or entry.get("entity_type", "skill") == entity_type
+    ]
     if not loaded:
         print("No skills/agents currently loaded in this session.")
         return
@@ -282,10 +302,15 @@ def list_loaded() -> None:
         print(f"  - {entry['skill']}  (source: {source})")
 
 
-def list_never_load() -> None:
+def list_never_load(*, entity_type: str | None = None) -> None:
     """Show permanently suppressed skills/agents."""
     suppressed: list[str] = []
-    for entity_dir in [SKILL_ENTITIES, AGENT_ENTITIES]:
+    entity_dirs = [SKILL_ENTITIES, AGENT_ENTITIES]
+    if entity_type == "skill":
+        entity_dirs = [SKILL_ENTITIES]
+    elif entity_type == "agent":
+        entity_dirs = [AGENT_ENTITIES]
+    for entity_dir in entity_dirs:
         if not entity_dir.exists():
             continue
         for page in entity_dir.glob("*.md"):
@@ -301,7 +326,7 @@ def list_never_load() -> None:
     print("\nTo restore: python src/skill_unload.py --restore <name>")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None, *, default_entity_type: str | None = None) -> None:
     parser = argparse.ArgumentParser(description="Unload skills/agents from session or suppress permanently")
     # ``--slug`` is an alias for ``--name`` so docs/playbooks that say
     # "slug" (the canonical vocabulary everywhere else in ctx) work
@@ -313,11 +338,18 @@ def main() -> None:
                         help="Override CTX_SESSION_ID env for the emitted "
                              "unload events (default: env var or synthetic id)")
     parser.add_argument("--permanent", action="store_true", help="Set never_load: true (won't be recommended again)")
+    parser.add_argument(
+        "--entity-type",
+        choices=("skill", "agent"),
+        default=default_entity_type,
+        help="Limit the operation to one entity type",
+    )
     parser.add_argument("--stale", action="store_true", help="Unload all stale skills")
     parser.add_argument("--restore", help="Remove never_load flag from a skill/agent")
     parser.add_argument("--list-loaded", action="store_true", help="Show currently loaded skills")
     parser.add_argument("--list-never", action="store_true", help="Show permanently suppressed skills")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    entity_type = args.entity_type
 
     # Propagate --session-id into the env so unload_from_session() and
     # its audit-log call both tag the emitted events with the caller's
@@ -326,11 +358,11 @@ def main() -> None:
         os.environ["CTX_SESSION_ID"] = args.session_id
 
     if args.list_loaded:
-        list_loaded()
+        list_loaded(entity_type=entity_type)
         return
 
     if args.list_never:
-        list_never_load()
+        list_never_load(entity_type=entity_type)
         return
 
     if args.restore:
@@ -342,7 +374,7 @@ def main() -> None:
             except ValueError as exc:
                 print(f"Skipping invalid name {n!r}: {exc}", file=sys.stderr)
         if valid:
-            restore_load(valid)
+            restore_load(valid, entity_type=entity_type)
         return
 
     names: list[str] = []
@@ -351,7 +383,7 @@ def main() -> None:
     if args.names:
         names.extend(n.strip() for n in args.names.split(","))
     if args.stale:
-        stale = get_stale_skills()
+        stale = get_stale_skills(entity_type=entity_type)
         print(f"Found {len(stale)} stale skills")
         names.extend(stale)
 
@@ -371,7 +403,7 @@ def main() -> None:
         sys.exit(1)
 
     # Unload from current session manifest
-    removed = unload_from_session(names)
+    removed = unload_from_session(names, entity_type=entity_type)
     if removed:
         print(f"Unloaded from session: {', '.join(removed)}")
 
@@ -379,7 +411,7 @@ def main() -> None:
     not_removed = [n for n in names if n not in removed]
     if not_removed:
         for name in not_removed:
-            page = find_entity_page(name)
+            page = find_entity_page(name, entity_type=entity_type)
             if page:
                 set_frontmatter_field(page, "status", "stale")
                 print(f"  {name}: marked stale (lower priority next session)")
@@ -390,7 +422,15 @@ def main() -> None:
     # Permanently suppress if requested
     if args.permanent:
         print("Setting never_load: true (will not be recommended again):")
-        set_never_load(names)
+        set_never_load(names, entity_type=entity_type)
+
+
+def skill_main() -> None:
+    main(default_entity_type="skill")
+
+
+def agent_main() -> None:
+    main(default_entity_type="agent")
 
 
 if __name__ == "__main__":
