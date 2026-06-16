@@ -7,6 +7,35 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.12] - 2026-06-16
+
+### Added
+
+- Added first-class `ctx-skill-unload` and `ctx-agent-unload` console
+  scripts so skill and agent lifecycle cleanup has the same public CLI shape
+  as MCP uninstall flows.
+- Added browser A-Z dashboard coverage for Manage CRUD, Config save, Harness
+  Setup, Sessions, KPI, Runtime, graph/wiki/docs, live events, and mutation
+  security paths.
+
+### Changed
+
+- Made custom/API/local model harness recommendations fast enough for the
+  interactive wizard by using the harness-only catalog path before falling
+  back to the full graph.
+- Added Hugging Face to the dashboard Harness Setup provider list and carried
+  `--api-key-env` consistently through `ctx-init` and
+  `ctx-harness-install --recommend`.
+
+### Fixed
+
+- Fixed Windows UTF-8 BOM JSON parsing in repo scans so PowerShell-created
+  `package.json` files do not degrade stack detection.
+- Fixed dashboard Config saves so unchanged boolean defaults are not written
+  as accidental user overrides.
+- Suppressed the expected empty-graph warning in clean-host fast mode while
+  preserving warnings for real graph corruption.
+
 ## [1.0.11] - 2026-05-28
 
 ### Fixed
@@ -1608,6 +1637,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.12]: https://github.com/stevesolun/ctx/releases/tag/v1.0.12
 [1.0.11]: https://github.com/stevesolun/ctx/releases/tag/v1.0.11
 [1.0.10]: https://github.com/stevesolun/ctx/releases/tag/v1.0.10
 [1.0.9]: https://github.com/stevesolun/ctx/releases/tag/v1.0.9

@@ -219,6 +219,19 @@ class TestReadJsonSafe:
         result = sr.read_json_safe(str(p))
         assert result == {"name": "x", "version": "1.0"}
 
+    def test_valid_json_with_utf8_bom_returns_dict(self, tmp_path: Path) -> None:
+        p = tmp_path / "package.json"
+        p.write_bytes(
+            b'\xef\xbb\xbf{"scripts":{"dev":"next dev"},"dependencies":{"next":"latest"}}'
+        )
+
+        result = sr.read_json_safe(str(p))
+
+        assert result == {
+            "scripts": {"dev": "next dev"},
+            "dependencies": {"next": "latest"},
+        }
+
     def test_invalid_json_returns_none(self, tmp_path: Path) -> None:
         p = _write(tmp_path / "bad.json", "not json {{")
         assert sr.read_json_safe(str(p)) is None

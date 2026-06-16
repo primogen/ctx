@@ -230,6 +230,7 @@ def test_main_auto_wizard_in_terminal_configures_custom_model(
         "verification": "pytest ruff",
         "privacy": "private repo",
         "attach_mode": "mcp",
+        "api_key_env": "OPENAI_API_KEY",
     }
     user_config = json.loads((tmp_path / "skill-system-config.json").read_text())
     assert user_config["knowledge"]["mode"] == "enriched"
@@ -1278,7 +1279,7 @@ def test_recommend_harnesses_avoids_semantic_model_load_by_default(
 ) -> None:
     graph = nx.Graph()
     graph.add_node("harness:langgraph", label="langgraph", type="harness")
-    monkeypatch.setattr(ci, "_load_recommendation_graph", lambda: graph)
+    monkeypatch.setattr(ci, "_load_harness_recommendation_graph", lambda: graph)
     monkeypatch.setattr(ci, "_harness_supports_provider", lambda *args, **kwargs: True)
     monkeypatch.setattr(ci, "_installed_harness_slugs", lambda _path: set())
     monkeypatch.setattr(

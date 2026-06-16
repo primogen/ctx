@@ -13,6 +13,17 @@ import ctx_init
 import scan_repo
 from ctx.core.resolve import resolve_skills
 
+_REAL_LOAD_HARNESS_CATALOG_GRAPH = ctx_init._load_harness_catalog_graph
+
+
+@pytest.fixture(autouse=True)
+def _isolate_harness_catalog_fast_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ctx_init,
+        "_load_harness_catalog_graph",
+        ctx_init._empty_harness_graph,
+    )
+
 
 def _minimal_profile() -> dict[str, Any]:
     return {
@@ -293,6 +304,58 @@ def test_ctx_init_recommends_harness_from_wiki_frontmatter_only(
     assert [row["name"] for row in results] == ["frontmatter-only"]
     assert results[0]["fit_score"] >= 0.85
     assert set(results[0]["fit_signals"]) >= {"agent", "automation", "browser", "openai"}
+
+
+def test_ctx_init_uses_harness_catalog_without_loading_full_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harnesses = tmp_path / "entities" / "harnesses"
+    harnesses.mkdir(parents=True)
+    (harnesses / "hf-code-review.md").write_text(
+        "---\n"
+        "name: hf-code-review\n"
+        "type: harness\n"
+        "tags: [harness, huggingface, python, code, review, pytest, filesystem]\n"
+        "model_providers: [huggingface]\n"
+        "capabilities: [code review, pytest verification, filesystem tools]\n"
+        "runtimes: [python, windows, macos, linux]\n"
+        "attach_modes: [mcp]\n"
+        "---\n\n# HF Code Review\n",
+        encoding="utf-8",
+    )
+
+    import ctx_config
+
+    monkeypatch.setattr(
+        ctx_config,
+        "cfg",
+        type("Cfg", (), {
+            "wiki_dir": tmp_path,
+            "claude_dir": tmp_path / ".claude",
+            "recommendation_top_k": 5,
+            "harness_recommendation_min_fit_score": 0.85,
+        })(),
+    )
+    monkeypatch.setattr(
+        ctx_init,
+        "_load_recommendation_graph",
+        lambda: pytest.fail("interactive harness recommendation loaded full graph"),
+    )
+    monkeypatch.setattr(
+        ctx_init,
+        "_load_harness_catalog_graph",
+        _REAL_LOAD_HARNESS_CATALOG_GRAPH,
+    )
+
+    results = ctx_init.recommend_harnesses(
+        "build a huggingface python code review harness with pytest and filesystem tools",
+        model_provider="huggingface",
+        model="HuggingFaceTB/SmolLM2-135M-Instruct",
+    )
+
+    assert [row["name"] for row in results] == ["hf-code-review"]
+    assert results[0]["fit_score"] >= 0.85
 
 
 def test_ctx_init_rejects_weak_single_signal_harness_match(
