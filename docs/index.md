@@ -201,7 +201,7 @@ ones are flagged. New ones self-ingest.
 
     ---
 
-    **v1.0.13** — MIT, CI-matrixed (Ubuntu 3.12 plus Windows/macOS 3.11/3.12),
+    **v1.0.14** — MIT, CI-matrixed (Ubuntu 3.12 plus Windows/macOS 3.11/3.12),
     4,071 tests collected. Ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
     skills, agents, and MCP servers, plus Harness Setup for user-owned LLMs),
