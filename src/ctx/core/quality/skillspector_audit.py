@@ -319,6 +319,27 @@ def _error_record(slug: str, message: str, *, elapsed_seconds: float | None = No
     ).to_json()
 
 
+def _no_body_record(slug: str) -> SkillSpectorAuditRecord:
+    return SkillSpectorAuditRecord(
+        schema_version=AUDIT_SCHEMA_VERSION,
+        slug=slug,
+        status="not_scanned_no_body",
+        risk_score=None,
+        risk_severity=None,
+        recommendation=None,
+        issues=0,
+        components=0,
+        content_sha256=None,
+        scanned_at=datetime.now(UTC).isoformat(),
+        scanner="NVIDIA SkillSpector",
+        scanner_repo=SKILLSPECTOR_REPO_URL,
+        scanner_version=None,
+        mode="not-run-no-body",
+        llm_requested=False,
+        error="No converted SKILL.md body is shipped for this skill entity.",
+    )
+
+
 def _scan_skill_dir(skill_dir_str: str) -> dict[str, object]:
     skill_dir = Path(skill_dir_str)
     slug = skill_dir.name
@@ -368,7 +389,10 @@ def _extract_member(member: tarfile.TarInfo, tf: tarfile.TarFile, dest_root: Pat
     with src, dest.open("wb") as out:
         _copy_stream(src, out)
     try:
-        dest.chmod(member.mode & 0o777)
+        # Some upstream archives carry restrictive modes. Preserve executable
+        # bits where present, but force owner read/write so the isolated
+        # SkillSpector worker can inspect the extracted skill body.
+        dest.chmod((member.mode & 0o777) | 0o600)
     except OSError:
         pass
 
@@ -471,9 +495,6 @@ def audit_tar(
                     slug = _converted_slug(member.name)
                     if slug is None:
                         continue
-                    if slug in completed:
-                        skipped += 1 if member.name.endswith("/SKILL.md") else 0
-                        continue
                     if current_slug is not None and slug != current_slug:
                         if current_root is not None and (current_root / "SKILL.md").exists():
                             pending[pool.submit(_scan_skill_dir, str(current_root))] = current_root
@@ -485,6 +506,9 @@ def audit_tar(
                         closed_slugs.add(current_slug)
                         current_slug = None
                         current_root = None
+                    if slug in completed:
+                        skipped += 1 if member.name.endswith("/SKILL.md") else 0
+                        continue
                     if slug in closed_slugs:
                         raise ValueError(
                             f"tar is not grouped by converted skill; slug reopened: {slug}"
@@ -519,6 +543,25 @@ def _stamp_block(record: SkillSpectorAuditRecord) -> str:
     severity = record.risk_severity or "UNKNOWN"
     recommendation = record.recommendation or "UNKNOWN"
     version = record.scanner_version or "unknown"
+    if record.status == "not_scanned_no_body":
+        return (
+            f"{STAMP_BEGIN}\n"
+            f"> Security check: not scanned by "
+            f"[NVIDIA SkillSpector]({record.scanner_repo}) because this generated "
+            f"skill entity has no converted `SKILL.md` body in the shipped wiki. "
+            f"This is a ctx coverage marker, not an NVIDIA endorsement or "
+            f"certification.\n"
+            f"{STAMP_END}\n"
+        )
+    if record.status == "error":
+        return (
+            f"{STAMP_BEGIN}\n"
+            f"> Security check: attempted with "
+            f"[NVIDIA SkillSpector]({record.scanner_repo}) ({record.mode}) but "
+            f"the scan errored: {record.error or 'unknown error'}. This is a "
+            f"ctx-run tool check, not an NVIDIA endorsement or certification.\n"
+            f"{STAMP_END}\n"
+        )
     return (
         f"{STAMP_BEGIN}\n"
         f"> Security check: checked with "
@@ -705,6 +748,38 @@ def summarize_audit(path: Path) -> dict[str, object]:
     }
 
 
+def cover_entity_pages(wiki_tar: Path, audit: Path) -> dict[str, int]:
+    """Append honest coverage records for skill entities without converted bodies."""
+    records = load_audit_records(audit)
+    entity_slugs: set[str] = set()
+    converted_slugs: set[str] = set()
+    with tarfile.open(wiki_tar, "r:gz") as tf:
+        for member in tf:
+            safe_name = _safe_tar_name(member.name)
+            if safe_name is None:
+                continue
+            entity_slug = _entity_skill_slug(safe_name)
+            if entity_slug is not None:
+                entity_slugs.add(entity_slug)
+            converted_slug = _converted_slug(safe_name)
+            if converted_slug is not None and safe_name.endswith("/SKILL.md"):
+                converted_slugs.add(converted_slug)
+    missing_body = sorted(entity_slugs - converted_slugs)
+    to_append = [
+        _no_body_record(slug)
+        for slug in missing_body
+        if slug not in records
+    ]
+    if to_append:
+        _write_jsonl_gz(audit, to_append, append=True)
+    return {
+        "entity_pages": len(entity_slugs),
+        "converted_bodies": len(converted_slugs),
+        "missing_bodies": len(missing_body),
+        "appended": len(to_append),
+    }
+
+
 def _audit_tar_command(args: argparse.Namespace) -> int:
     stats = audit_tar(
         Path(args.wiki_tar),
@@ -742,6 +817,12 @@ def _stamp_dir_command(args: argparse.Namespace) -> int:
 
 def _summary_command(args: argparse.Namespace) -> int:
     print(json.dumps(summarize_audit(Path(args.audit)), indent=2, sort_keys=True))
+    return 0
+
+
+def _cover_entities_command(args: argparse.Namespace) -> int:
+    stats = cover_entity_pages(Path(args.wiki_tar), Path(args.audit))
+    print(json.dumps(stats, sort_keys=True))
     return 0
 
 
@@ -786,6 +867,14 @@ def build_parser() -> argparse.ArgumentParser:
     summary_parser = subparsers.add_parser("summary", help="Summarize audit JSONL gzip.")
     summary_parser.add_argument("--audit", required=True)
     summary_parser.set_defaults(func=_summary_command)
+
+    cover_parser = subparsers.add_parser(
+        "cover-entities",
+        help="Append no-body coverage records for skill entity pages without SKILL.md bodies.",
+    )
+    cover_parser.add_argument("--wiki-tar", required=True)
+    cover_parser.add_argument("--audit", required=True)
+    cover_parser.set_defaults(func=_cover_entities_command)
     return parser
 
 

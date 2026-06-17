@@ -11,6 +11,7 @@ from ctx.core.quality.skillspector_audit import (
     STAMP_BEGIN,
     SkillSpectorAuditRecord,
     _record_from_report,
+    cover_entity_pages,
     load_audit_records,
     stamp_directory,
     stamp_entity_text,
@@ -153,3 +154,27 @@ def test_stamp_directory_updates_only_audited_entities(tmp_path: Path) -> None:
         wiki / "entities" / "skills" / "other.md"
     ).read_text(encoding="utf-8")
     assert (wiki / "security" / "skillspector-audit.jsonl.gz").exists()
+
+
+def test_cover_entity_pages_appends_no_body_records(tmp_path: Path) -> None:
+    source = tmp_path / "wiki.tar.gz"
+    audit = tmp_path / "audit.jsonl.gz"
+    _write_audit(audit, _record("with-body"))
+    with tarfile.open(source, "w:gz") as tf:
+        _add_text(tf, "entities/skills/with-body.md", "# With body\n")
+        _add_text(tf, "entities/skills/no-body.md", "# No body\n")
+        _add_text(tf, "converted/with-body/SKILL.md", "# With body\n")
+
+    stats = cover_entity_pages(source, audit)
+
+    assert stats == {
+        "entity_pages": 2,
+        "converted_bodies": 1,
+        "missing_bodies": 1,
+        "appended": 1,
+    }
+    records = load_audit_records(audit)
+    assert records["no-body"].status == "not_scanned_no_body"
+    stamped = stamp_entity_text("# No body\n", records["no-body"])
+    assert "not scanned by" in stamped
+    assert "has no converted `SKILL.md` body" in stamped
