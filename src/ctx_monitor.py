@@ -6847,6 +6847,8 @@ class _MonitorHandler(BaseHTTPRequestHandler):
                 self._send_html(_render_config())
             elif path == "/status":
                 self._send_html(_render_status())
+            elif path in {"/catalog", "/catalog/"}:
+                self._send_html(_render_wiki_index(qs.get("type"), qs.get("q", "")))
             elif path == "/wiki":
                 self._send_html(_render_wiki_index(qs.get("type"), qs.get("q", "")))
             elif path.startswith("/wiki/"):

@@ -3006,6 +3006,35 @@ def test_render_wiki_index_supports_type_query_and_autocomplete(fake_claude: Pat
     assert "value='skill' checked" not in html_out
 
 
+def test_catalog_route_serves_searchable_wiki_catalog(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agents_dir = fake_claude / "skill-wiki" / "entities" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "code-reviewer.md").write_text(
+        "---\ntype: agent\ndescription: Review work\ntags: [review]\n---\n# body\n",
+        encoding="utf-8",
+    )
+
+    server, thread, port = _serve_monitor(monkeypatch)
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/catalog?type=agent&q=review",
+            timeout=5,
+        ) as response:
+            body = response.read().decode("utf-8")
+
+        assert response.status == 200
+        assert "id='wiki-search'" in body
+        assert "code-reviewer" in body
+        assert "href='/wiki/code-reviewer?type=agent'" in body
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_render_wiki_index_hides_legacy_skill_source_prefix(fake_claude: Path) -> None:
     skills_dir = fake_claude / "skill-wiki" / "entities" / "skills"
     skills_dir.mkdir(parents=True)

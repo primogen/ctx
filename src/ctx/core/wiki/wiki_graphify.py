@@ -935,7 +935,13 @@ def load_prior_graph() -> nx.Graph | None:
         # ``edges="edges"`` matches what export_graph writes. networkx
         # auto-falls-back to the legacy ``links`` key internally when
         # reading, but being explicit here pins the contract.
-        graph = nx.node_link_graph(data, edges="edges")
+        try:
+            graph = nx.node_link_graph(data, edges="edges")
+        except TypeError:
+            legacy_data = dict(data)
+            if "edges" in legacy_data and "links" not in legacy_data:
+                legacy_data["links"] = legacy_data.pop("edges")
+            graph = nx.node_link_graph(legacy_data)
     except (KeyError, TypeError, ValueError) as exc:
         print(
             f"wiki_graphify: prior graph.json rejected by node_link_graph "
@@ -1512,7 +1518,11 @@ def export_graph(
     # networkx version that wrote it — default changed from "links" in
     # <3.0 to "edges" in >=3.0, which silently broke every consumer.
     export_id = _new_graph_export_id()
-    graph_data = nx.node_link_data(G, edges="edges")
+    try:
+        graph_data = nx.node_link_data(G, edges="edges")
+    except TypeError:
+        graph_data = nx.node_link_data(G)
+        graph_data["edges"] = graph_data.pop("links", graph_data.get("edges", []))
     graph_meta = graph_data.setdefault("graph", {})
     if isinstance(graph_meta, dict):
         graph_meta["export_id"] = export_id
