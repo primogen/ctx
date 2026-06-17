@@ -24,7 +24,8 @@ The runtime recommendation paths use this graph in two ways:
 | File | Contents |
 |---|---|
 | `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the skill index, 207 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
-| `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, skill indexes, and Obsidian metadata |
+| `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, skill indexes, SkillSpector stamps, and Obsidian metadata |
+| `skillspector-audit.jsonl.gz` | Compact per-skill audit records produced by a ctx-run static `--no-llm` pass with [NVIDIA SkillSpector](https://github.com/NVIDIA/SkillSpector). This is not NVIDIA endorsement or certification. The same gzip is embedded in `wiki-graph.tar.gz` as `security/skillspector-audit.jsonl.gz`. |
 | Skill catalog gzip | Compressed skill index for the 89,465 body-backed skill entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
 | `entity-overlays.jsonl` | Release overlay for first-class entities added after the base graph export; installed beside `graphify-out/graph.json` by `ctx-init --graph` |
@@ -59,6 +60,7 @@ want local wiki browsing, Obsidian, or the converted skill body tree.
 - `converted-agents/` - mirrored agent bodies
 - `concepts/` - community concept pages
 - `external-catalogs/` - machine-readable skill index, summary, and coverage metadata
+- `security/skillspector-audit.jsonl.gz` - per-skill SkillSpector audit records
 - `graphify-out/graph.json` - NetworkX node-link graph
 - `graphify-out/graph-delta.json` - delta export for the latest graph generation
 - `graphify-out/graph-export-manifest.json` - export manifest tying graph, delta, communities, and report to one generation

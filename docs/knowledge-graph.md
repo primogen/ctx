@@ -338,3 +338,9 @@ review reports and never auto-modify the inventory.
   frontmatter and proposes a backfill drawn from slug tokens, body
   keywords, and the existing tag vocabulary. Report-only by default;
   pass `--apply` to write. Backfills are additive only.
+- **`ctx-skillspector-audit`** — runs a static `--no-llm` check over
+  shipped skill bodies with
+  [NVIDIA SkillSpector](https://github.com/NVIDIA/SkillSpector), writes
+  `graph/skillspector-audit.jsonl.gz`, and stamps skill entity pages in the
+  full wiki artifact. This is a ctx-run check, not NVIDIA endorsement or
+  certification.
