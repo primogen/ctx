@@ -840,9 +840,14 @@ _HARNESS_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 _HARNESS_GOAL_NOISE = frozenset({
     "build",
+    "across",
+    "coding",
+    "compatible",
     "create",
     "into",
+    "like",
     "make",
+    "own",
     "turn",
     "write",
     "need",
@@ -1259,7 +1264,7 @@ def _harness_candidate_terms(graph: Any, row: dict[str, Any]) -> set[str]:
     ):
         _add_harness_terms(terms, node_data.get(key))
     wiki_fm = _harness_frontmatter_from_wiki(slug)
-    for key in ("title", "description", "summary", "repo_url", "docs_url"):
+    for key in ("title", "description", "summary", "repo_url", "docs_url", "_body"):
         terms.update(_harness_tokens(str(wiki_fm.get(key) or "")))
     for key in (
         "tags",
@@ -1509,9 +1514,12 @@ def _harness_frontmatter_from_wiki(slug: str) -> dict[str, Any]:
         path = entity_page_path(cfg.wiki_dir, "harness", slug)
         if path is None or not path.is_file():
             return {}
-        fm, _body = parse_frontmatter_and_body(
+        fm, body = parse_frontmatter_and_body(
             path.read_text(encoding="utf-8", errors="replace"),
         )
+        fm = dict(fm)
+        if body.strip():
+            fm["_body"] = body
         return fm
     except Exception:
         return {}
@@ -1548,13 +1556,15 @@ def _load_harness_catalog_graph() -> Any:
         return graph
     for page in sorted(harness_dir.glob("*.md")):
         try:
-            fm, _body = parse_frontmatter_and_body(
+            fm, body = parse_frontmatter_and_body(
                 page.read_text(encoding="utf-8", errors="replace"),
             )
         except OSError:
             continue
         slug = page.stem
         data = dict(fm) if isinstance(fm, dict) else {}
+        if body.strip():
+            data["_body"] = body
         display_name = str(data.get("name") or data.get("title") or slug).strip() or slug
         data.update({
             "label": slug,

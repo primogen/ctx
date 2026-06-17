@@ -358,6 +358,74 @@ def test_ctx_init_uses_harness_catalog_without_loading_full_graph(
     assert results[0]["fit_score"] >= 0.85
 
 
+def test_ctx_init_uses_runtime_harness_body_for_cloud_tool_fit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harnesses = tmp_path / "entities" / "harnesses"
+    harnesses.mkdir(parents=True)
+    (harnesses / "mirage.md").write_text(
+        "---\n"
+        "title: Mirage\n"
+        "type: harness\n"
+        "tags: [harness, virtual-filesystem, sandbox, agent-tools]\n"
+        "model_providers: [openai, local, model-agnostic]\n"
+        "capabilities:\n"
+        "  - filesystem-like access to cloud services and remote resources\n"
+        "runtimes: [python, node, linux, macos]\n"
+        "---\n\n"
+        "# Mirage\n\n"
+        "Use when the user wants their own model with sandboxed filesystem-like "
+        "tool access across GitHub, Slack, S3, Google Drive, Linear, and Notion.\n",
+        encoding="utf-8",
+    )
+
+    import ctx_config
+
+    monkeypatch.setattr(
+        ctx_config,
+        "cfg",
+        type("Cfg", (), {
+            "wiki_dir": tmp_path,
+            "claude_dir": tmp_path / ".claude",
+            "recommendation_top_k": 5,
+            "harness_recommendation_min_fit_score": 0.85,
+        })(),
+    )
+    monkeypatch.setattr(
+        ctx_init,
+        "_load_recommendation_graph",
+        lambda: pytest.fail("runtime harness recommendation loaded full graph"),
+    )
+    monkeypatch.setattr(
+        ctx_init,
+        "_load_harness_catalog_graph",
+        _REAL_LOAD_HARNESS_CATALOG_GRAPH,
+    )
+
+    results = ctx_init.recommend_harnesses(
+        "I use my own OpenAI-compatible local model and need sandboxed "
+        "filesystem-like tool access across GitHub Slack S3 Google Drive "
+        "Linear and Notion for coding agents",
+        model_provider="openai",
+        model="gpt-4.1",
+    )
+
+    assert [row["name"] for row in results] == ["mirage"]
+    assert results[0]["fit_score"] >= 0.85
+    assert set(results[0]["fit_signals"]) >= {
+        "agents",
+        "filesystem",
+        "github",
+        "linear",
+        "notion",
+        "openai",
+        "sandboxed",
+        "slack",
+        "tool",
+    }
+
+
 def test_ctx_init_rejects_weak_single_signal_harness_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
