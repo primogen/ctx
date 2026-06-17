@@ -216,6 +216,32 @@ def test_load_prior_graph_roundtrip_preserves_graph_level_metadata(
     assert loaded.graph.get("semantic_min_cosine_default") == pytest.approx(0.8)
 
 
+def test_load_prior_graph_supports_networkx_without_edges_kwarg(
+    graphify_out: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ctx.core.wiki import wiki_graphify
+
+    original = _make_sample_graph()
+    _write_graph_json(graphify_out, original)
+    real_node_link_graph = wiki_graphify.nx.node_link_graph
+
+    def old_node_link_graph(data: dict, *args, **kwargs) -> nx.Graph:
+        if "edges" in kwargs:
+            raise TypeError("node_link_graph() got an unexpected keyword argument 'edges'")
+        assert "links" in data
+        assert "edges" not in data
+        return real_node_link_graph(data, *args, edges="links", **kwargs)
+
+    monkeypatch.setattr(wiki_graphify.nx, "node_link_graph", old_node_link_graph)
+
+    loaded = wiki_graphify.load_prior_graph()
+
+    assert loaded is not None
+    assert loaded.number_of_nodes() == original.number_of_nodes()
+    assert loaded.number_of_edges() == original.number_of_edges()
+
+
 # ────────────────────────────────────────────────────────────────────
 # Robustness: corrupt / malformed / missing JSON must not crash
 # ────────────────────────────────────────────────────────────────────
@@ -267,6 +293,29 @@ def test_export_graph_does_not_write_pickle(graphify_out: Path) -> None:
     assert not (graphify_out / "graph.pickle").exists(), (
         "export_graph left graph.pickle behind, preserving the old RCE artifact"
     )
+
+
+def test_export_graph_supports_networkx_without_edges_kwarg(
+    graphify_out: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ctx.core.wiki import wiki_graphify
+
+    real_node_link_data = wiki_graphify.nx.node_link_data
+
+    def old_node_link_data(graph: nx.Graph, *args, **kwargs) -> dict:
+        if kwargs.get("edges") == "edges":
+            raise TypeError("node_link_data() got an unexpected keyword argument 'edges'")
+        return real_node_link_data(graph, *args, edges="links", **kwargs)
+
+    monkeypatch.setattr(wiki_graphify.nx, "node_link_data", old_node_link_data)
+
+    wiki_graphify.export_graph(_make_sample_graph(), communities={})
+
+    data = json.loads((graphify_out / "graph.json").read_text(encoding="utf-8"))
+    assert "edges" in data
+    assert "links" not in data
+    assert len(data["edges"]) == 2
 
 
 def test_export_graph_uses_atomic_writer_for_artifacts(
