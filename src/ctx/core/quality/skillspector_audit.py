@@ -406,12 +406,14 @@ def audit_tar(
     limit: int | None = None,
     resume: bool = True,
     temp_dir: Path | None = None,
+    progress_every: int = 1000,
 ) -> dict[str, int]:
     """Stream converted skill bodies from ``wiki_tar`` and write compact audit records."""
     completed = load_audit_records(out) if resume else {}
     out.parent.mkdir(parents=True, exist_ok=True)
     append = resume and out.exists()
     submitted = 0
+    completed_count = 0
     skipped = 0
     errors = 0
     pending: dict[concurrent.futures.Future[dict[str, object]], Path] = {}
@@ -419,7 +421,7 @@ def audit_tar(
     closed_slugs: set[str] = set()
 
     def drain_one() -> None:
-        nonlocal errors, append
+        nonlocal completed_count, errors, append
         done, _ = concurrent.futures.wait(
             pending,
             return_when=concurrent.futures.FIRST_COMPLETED,
@@ -437,6 +439,20 @@ def audit_tar(
                     errors += 1
             _write_jsonl_gz(out, [record], append=append)
             append = True
+            completed_count += 1
+            if progress_every > 0 and completed_count % progress_every == 0:
+                print(
+                    json.dumps(
+                        {
+                            "event": "progress",
+                            "completed": completed_count,
+                            "errors": errors,
+                            "submitted": submitted,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
             shutil.rmtree(skill_dir, ignore_errors=True)
 
     with tempfile.TemporaryDirectory(prefix="ctx-skillspector-audit-", dir=temp_dir) as work:
@@ -483,7 +499,12 @@ def audit_tar(
             while pending:
                 drain_one()
 
-    return {"submitted": submitted, "skipped": len(completed), "errors": errors}
+    return {
+        "submitted": submitted,
+        "completed": completed_count,
+        "skipped": len(completed),
+        "errors": errors,
+    }
 
 
 def _quote_yaml(value: str) -> str:
@@ -689,6 +710,7 @@ def _audit_tar_command(args: argparse.Namespace) -> int:
         limit=args.limit,
         resume=not args.no_resume,
         temp_dir=Path(args.temp_dir) if args.temp_dir else None,
+        progress_every=args.progress_every,
     )
     print(json.dumps(stats, sort_keys=True))
     return 1 if stats["errors"] else 0
@@ -731,6 +753,12 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--limit", type=int, default=None, help="Optional pilot limit.")
     audit_parser.add_argument("--no-resume", action="store_true", help="Ignore existing output.")
     audit_parser.add_argument("--temp-dir", default=None, help="Optional parent temp directory.")
+    audit_parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=1000,
+        help="Print a JSON progress line every N completed scans; 0 disables.",
+    )
     audit_parser.set_defaults(func=_audit_tar_command)
 
     stamp_parser = subparsers.add_parser("stamp-tar", help="Stamp skill entity pages using an audit file.")
