@@ -256,8 +256,11 @@ def _record_from_report(
     issue_rules = []
     if isinstance(issues, list):
         for issue in issues:
-            if isinstance(issue, dict) and issue.get("rule_id"):
-                issue_rules.append(str(issue["rule_id"]))
+            if not isinstance(issue, dict):
+                continue
+            rule = issue.get("rule_id") or issue.get("id")
+            if rule:
+                issue_rules.append(str(rule))
     status = "passed"
     if isinstance(issues, list) and issues:
         status = "findings"

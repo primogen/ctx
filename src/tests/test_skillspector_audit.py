@@ -64,7 +64,7 @@ def test_record_from_skillspector_report_normalizes_safe_result() -> None:
             "recommendation": "SAFE",
         },
         "components": [{"path": "SKILL.md"}, {"path": "references/a.md"}],
-        "issues": [],
+        "issues": [{"id": "E1"}],
         "metadata": {
             "skillspector_version": "2.2.3",
             "llm_requested": False,
@@ -78,10 +78,11 @@ def test_record_from_skillspector_report_normalizes_safe_result() -> None:
         elapsed_seconds=0.123,
     )
 
-    assert record.status == "passed"
+    assert record.status == "findings"
     assert record.risk_score == 0
     assert record.components == 2
-    assert record.issues == 0
+    assert record.issues == 1
+    assert record.issue_rules == ("E1",)
     assert record.scanner_repo == SKILLSPECTOR_REPO_URL
 
 
