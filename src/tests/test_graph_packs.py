@@ -13,6 +13,7 @@ from ctx.core.graph.graph_packs import (
     compact_graph_packs,
     discover_pack_manifests,
     load_merged_pack_graph,
+    promote_graph_pack_set,
     read_pack_manifest,
     sha256_file,
     main,
@@ -604,3 +605,110 @@ def test_main_compact_writes_json_report_and_staged_pack(
     assert output["base_export_id"] == "export-2"
     graph = load_merged_pack_graph(tmp_path / "staged")
     assert graph.has_edge("skill:review", "skill:python")
+
+
+def test_promote_graph_pack_set_replaces_active_and_writes_rollback_metadata(
+    tmp_path: Path,
+) -> None:
+    active_packs = tmp_path / "graph" / "packs"
+    old_graph = nx.Graph()
+    old_graph.add_node("skill:old")
+    write_base_pack(
+        pack_dir=active_packs / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="model-a",
+        graph=old_graph,
+    )
+    write_overlay_pack(
+        pack_dir=active_packs / "overlay-review",
+        pack_id="overlay-review",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="model-a",
+        nodes=[{"id": "skill:review"}],
+        edges=[{"source": "skill:old", "target": "skill:review", "weight": 0.8}],
+        tombstones=[],
+    )
+
+    staged_packs = tmp_path / "staged-packs"
+    new_graph = nx.Graph()
+    new_graph.add_node("skill:new")
+    write_base_pack(
+        pack_dir=staged_packs / "base-export-2",
+        pack_id="base-export-2",
+        base_export_id="export-2",
+        config_hash="config-sha",
+        model_id="model-a",
+        graph=new_graph,
+    )
+    backup_packs = tmp_path / "graph" / "packs.rollback"
+
+    result = promote_graph_pack_set(
+        staged_packs_dir=staged_packs,
+        active_packs_dir=active_packs,
+        backup_packs_dir=backup_packs,
+    )
+
+    assert result.promoted_pack_ids == ["base-export-2"]
+    assert result.replaced_pack_ids == ["base-export-1", "overlay-review"]
+    assert not staged_packs.exists()
+    assert [entry.manifest.pack_id for entry in discover_pack_manifests(active_packs)] == [
+        "base-export-2",
+    ]
+    assert [entry.manifest.pack_id for entry in discover_pack_manifests(backup_packs)] == [
+        "base-export-1",
+        "overlay-review",
+    ]
+    promoted_graph = load_merged_pack_graph(active_packs)
+    assert list(promoted_graph.nodes) == ["skill:new"]
+    rollback_metadata = json.loads(result.rollback_metadata_path.read_text(encoding="utf-8"))
+    assert rollback_metadata["backup_packs_dir"] == str(backup_packs)
+    assert rollback_metadata["promoted_pack_ids"] == ["base-export-2"]
+    assert rollback_metadata["replaced_pack_ids"] == ["base-export-1", "overlay-review"]
+
+
+def test_main_promote_writes_json_report_and_uses_default_backup(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    active_packs = tmp_path / "graph" / "packs"
+    old_graph = nx.Graph()
+    old_graph.add_node("skill:old")
+    write_base_pack(
+        pack_dir=active_packs / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="model-a",
+        graph=old_graph,
+    )
+    staged_packs = tmp_path / "staged-packs"
+    new_graph = nx.Graph()
+    new_graph.add_node("skill:new")
+    write_base_pack(
+        pack_dir=staged_packs / "base-export-2",
+        pack_id="base-export-2",
+        base_export_id="export-2",
+        config_hash="config-sha",
+        model_id="model-a",
+        graph=new_graph,
+    )
+
+    rc = main([
+        "promote",
+        "--staged-packs-dir", str(staged_packs),
+        "--active-packs-dir", str(active_packs),
+        "--json",
+    ])
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["promoted_pack_ids"] == ["base-export-2"]
+    assert output["replaced_pack_ids"] == ["base-export-1"]
+    assert output["backup_packs_dir"] == str(tmp_path / "graph" / "packs.rollback")
+    assert [entry.manifest.pack_id for entry in discover_pack_manifests(active_packs)] == [
+        "base-export-2",
+    ]

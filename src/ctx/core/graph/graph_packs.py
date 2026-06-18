@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 import sys
 from typing import Any, Literal
@@ -41,6 +42,31 @@ class GraphPackEntry:
 
     path: Path
     manifest: "GraphPackManifest"
+
+
+@dataclass(frozen=True)
+class GraphPackPromotion:
+    """Result of promoting a staged graph pack set into the active location."""
+
+    active_packs_dir: Path
+    backup_packs_dir: Path | None
+    rollback_metadata_path: Path
+    promoted_pack_ids: list[str]
+    replaced_pack_ids: list[str]
+    replaced_validation_error: str | None = None
+
+    def to_mapping(self) -> dict[str, Any]:
+        """Serialise promotion metadata for CLI output and rollback records."""
+        return {
+            "schema_version": GRAPH_PACK_SCHEMA_VERSION,
+            "operation": "graph-pack-promote",
+            "active_packs_dir": str(self.active_packs_dir),
+            "backup_packs_dir": str(self.backup_packs_dir) if self.backup_packs_dir else None,
+            "rollback_metadata_path": str(self.rollback_metadata_path),
+            "promoted_pack_ids": self.promoted_pack_ids,
+            "replaced_pack_ids": self.replaced_pack_ids,
+            "replaced_validation_error": self.replaced_validation_error,
+        }
 
 
 @dataclass(frozen=True)
@@ -300,6 +326,83 @@ def compact_graph_packs(
     )
 
 
+def promote_graph_pack_set(
+    *,
+    staged_packs_dir: Path,
+    active_packs_dir: Path,
+    backup_packs_dir: Path | None = None,
+) -> GraphPackPromotion:
+    """Promote a validated staged pack set into the active packs directory.
+
+    The swap is a same-filesystem directory rename: the previous active pack set
+    is moved to a rollback directory before the staged set is moved into place.
+    If the final move fails after the active directory was backed up, the old
+    active directory is restored before returning an error.
+    """
+    if _paths_same(staged_packs_dir, active_packs_dir):
+        raise GraphPackManifestError("staged and active graph pack directories must differ")
+
+    staged_entries = discover_pack_manifests(staged_packs_dir)
+    if not staged_entries:
+        raise GraphPackManifestError("staged graph pack set does not contain a valid base pack")
+    # Force endpoint/tombstone validation before the active directory is touched.
+    load_merged_pack_graph(staged_packs_dir)
+    promoted_pack_ids = [entry.manifest.pack_id for entry in staged_entries]
+
+    replaced_pack_ids: list[str] = []
+    replaced_validation_error: str | None = None
+    active_exists = active_packs_dir.exists()
+    if active_exists:
+        if not active_packs_dir.is_dir():
+            raise GraphPackManifestError("active graph packs path exists but is not a directory")
+        try:
+            replaced_pack_ids = [
+                entry.manifest.pack_id for entry in discover_pack_manifests(active_packs_dir)
+            ]
+        except GraphPackManifestError as exc:
+            replaced_validation_error = str(exc)
+
+    backup_dir = backup_packs_dir if active_exists else None
+    if backup_dir is None and active_exists:
+        backup_dir = _next_rollback_dir(active_packs_dir)
+    if backup_dir is not None:
+        if _paths_same(backup_dir, active_packs_dir) or _paths_same(backup_dir, staged_packs_dir):
+            raise GraphPackManifestError("backup graph packs directory must be distinct")
+        if backup_dir.exists():
+            raise GraphPackManifestError(f"backup graph packs directory already exists: {backup_dir}")
+        backup_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    active_packs_dir.parent.mkdir(parents=True, exist_ok=True)
+    moved_active = False
+    try:
+        if active_exists and backup_dir is not None:
+            active_packs_dir.replace(backup_dir)
+            moved_active = True
+        staged_packs_dir.replace(active_packs_dir)
+    except OSError as exc:
+        if moved_active and backup_dir is not None and backup_dir.exists() and not active_packs_dir.exists():
+            backup_dir.replace(active_packs_dir)
+        raise GraphPackManifestError(f"failed to promote graph pack set: {exc}") from exc
+
+    metadata_path = active_packs_dir.with_name(f"{active_packs_dir.name}.rollback.json")
+    result = GraphPackPromotion(
+        active_packs_dir=active_packs_dir,
+        backup_packs_dir=backup_dir,
+        rollback_metadata_path=metadata_path,
+        promoted_pack_ids=promoted_pack_ids,
+        replaced_pack_ids=replaced_pack_ids,
+        replaced_validation_error=replaced_validation_error,
+    )
+    metadata = result.to_mapping()
+    metadata["created_at"] = datetime.now(UTC).isoformat()
+    atomic_write_text(
+        metadata_path,
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m ctx.core.graph.graph_packs",
@@ -321,6 +424,18 @@ def main(argv: list[str] | None = None) -> int:
     compact.add_argument("--model-id", help="Override model id; defaults to source base")
     compact.add_argument("--created-at", help="Optional created_at value for the new manifest")
     compact.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    promote = sub.add_parser(
+        "promote",
+        help="Promote a staged graph pack set into the active packs directory.",
+    )
+    promote.add_argument(
+        "--staged-packs-dir",
+        required=True,
+        help="Validated staged graph packs root to promote",
+    )
+    promote.add_argument("--active-packs-dir", required=True, help="Active graph packs root")
+    promote.add_argument("--backup-packs-dir", help="Optional rollback directory for old active packs")
+    promote.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args(argv)
 
     if args.command == "compact":
@@ -346,6 +461,23 @@ def main(argv: list[str] | None = None) -> int:
                 f"{manifest.pack_id}: {manifest.node_count} nodes, "
                 f"{manifest.edge_count} edges"
             )
+        return 0
+    if args.command == "promote":
+        try:
+            result = promote_graph_pack_set(
+                staged_packs_dir=Path(args.staged_packs_dir),
+                active_packs_dir=Path(args.active_packs_dir),
+                backup_packs_dir=Path(args.backup_packs_dir) if args.backup_packs_dir else None,
+            )
+        except GraphPackManifestError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        payload = result.to_mapping()
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            backup = result.backup_packs_dir or "<none>"
+            print(f"promoted {', '.join(result.promoted_pack_ids)}; backup: {backup}")
         return 0
     return 1
 
@@ -587,6 +719,24 @@ def _validate_relative_manifest_name(value: str, label: str) -> None:
     parts = value.replace("\\", "/").split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise GraphPackManifestError(f"graph pack manifest {label} is unsafe")
+
+
+def _paths_same(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left.absolute() == right.absolute()
+
+
+def _next_rollback_dir(active_packs_dir: Path) -> Path:
+    first = active_packs_dir.with_name(f"{active_packs_dir.name}.rollback")
+    if not first.exists():
+        return first
+    for index in range(2, 1000):
+        candidate = active_packs_dir.with_name(f"{active_packs_dir.name}.rollback-{index}")
+        if not candidate.exists():
+            return candidate
+    raise GraphPackManifestError("could not allocate graph packs rollback directory")
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through main() tests.
