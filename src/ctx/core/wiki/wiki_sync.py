@@ -12,6 +12,7 @@ Creates the wiki if it doesn't exist. Updates entity pages, index, and log.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from ctx.core.entity_types import (
     SUBJECT_TYPE_FOR_ENTITY_TYPE,
     entity_index_link,
 )
+from ctx.core.wiki.wiki_packs import discover_wiki_pack_manifests, write_wiki_overlay_pack
 from ctx.core.wiki.wiki_utils import SAFE_NAME_RE, get_field as _find_field
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_json, atomic_write_text
@@ -194,6 +196,27 @@ def _entity_page_path(wiki_path: str, subject_type: str, slug: str) -> Path:
     return Path(wiki_path) / f"{target}.md"
 
 
+def _emit_wiki_page_overlay(wiki_path: str, relpath: str, content: str) -> None:
+    """Mirror a legacy page write into a modular wiki overlay pack when enabled."""
+    packs_dir = Path(wiki_path) / "wiki-packs"
+    entries = discover_wiki_pack_manifests(packs_dir)
+    if not entries:
+        return
+    base = entries[0].manifest
+    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    stem = relpath.removesuffix(".md").replace("/", "-").replace("\\", "-")
+    pack_id = f"overlay-{timestamp}-{stem}-{content_hash}"
+    write_wiki_overlay_pack(
+        pack_dir=packs_dir / pack_id,
+        pack_id=pack_id,
+        base_export_id=base.base_export_id,
+        parent_export_id=base.base_export_id,
+        pages={relpath: content},
+        tombstones=[],
+    )
+
+
 def upsert_skill_page(
     wiki_path: str,
     skill_name: str,
@@ -297,6 +320,11 @@ Detected and loaded by skill-router.
             )
             atomic_write_text(page_path, content, encoding="utf-8")
 
+    _emit_wiki_page_overlay(
+        wiki_path,
+        f"{_entity_index_link(subject_type, skill_name)}.md",
+        content,
+    )
     return is_new
 
 

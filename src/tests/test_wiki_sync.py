@@ -33,6 +33,7 @@ import pytest
 
 from ctx.core import entity_types
 from ctx.core.wiki import wiki_sync
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -460,6 +461,26 @@ class TestUpsertSkillPage:
         content = (wiki / "entities" / "skills" / "my-skill.md").read_text(encoding="utf-8")
         assert "use_count: 1" in content
 
+    def test_new_page_emits_overlay_when_base_wiki_pack_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _pin_today(monkeypatch)
+        wiki = self._wiki(tmp_path)
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"entities/skills/existing.md": "# existing\n"},
+        )
+
+        wiki_sync.upsert_skill_page(str(wiki), "my-skill", self._skill_info())
+
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "entities/skills/my-skill.md" in merged
+        assert "title: my-skill" in merged["entities/skills/my-skill.md"]
+        assert "# my-skill" in merged["entities/skills/my-skill.md"]
+
     # --- update path ---
 
     def test_returns_false_for_existing_page(
@@ -482,6 +503,27 @@ class TestUpsertSkillPage:
         wiki_sync.upsert_skill_page(str(wiki), "my-skill", self._skill_info())
         updated = page.read_text(encoding="utf-8")
         assert "use_count: 4" in updated  # was 3, now 4
+
+    def test_update_emits_overlay_when_base_wiki_pack_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _pin_today(monkeypatch)
+        wiki = self._wiki(tmp_path)
+        page = wiki / "entities" / "skills" / "my-skill.md"
+        original = _minimal_skill_page()
+        page.write_text(original, encoding="utf-8")
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"entities/skills/my-skill.md": original},
+        )
+
+        wiki_sync.upsert_skill_page(str(wiki), "my-skill", self._skill_info())
+
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "use_count: 4" in merged["entities/skills/my-skill.md"]
 
     def test_update_bumps_updated_date(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
