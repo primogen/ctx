@@ -10,11 +10,13 @@ primitives used to stage overlay packs and periodic compacted base packs.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Any, Literal
 
 import networkx as nx
@@ -298,6 +300,56 @@ def compact_graph_packs(
     )
 
 
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m ctx.core.graph.graph_packs",
+        description="Manage ctx graph base and overlay packs.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    compact = sub.add_parser(
+        "compact",
+        help="Merge active base+overlay packs into one staged base pack.",
+    )
+    compact.add_argument("--packs-dir", required=True, help="Active graph packs directory")
+    compact.add_argument(
+        "--staged-pack-dir",
+        required=True,
+        help="Destination directory for the compacted base pack",
+    )
+    compact.add_argument("--base-export-id", required=True, help="New compacted base export id")
+    compact.add_argument("--config-hash", help="Override config hash; defaults to source base")
+    compact.add_argument("--model-id", help="Override model id; defaults to source base")
+    compact.add_argument("--created-at", help="Optional created_at value for the new manifest")
+    compact.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    args = parser.parse_args(argv)
+
+    if args.command == "compact":
+        try:
+            manifest = compact_graph_packs(
+                packs_dir=Path(args.packs_dir),
+                compacted_pack_dir=Path(args.staged_pack_dir),
+                base_export_id=args.base_export_id,
+                config_hash=args.config_hash,
+                model_id=args.model_id,
+                created_at=args.created_at,
+            )
+        except GraphPackManifestError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        payload = manifest.to_mapping()
+        payload["pack_dir"] = str(Path(args.staged_pack_dir))
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(
+                "compacted "
+                f"{manifest.pack_id}: {manifest.node_count} nodes, "
+                f"{manifest.edge_count} edges"
+            )
+        return 0
+    return 1
+
+
 def discover_pack_manifests(packs_dir: Path) -> list[GraphPackEntry]:
     """Discover and validate graph pack manifests under ``packs_dir``.
 
@@ -535,3 +587,7 @@ def _validate_relative_manifest_name(value: str, label: str) -> None:
     parts = value.replace("\\", "/").split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise GraphPackManifestError(f"graph pack manifest {label} is unsafe")
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through main() tests.
+    raise SystemExit(main())

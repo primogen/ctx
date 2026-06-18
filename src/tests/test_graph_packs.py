@@ -15,6 +15,7 @@ from ctx.core.graph.graph_packs import (
     load_merged_pack_graph,
     read_pack_manifest,
     sha256_file,
+    main,
     write_base_pack,
     write_overlay_pack,
     write_pack_manifest,
@@ -543,3 +544,63 @@ def test_compact_graph_packs_writes_staged_base_without_mutating_active_packs(
     assert compacted.graph["export_id"] == "export-2"
     assert compacted.graph["ctx_compacted_from_base_export_id"] == "export-1"
     assert compacted.graph["ctx_compacted_overlay_count"] == 1
+
+
+def test_main_compact_writes_json_report_and_staged_pack(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    active_packs = tmp_path / "active" / "packs"
+    base_dir = active_packs / "base-export-1"
+    overlay_dir = active_packs / "overlay-review"
+    base_dir.mkdir(parents=True)
+    (base_dir / "graph.json").write_text(
+        json.dumps({
+            "graph": {"export_id": "export-1"},
+            "nodes": [{"id": "skill:python"}, {"id": "skill:review"}],
+            "edges": [],
+        }),
+        encoding="utf-8",
+    )
+    write_pack_manifest(
+        base_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=base_dir,
+            pack_id="base-export-1",
+            pack_type="base",
+            base_export_id="export-1",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="model-a",
+            node_count=2,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+    write_overlay_pack(
+        pack_dir=overlay_dir,
+        pack_id="overlay-review",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="model-a",
+        nodes=[],
+        edges=[{"source": "skill:review", "target": "skill:python", "weight": 0.8}],
+        tombstones=[],
+    )
+    staged_pack = tmp_path / "staged" / "base-export-2"
+
+    rc = main([
+        "compact",
+        "--packs-dir", str(active_packs),
+        "--staged-pack-dir", str(staged_pack),
+        "--base-export-id", "export-2",
+        "--json",
+    ])
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["pack_id"] == "base-export-2"
+    assert output["base_export_id"] == "export-2"
+    graph = load_merged_pack_graph(tmp_path / "staged")
+    assert graph.has_edge("skill:review", "skill:python")
