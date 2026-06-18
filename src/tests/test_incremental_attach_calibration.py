@@ -12,6 +12,7 @@ from ctx.core.graph.incremental_attach import (
     main,
     render_calibration_markdown,
 )
+from ctx.core.graph.graph_packs import build_pack_manifest, load_merged_pack_graph, write_pack_manifest
 from ctx.core.graph.resolve_graph import load_graph
 from ctx.core.graph.vector_index import build_vector_index
 
@@ -203,6 +204,76 @@ def test_main_attach_writes_idempotent_overlay_used_by_resolver(tmp_path) -> Non
     assert overlay.read_text(encoding="utf-8").count("\n") == 2
     assert loaded_after_change.has_edge("skill:new-python", "skill:ruby-testing")
     assert not loaded_after_change.has_edge("skill:new-python", "skill:python-testing")
+
+
+def test_main_attach_writes_idempotent_overlay_pack(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:python-testing"],
+        content_hashes=["ha"],
+        vectors=np.asarray([[1.0, 0.0]], dtype="float32"),
+    ).save(index_dir)
+
+    packs_dir = tmp_path / "packs"
+    base_dir = packs_dir / "base-export-1"
+    base_dir.mkdir(parents=True)
+    graph_json = base_dir / "graph.json"
+    graph_json.write_text(
+        json.dumps({
+            "graph": {"export_id": "export-1"},
+            "nodes": [{"id": "skill:python-testing", "type": "skill"}],
+            "edges": [],
+        }),
+        encoding="utf-8",
+    )
+    write_pack_manifest(
+        base_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=base_dir,
+            pack_id="base-export-1",
+            pack_type="base",
+            base_export_id="export-1",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="model-a",
+            node_count=1,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+    overlay = tmp_path / "entity-overlays.jsonl"
+    args = [
+        "attach",
+        "--index-dir", str(index_dir),
+        "--overlay", str(overlay),
+        "--pack-root", str(packs_dir),
+        "--base-export-id", "export-1",
+        "--config-hash", "config-sha",
+        "--node-id", "skill:new-python",
+        "--label", "new-python",
+        "--type", "skill",
+        "--tag", "python",
+        "--text", "new python testing helper",
+        "--model-id", "model-a",
+        "--vector-json", "[1.0, 0.0]",
+        "--top-k", "1",
+        "--min-score", "0.5",
+        "--json",
+    ]
+
+    assert main(args) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["overlay_pack"]["status"] == "inserted"
+    assert main(args) == 0
+    second = json.loads(capsys.readouterr().out)
+
+    assert second["status"] == "unchanged"
+    assert second["overlay_pack"]["status"] == "unchanged"
+    assert len([path for path in packs_dir.iterdir() if path.name.startswith("overlay-")]) == 1
+    graph = load_merged_pack_graph(packs_dir)
+    assert graph.has_edge("skill:new-python", "skill:python-testing")
 
 
 def test_main_attach_default_min_score_matches_build_floor(tmp_path) -> None:

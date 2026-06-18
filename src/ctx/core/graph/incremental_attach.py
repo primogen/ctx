@@ -9,6 +9,7 @@ import hashlib
 import json
 from math import ceil
 from pathlib import Path
+import re
 import sys
 from typing import Any, Iterable
 
@@ -17,6 +18,7 @@ import numpy as np
 
 from ctx.core.graph.edge_scoring import type_affinity_score
 from ctx.core.graph.entity_overlays import upsert_overlay_record
+from ctx.core.graph.graph_packs import GRAPH_PACK_MANIFEST, write_overlay_pack
 from ctx.core.graph.vector_index import load_vector_index
 
 _PERCENTILES = (50, 60, 75, 90, 95)
@@ -141,6 +143,10 @@ def attach_entity(
     dry_run: bool = False,
     embedding_backend: str = "sentence-transformers",
     embedding_model: str | None = None,
+    pack_root: Path | None = None,
+    base_export_id: str | None = None,
+    parent_export_id: str | None = None,
+    config_hash: str | None = None,
 ) -> dict[str, Any]:
     """Attach one new/updated entity to an existing semantic vector index."""
     meta = _read_index_meta(index_dir)
@@ -190,7 +196,16 @@ def attach_entity(
         ],
     )
     status = "dry-run" if dry_run else upsert_overlay_record(overlay_path, record)
-    return {"status": status, "record": record}
+    result = {"status": status, "record": record}
+    if pack_root is not None and not dry_run:
+        result["overlay_pack"] = _write_attach_pack(
+            pack_root=pack_root,
+            record=record,
+            base_export_id=base_export_id,
+            parent_export_id=parent_export_id,
+            config_hash=config_hash,
+        )
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -221,6 +236,16 @@ def main(argv: list[str] | None = None) -> int:
     attach.add_argument("--top-k", type=int, default=20)
     attach.add_argument("--min-score", type=float)
     attach.add_argument("--min-final-weight", type=float, default=_DEFAULT_MIN_FINAL_WEIGHT)
+    attach.add_argument(
+        "--pack-root",
+        help="Optional graph packs directory; writes an immutable overlay pack for this attach",
+    )
+    attach.add_argument("--base-export-id", help="Base graph export id for --pack-root")
+    attach.add_argument(
+        "--parent-export-id",
+        help="Parent graph export id for --pack-root; defaults to --base-export-id",
+    )
+    attach.add_argument("--config-hash", help="Graph config hash for --pack-root")
     attach.add_argument("--dry-run", action="store_true", help="Print the overlay record without writing")
     attach.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args(argv)
@@ -256,6 +281,10 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 embedding_backend=args.embedding_backend,
                 embedding_model=args.embedding_model,
+                pack_root=Path(args.pack_root) if args.pack_root else None,
+                base_export_id=args.base_export_id,
+                parent_export_id=args.parent_export_id,
+                config_hash=args.config_hash,
             )
         except Exception as exc:  # noqa: BLE001 - CLI reports concise errors.
             print(f"error: {exc}", file=sys.stderr)
@@ -329,6 +358,49 @@ def _resolve_attach_vector(
             f"--model-id {model_id!r} does not match embedder {resolved_model_id!r}"
         )
     return embedder.embed([text]), resolved_model_id, _content_hash(text)
+
+
+def _write_attach_pack(
+    *,
+    pack_root: Path,
+    record: dict[str, Any],
+    base_export_id: str | None,
+    parent_export_id: str | None,
+    config_hash: str | None,
+) -> dict[str, str]:
+    if not base_export_id:
+        raise ValueError("--base-export-id is required when --pack-root is used")
+    if not config_hash:
+        raise ValueError("--config-hash is required when --pack-root is used")
+    pack_id = _attach_pack_id(record)
+    pack_dir = pack_root / pack_id
+    manifest_path = pack_dir / GRAPH_PACK_MANIFEST
+    if manifest_path.exists():
+        return {"status": "unchanged", "pack_id": pack_id, "path": str(pack_dir)}
+
+    created_at = record.get("created_at")
+    write_overlay_pack(
+        pack_dir=pack_dir,
+        pack_id=pack_id,
+        base_export_id=base_export_id,
+        parent_export_id=parent_export_id or base_export_id,
+        config_hash=config_hash,
+        model_id=str(record["model_id"]),
+        nodes=list(record.get("nodes") or []),
+        edges=list(record.get("edges") or []),
+        tombstones=[],
+        created_at=str(created_at) if created_at else None,
+    )
+    return {"status": "inserted", "pack_id": pack_id, "path": str(pack_dir)}
+
+
+def _attach_pack_id(record: dict[str, Any]) -> str:
+    node_id = str(record.get("node_id") or "entity")
+    content_hash = str(record.get("content_hash") or _content_hash(json.dumps(record, sort_keys=True)))
+    safe_node = re.sub(r"[^A-Za-z0-9._-]+", "-", node_id).strip(".-_").lower()
+    if not safe_node:
+        safe_node = "entity"
+    return f"overlay-{safe_node}-{content_hash[:16]}"
 
 
 def _parse_vector_json(vector_json: str) -> np.ndarray:
