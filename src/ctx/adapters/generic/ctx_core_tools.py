@@ -41,7 +41,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from ctx.adapters.generic.providers import ToolCall, ToolDefinition
 from ctx.adapters.generic.runtime_lifecycle import RuntimeLifecycleStore
@@ -62,9 +62,58 @@ _logger = logging.getLogger(__name__)
 # anything else falls back to its normal tool_executor.
 _NAMESPACE = f"ctx{TOOL_SEPARATOR}"
 _FILE_SIGNATURE_SAMPLE_BYTES = 64 * 1024
+SUPPORTED_RESPONSE_FORMATS = ("json", "gcf")
+_RESPONSE_FORMAT_PROPERTY = {
+    "type": "string",
+    "enum": list(SUPPORTED_RESPONSE_FORMATS),
+    "description": (
+        "Optional response codec for large read-only responses. Default json "
+        "preserves the stable ctx contract; gcf requires the optional "
+        "claude-ctx[gcf] extra."
+    ),
+}
 
 FileSignature = tuple[int, int, str]
 GraphSignature = tuple[FileSignature | None, FileSignature | None]
+
+
+def _response_format_from_args(args: Mapping[str, Any]) -> str:
+    raw = args.get("_response_format", args.get("output_format", "json"))
+    requested = str(raw or "json").strip().lower()
+    return requested or "json"
+
+
+def _encode_response(data: Mapping[str, Any], response_format: str) -> str:
+    requested = str(response_format or "json").strip().lower()
+    if requested == "json":
+        return json.dumps(data)
+    if requested != "gcf":
+        return json.dumps({
+            "error": (
+                f"unsupported response format {response_format!r}; expected one of "
+                f"{', '.join(SUPPORTED_RESPONSE_FORMATS)}"
+            ),
+            "response_format": "json",
+        })
+
+    try:
+        from gcf import encode_generic  # type: ignore[import-not-found]
+    except Exception:
+        return json.dumps({
+            "error": (
+                "GCF response format requires optional dependency gcf-python. "
+                "Install with `pip install \"claude-ctx[gcf]\"`."
+            ),
+            "response_format": "json",
+        })
+
+    try:
+        return str(encode_generic(dict(data)))
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({
+            "error": f"GCF response encoding failed: {exc}",
+            "response_format": "json",
+        })
 
 
 class CtxCoreToolbox:
@@ -147,6 +196,8 @@ class CtxCoreToolbox:
                                 "Default false keeps recommendations latency-safe."
                             ),
                         },
+                        "output_format": dict(_RESPONSE_FORMAT_PROPERTY),
+                        "_response_format": dict(_RESPONSE_FORMAT_PROPERTY),
                     },
                     "required": ["query"],
                 },
@@ -185,6 +236,8 @@ class CtxCoreToolbox:
                             "minimum": 1,
                             "maximum": 50,
                         },
+                        "output_format": dict(_RESPONSE_FORMAT_PROPERTY),
+                        "_response_format": dict(_RESPONSE_FORMAT_PROPERTY),
                     },
                     "required": ["seeds"],
                 },
@@ -207,6 +260,8 @@ class CtxCoreToolbox:
                             "minimum": 1,
                             "maximum": 100,
                         },
+                        "output_format": dict(_RESPONSE_FORMAT_PROPERTY),
+                        "_response_format": dict(_RESPONSE_FORMAT_PROPERTY),
                     },
                     "required": ["query"],
                 },
@@ -231,6 +286,8 @@ class CtxCoreToolbox:
                                 "Use it to disambiguate duplicate slugs."
                             ),
                         },
+                        "output_format": dict(_RESPONSE_FORMAT_PROPERTY),
+                        "_response_format": dict(_RESPONSE_FORMAT_PROPERTY),
                     },
                     "required": ["slug"],
                 },
@@ -365,12 +422,12 @@ class CtxCoreToolbox:
             if model_provider or model
             else []
         )
-        return json.dumps({
+        return _encode_response({
             "query": query,
             "tags": tags,
             "results": results,
             "companion_harnesses": companion_harnesses,
-        })
+        }, _response_format_from_args(args))
 
     def _dispatch_graph_query(self, args: dict[str, Any]) -> str:
         seeds_raw = args.get("seeds") or []
@@ -403,7 +460,10 @@ class CtxCoreToolbox:
             }
             for r in raw
         ]
-        return json.dumps({"seeds": seeds, "results": results})
+        return _encode_response(
+            {"seeds": seeds, "results": results},
+            _response_format_from_args(args),
+        )
 
     def _dispatch_wiki_search(self, args: dict[str, Any]) -> str:
         query = str(args.get("query", "")).strip()
@@ -435,7 +495,10 @@ class CtxCoreToolbox:
             }
             for p in hits
         ]
-        return json.dumps({"query": query, "results": results})
+        return _encode_response(
+            {"query": query, "results": results},
+            _response_format_from_args(args),
+        )
 
     def _dispatch_wiki_get(self, args: dict[str, Any]) -> str:
         slug = str(args.get("slug", "")).strip()
@@ -466,7 +529,12 @@ class CtxCoreToolbox:
 
         for candidate_type, path, wikilink in candidates:
             if path.is_file():
-                return self._serialise_page(path, candidate_type, wikilink)
+                return self._serialise_page(
+                    path,
+                    candidate_type,
+                    wikilink,
+                    _response_format_from_args(args),
+                )
 
         return json.dumps({
             "error": f"no entity page found for slug {slug!r}",
@@ -561,7 +629,13 @@ class CtxCoreToolbox:
             raise ValueError("session_id is required")
         return supplied
 
-    def _serialise_page(self, path: Path, entity_type: str, wikilink: str) -> str:
+    def _serialise_page(
+        self,
+        path: Path,
+        entity_type: str,
+        wikilink: str,
+        response_format: str,
+    ) -> str:
         from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body  # noqa: PLC0415
 
         try:
@@ -569,14 +643,14 @@ class CtxCoreToolbox:
         except OSError as exc:
             return json.dumps({"error": f"could not read {path}: {exc}"})
         fm, body = parse_frontmatter_and_body(text)
-        return json.dumps({
+        return _encode_response({
             "slug": path.stem,
             "entity_type": entity_type,
             "wikilink": wikilink,
             "path": str(path),
             "frontmatter": fm,
             "body": body,
-        })
+        }, response_format)
 
     # ── Lazy caches ─────────────────────────────────────────────────────
 

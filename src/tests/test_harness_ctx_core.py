@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import networkx as nx
@@ -296,6 +298,27 @@ class TestToolDefinitions:
         )
         assert td.parameters["required"] == ["seeds"]
 
+    def test_read_tools_expose_optional_response_format(
+        self,
+        toolbox: CtxCoreToolbox,
+    ) -> None:
+        read_tools = {
+            "ctx__recommend_bundle",
+            "ctx__graph_query",
+            "ctx__wiki_search",
+            "ctx__wiki_get",
+        }
+        by_name = {definition.name: definition for definition in toolbox.tool_definitions()}
+
+        for tool_name in read_tools:
+            schema = by_name[tool_name].parameters
+            output_format = schema["properties"]["output_format"]
+            assert output_format["enum"] == ["json", "gcf"]
+            assert "output_format" not in schema.get("required", [])
+            response_format = schema["properties"]["_response_format"]
+            assert response_format["enum"] == ["json", "gcf"]
+            assert "_response_format" not in schema.get("required", [])
+
 
 # ── Namespace + dispatch ───────────────────────────────────────────────────
 
@@ -314,6 +337,90 @@ class TestDispatchRouting:
     def test_dispatch_unknown_tool(self, toolbox: CtxCoreToolbox) -> None:
         with pytest.raises(ValueError, match="unknown ctx-core tool"):
             toolbox.dispatch(ToolCall(id="c1", name="ctx__bogus", arguments={}))
+
+    def test_read_tools_default_to_json(self, toolbox: CtxCoreToolbox) -> None:
+        raw = toolbox.dispatch(ToolCall(
+            id="c1",
+            name="ctx__wiki_search",
+            arguments={"query": "python", "top_n": 1},
+        ))
+
+        payload = json.loads(raw)
+        assert payload["query"] == "python"
+        assert payload["results"]
+
+    def test_read_tools_can_opt_into_gcf(
+        self,
+        toolbox: CtxCoreToolbox,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setitem(
+            sys.modules,
+            "gcf",
+            SimpleNamespace(
+                encode_generic=lambda data: f"GCF profile=generic\nquery={data['query']}"
+            ),
+        )
+
+        raw = toolbox.dispatch(ToolCall(
+            id="c1",
+            name="ctx__wiki_search",
+            arguments={
+                "query": "python",
+                "top_n": 1,
+                "_response_format": "gcf",
+            },
+        ))
+
+        assert raw.startswith("GCF profile=generic\n")
+        assert "query=python" in raw
+
+    def test_read_tools_accept_public_output_format_alias(
+        self,
+        toolbox: CtxCoreToolbox,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setitem(
+            sys.modules,
+            "gcf",
+            SimpleNamespace(
+                encode_generic=lambda data: f"GCF profile=generic\nquery={data['query']}"
+            ),
+        )
+
+        raw = toolbox.dispatch(ToolCall(
+            id="c1",
+            name="ctx__wiki_search",
+            arguments={
+                "query": "python",
+                "top_n": 1,
+                "output_format": "gcf",
+            },
+        ))
+
+        assert raw.startswith("GCF profile=generic\n")
+        assert "query=python" in raw
+
+    def test_gcf_opt_in_without_codec_returns_json_error(
+        self,
+        toolbox: CtxCoreToolbox,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setitem(sys.modules, "gcf", None)
+
+        raw = toolbox.dispatch(ToolCall(
+            id="c1",
+            name="ctx__wiki_search",
+            arguments={
+                "query": "python",
+                "top_n": 1,
+                "_response_format": "gcf",
+            },
+        ))
+
+        payload = json.loads(raw)
+        assert "gcf-python" in payload["error"]
+        assert payload["response_format"] == "json"
 
 
 class TestRuntimeLifecycle:
