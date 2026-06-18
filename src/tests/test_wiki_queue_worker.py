@@ -23,6 +23,7 @@ from ctx.core.graph.graph_packs import (
 from ctx.core.graph.resolve_graph import load_graph, resolve_by_seeds
 from ctx.core.graph.vector_index import build_vector_index
 from ctx.core.wiki import wiki_queue, wiki_queue_worker
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack
 
 
 def _write_entity(wiki: Path, relpath: str, text: str) -> Path:
@@ -382,6 +383,38 @@ def test_process_next_entity_delete_queues_full_graph_refresh(
         "incremental": False,
         "source": "entity-delete",
     }
+
+
+def test_process_next_entity_delete_tombstones_wiki_pack_page(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    entity_path = wiki / "entities" / "skills" / "deleted.md"
+    packs_dir = wiki / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"entities/skills/deleted.md": "# deleted\n"},
+    )
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="deleted",
+        entity_path=entity_path,
+        content="",
+        action="delete",
+        source="test",
+        now=10.0,
+    )
+    monkeypatch.setattr(wiki_queue_worker, "update_index", MagicMock())
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert "entities/skills/deleted.md" not in load_merged_wiki_pages(packs_dir)
 
 
 def test_process_next_retries_hash_mismatch(
