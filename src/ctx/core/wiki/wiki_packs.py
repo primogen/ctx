@@ -1,0 +1,369 @@
+"""Modular LLM-wiki page packs.
+
+Wiki packs are the page-level counterpart to graph packs: a base pack contains
+an immutable snapshot of wiki markdown pages, and overlay packs contain small
+page upserts plus tombstones. Consumers can read the merged view without
+rewriting or extracting the full shipped wiki tarball for every entity update.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+from ctx.utils._fs_utils import atomic_write_text
+
+WIKI_PACK_MANIFEST = "wiki-pack-manifest.json"
+WIKI_PACK_SCHEMA_VERSION = 1
+WIKI_PACK_TYPES = frozenset({"base", "overlay"})
+
+WikiPackType = Literal["base", "overlay"]
+
+
+class WikiPackManifestError(ValueError):
+    """Raised when a wiki pack manifest or artifact is malformed."""
+
+
+@dataclass(frozen=True)
+class WikiPackManifest:
+    """Validated manifest for one wiki page pack."""
+
+    pack_id: str
+    pack_type: WikiPackType
+    base_export_id: str
+    parent_export_id: str | None
+    page_count: int
+    tombstone_count: int
+    checksums: dict[str, str]
+    created_at: str | None = None
+
+    @classmethod
+    def from_mapping(cls, payload: dict[str, Any]) -> "WikiPackManifest":
+        if payload.get("schema_version") != WIKI_PACK_SCHEMA_VERSION:
+            raise WikiPackManifestError("wiki pack manifest schema_version must be 1")
+        pack_type = payload.get("pack_type")
+        if pack_type not in WIKI_PACK_TYPES:
+            raise WikiPackManifestError("wiki pack manifest pack_type must be base or overlay")
+        manifest = cls(
+            pack_id=_required_str(payload, "pack_id"),
+            pack_type=pack_type,
+            base_export_id=_required_str(payload, "base_export_id"),
+            parent_export_id=_optional_str(payload, "parent_export_id"),
+            page_count=_nonnegative_int(payload, "page_count"),
+            tombstone_count=_nonnegative_int(payload, "tombstone_count", default=0),
+            checksums=_checksums(payload.get("checksums")),
+            created_at=_optional_str(payload, "created_at"),
+        )
+        manifest.validate()
+        return manifest
+
+    def validate(self) -> None:
+        _validate_relative_name(self.pack_id, "pack_id")
+        if self.pack_type == "base" and self.parent_export_id:
+            raise WikiPackManifestError("base wiki packs must not set parent_export_id")
+        if self.pack_type == "overlay" and not self.parent_export_id:
+            raise WikiPackManifestError("overlay wiki packs must set parent_export_id")
+        if not self.checksums:
+            raise WikiPackManifestError("wiki pack manifest checksums must not be empty")
+
+    def to_mapping(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema_version": WIKI_PACK_SCHEMA_VERSION,
+            "pack_id": self.pack_id,
+            "pack_type": self.pack_type,
+            "base_export_id": self.base_export_id,
+            "parent_export_id": self.parent_export_id,
+            "page_count": self.page_count,
+            "tombstone_count": self.tombstone_count,
+            "checksums": dict(sorted(self.checksums.items())),
+        }
+        if self.created_at is not None:
+            payload["created_at"] = self.created_at
+        return payload
+
+
+@dataclass(frozen=True)
+class WikiPackEntry:
+    """A validated wiki pack and its directory."""
+
+    path: Path
+    manifest: WikiPackManifest
+
+
+def write_wiki_base_pack(
+    *,
+    pack_dir: Path,
+    pack_id: str,
+    base_export_id: str,
+    pages: dict[str, str],
+    created_at: str | None = None,
+) -> WikiPackManifest:
+    """Write an immutable base wiki page pack."""
+    return _write_wiki_pack(
+        pack_dir=pack_dir,
+        pack_id=pack_id,
+        pack_type="base",
+        base_export_id=base_export_id,
+        parent_export_id=None,
+        pages=pages,
+        tombstones=[],
+        created_at=created_at,
+    )
+
+
+def write_wiki_overlay_pack(
+    *,
+    pack_dir: Path,
+    pack_id: str,
+    base_export_id: str,
+    parent_export_id: str,
+    pages: dict[str, str],
+    tombstones: list[str],
+    created_at: str | None = None,
+) -> WikiPackManifest:
+    """Write a small wiki overlay pack containing page upserts and tombstones."""
+    return _write_wiki_pack(
+        pack_dir=pack_dir,
+        pack_id=pack_id,
+        pack_type="overlay",
+        base_export_id=base_export_id,
+        parent_export_id=parent_export_id,
+        pages=pages,
+        tombstones=tombstones,
+        created_at=created_at,
+    )
+
+
+def read_wiki_pack_manifest(path: Path) -> WikiPackManifest:
+    """Read and validate ``wiki-pack-manifest.json``."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise WikiPackManifestError(f"wiki pack manifest is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise WikiPackManifestError("wiki pack manifest must be a JSON object")
+    return WikiPackManifest.from_mapping(payload)
+
+
+def discover_wiki_pack_manifests(packs_dir: Path) -> list[WikiPackEntry]:
+    """Discover one base wiki pack plus overlays under ``packs_dir``."""
+    if not packs_dir.is_dir():
+        return []
+    entries: list[WikiPackEntry] = []
+    for child in sorted(packs_dir.iterdir(), key=lambda item: item.name):
+        manifest_path = child / WIKI_PACK_MANIFEST
+        if not child.is_dir() or not manifest_path.is_file():
+            continue
+        manifest = read_wiki_pack_manifest(manifest_path)
+        _verify_pack_checksums(child, manifest)
+        entries.append(WikiPackEntry(path=child, manifest=manifest))
+
+    base_entries = [entry for entry in entries if entry.manifest.pack_type == "base"]
+    overlay_entries = [entry for entry in entries if entry.manifest.pack_type == "overlay"]
+    if len(base_entries) > 1:
+        raise WikiPackManifestError("wiki packs must contain at most one base pack")
+    if not base_entries and overlay_entries:
+        raise WikiPackManifestError("wiki overlay packs require a base pack")
+    if not base_entries:
+        return []
+    base = base_entries[0]
+    for overlay in overlay_entries:
+        if overlay.manifest.parent_export_id != base.manifest.base_export_id:
+            raise WikiPackManifestError(
+                f"overlay {overlay.manifest.pack_id} parent_export_id "
+                f"{overlay.manifest.parent_export_id!r} does not match base export "
+                f"{base.manifest.base_export_id!r}"
+            )
+        if overlay.manifest.base_export_id != base.manifest.base_export_id:
+            raise WikiPackManifestError(
+                f"overlay {overlay.manifest.pack_id} base_export_id "
+                f"{overlay.manifest.base_export_id!r} does not match active base "
+                f"{base.manifest.base_export_id!r}"
+            )
+    return [base, *sorted(overlay_entries, key=lambda entry: entry.manifest.pack_id)]
+
+
+def load_merged_wiki_pages(packs_dir: Path) -> dict[str, str]:
+    """Return wiki-relative markdown pages after applying overlay packs."""
+    entries = discover_wiki_pack_manifests(packs_dir)
+    if not entries:
+        return {}
+    pages: dict[str, str] = {}
+    for entry in entries:
+        for row in _read_jsonl_objects(entry.path / "pages.jsonl"):
+            relpath = _normalise_page_path(_required_str(row, "path"))
+            text = _required_str(row, "text")
+            expected_sha = row.get("sha256")
+            if isinstance(expected_sha, str) and expected_sha != _sha256_text(text):
+                raise WikiPackManifestError(f"wiki page checksum mismatch: {relpath}")
+            pages[relpath] = text
+        for row in _read_jsonl_objects(entry.path / "tombstones.jsonl"):
+            pages.pop(_normalise_page_path(_required_str(row, "path")), None)
+    return pages
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_wiki_pack(
+    *,
+    pack_dir: Path,
+    pack_id: str,
+    pack_type: WikiPackType,
+    base_export_id: str,
+    parent_export_id: str | None,
+    pages: dict[str, str],
+    tombstones: list[str],
+    created_at: str | None,
+) -> WikiPackManifest:
+    _validate_relative_name(pack_id, "pack_id")
+    manifest_path = pack_dir / WIKI_PACK_MANIFEST
+    if manifest_path.exists():
+        raise WikiPackManifestError(f"wiki pack already exists: {pack_id}")
+    pack_dir.mkdir(parents=True, exist_ok=True)
+    page_rows = [
+        {
+            "path": relpath,
+            "sha256": _sha256_text(text),
+            "text": text,
+        }
+        for relpath, text in sorted(
+            (_normalise_page_path(path), value) for path, value in pages.items()
+        )
+    ]
+    tombstone_rows = [
+        {"path": _normalise_page_path(path)}
+        for path in sorted(tombstones)
+    ]
+    artifact_paths: list[str] = []
+    _write_jsonl(pack_dir / "pages.jsonl", page_rows)
+    artifact_paths.append("pages.jsonl")
+    _write_jsonl(pack_dir / "tombstones.jsonl", tombstone_rows)
+    artifact_paths.append("tombstones.jsonl")
+    manifest = WikiPackManifest(
+        pack_id=pack_id,
+        pack_type=pack_type,
+        base_export_id=base_export_id,
+        parent_export_id=parent_export_id,
+        page_count=len(page_rows),
+        tombstone_count=len(tombstone_rows),
+        checksums={
+            name: sha256_file(pack_dir / name)
+            for name in artifact_paths
+        },
+        created_at=created_at,
+    )
+    manifest.validate()
+    atomic_write_text(
+        manifest_path,
+        json.dumps(manifest.to_mapping(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def _verify_pack_checksums(pack_dir: Path, manifest: WikiPackManifest) -> None:
+    for name, expected in manifest.checksums.items():
+        path = pack_dir / name
+        if not path.is_file():
+            raise WikiPackManifestError(
+                f"wiki pack {manifest.pack_id} checksum target missing: {name}"
+            )
+        if sha256_file(path) != expected:
+            raise WikiPackManifestError(
+                f"wiki pack {manifest.pack_id} checksum mismatch for {name}"
+            )
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    atomic_write_text(
+        path,
+        "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def _read_jsonl_objects(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise WikiPackManifestError(f"{path} line {lineno} is not valid JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise WikiPackManifestError(f"{path} line {lineno} did not contain a JSON object")
+        rows.append(payload)
+    return rows
+
+
+def _normalise_page_path(value: str) -> str:
+    normalised = value.replace("\\", "/").strip()
+    _validate_relative_name(normalised, "page path")
+    if not normalised.endswith(".md"):
+        raise WikiPackManifestError("wiki pack page path must end with .md")
+    return normalised
+
+
+def _validate_relative_name(value: str, label: str) -> None:
+    path = Path(value)
+    if path.is_absolute() or value.startswith(("/", "\\")):
+        raise WikiPackManifestError(f"wiki pack manifest {label} must be relative")
+    parts = value.replace("\\", "/").split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise WikiPackManifestError(f"wiki pack manifest {label} is unsafe")
+
+
+def _required_str(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise WikiPackManifestError(f"wiki pack manifest {key} must be a non-empty string")
+    return value
+
+
+def _optional_str(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise WikiPackManifestError(f"wiki pack manifest {key} must be a string or null")
+    return value
+
+
+def _nonnegative_int(payload: dict[str, Any], key: str, *, default: int | None = None) -> int:
+    value = payload.get(key, default)
+    if not isinstance(value, int) or value < 0:
+        raise WikiPackManifestError(f"wiki pack manifest {key} must be a non-negative integer")
+    return value
+
+
+def _checksums(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise WikiPackManifestError("wiki pack manifest checksums must be an object")
+    result: dict[str, str] = {}
+    for raw_name, raw_digest in value.items():
+        if not isinstance(raw_name, str):
+            raise WikiPackManifestError("wiki pack manifest checksum names must be strings")
+        name = raw_name.replace("\\", "/").strip()
+        _validate_relative_name(name, "checksum name")
+        if not isinstance(raw_digest, str) or len(raw_digest) != 64:
+            raise WikiPackManifestError(
+                f"wiki pack manifest checksum for {name} must be a SHA-256 hex digest"
+            )
+        result[name] = raw_digest
+    return result
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
