@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ctx.core.graph.entity_overlays import append_overlay_tombstone
+from ctx.core.graph.graph_packs import GraphPackManifestError, discover_pack_manifests
 from ctx.core.graph.incremental_attach import attach_entity
 from ctx.core.wiki.artifact_promotion import promote_staged_artifact
 from ctx.core.wiki import wiki_queue
@@ -208,11 +209,33 @@ def _try_incremental_attach(
             top_k=int(cfg.graph_semantic_top_k),
             min_score=float(cfg.graph_semantic_build_floor),
             min_final_weight=_DEFAULT_ATTACH_MIN_FINAL_WEIGHT,
+            **_graph_pack_attach_kwargs(wiki_path),
         )
     except Exception as exc:  # noqa: BLE001 - attach is derived, not source of truth.
         return f"incremental attach skipped ({exc})"
     status = result.get("status", "unknown")
+    overlay_pack = result.get("overlay_pack")
+    if isinstance(overlay_pack, dict):
+        pack_status = overlay_pack.get("status", "unknown")
+        return f"incremental attach {status}; overlay pack {pack_status}"
     return f"incremental attach {status}"
+
+
+def _graph_pack_attach_kwargs(wiki_path: Path) -> dict[str, Any]:
+    packs_dir = wiki_path / "graphify-out" / "packs"
+    try:
+        entries = discover_pack_manifests(packs_dir)
+    except GraphPackManifestError:
+        return {}
+    if not entries:
+        return {}
+    base = entries[0].manifest
+    return {
+        "pack_root": packs_dir,
+        "base_export_id": base.base_export_id,
+        "parent_export_id": base.base_export_id,
+        "config_hash": base.config_hash,
+    }
 
 
 def _semantic_vector_index_dir(wiki_path: Path) -> Path:

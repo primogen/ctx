@@ -15,6 +15,11 @@ import pytest
 from networkx.readwrite import node_link_data
 
 from ctx.core.graph.entity_overlays import active_overlay_records, load_overlay_records
+from ctx.core.graph.graph_packs import (
+    build_pack_manifest,
+    load_merged_pack_graph,
+    write_pack_manifest,
+)
 from ctx.core.graph.resolve_graph import load_graph, resolve_by_seeds
 from ctx.core.graph.vector_index import build_vector_index
 from ctx.core.wiki import wiki_queue, wiki_queue_worker
@@ -49,6 +54,29 @@ def _write_base_graph_for_overlay(wiki: Path) -> Path:
         encoding="utf-8",
     )
     return graph_path
+
+
+def _write_base_graph_pack_for_overlay(wiki: Path, graph_path: Path) -> Path:
+    packs_dir = wiki / "graphify-out" / "packs"
+    base_dir = packs_dir / "base-export-1"
+    base_dir.mkdir(parents=True)
+    (base_dir / "graph.json").write_text(graph_path.read_text(encoding="utf-8"), encoding="utf-8")
+    write_pack_manifest(
+        base_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=base_dir,
+            pack_id="base-export-1",
+            pack_type="base",
+            base_export_id="export-1",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="test-model",
+            node_count=2,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+    return packs_dir
 
 
 def _build_vector_index_for_overlay(wiki: Path) -> Path:
@@ -237,6 +265,40 @@ def test_process_next_entity_upsert_real_attach_writes_active_overlay_and_resolv
     assert graph.has_edge("skill:worker-python", "skill:python-testing")
     resolved = resolve_by_seeds(graph, ["python-testing"], max_hops=1, top_n=5)
     assert any(item["name"] == "worker-python" for item in resolved)
+
+
+def test_process_next_entity_upsert_writes_overlay_pack_when_base_pack_exists(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_path = _write_base_graph_for_overlay(wiki)
+    packs_dir = _write_base_graph_pack_for_overlay(wiki, graph_path)
+    _build_vector_index_for_overlay(wiki)
+    entity_text = "---\ntags:\n  - python\n  - testing\n---\n# worker-python\n"
+    entity_path = _write_entity(wiki, "entities/skills/worker-python.md", entity_text)
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="worker-python",
+        entity_path=entity_path,
+        content=entity_text,
+        action="created",
+        source="test",
+        now=10.0,
+    )
+    monkeypatch.setattr(wiki_queue_worker, "update_index", MagicMock())
+    _patch_test_embedder(monkeypatch)
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert "incremental attach inserted; overlay pack inserted" in result.message
+    overlay_packs = [path for path in packs_dir.iterdir() if path.name.startswith("overlay-")]
+    assert len(overlay_packs) == 1
+    graph = load_merged_pack_graph(packs_dir)
+    assert graph.has_edge("skill:worker-python", "skill:python-testing")
 
 
 def test_process_next_entity_upsert_does_not_fail_when_incremental_attach_fails(
