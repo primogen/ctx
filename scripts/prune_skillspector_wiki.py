@@ -143,6 +143,7 @@ def build_pruned_artifacts(
     if apply:
         atomic_write_text(root_communities, json.dumps(communities, indent=2) + "\n")
         atomic_write_bytes(root_catalog, _gzip_json_bytes(pruned_catalog))
+        atomic_write_bytes(audit_path, _audit_bytes(audit_records.values()))
         _refresh_preview_metadata(
             graph_dir,
             export_id=export_id,
@@ -258,10 +259,13 @@ def _prune_graph(graph: dict[str, Any], remove_node_ids: set[str]) -> dict[str, 
         for edge in _graph_edges(graph)
         if edge.get("source") not in remove_node_ids and edge.get("target") not in remove_node_ids
     ]
-    pruned = dict(graph)
+    graph_meta = graph.get("graph")
+    pruned: dict[str, Any] = {"graph": graph_meta if isinstance(graph_meta, dict) else {}}
+    for key, value in graph.items():
+        if key not in {"graph", "nodes", "edges", "links"}:
+            pruned[key] = value
     pruned["nodes"] = nodes
     pruned["edges"] = edges
-    pruned.pop("links", None)
     return pruned
 
 
@@ -414,7 +418,7 @@ def _validate_tarball(candidate: Path) -> None:
 
 def _json_bytes(data: Any, *, compact: bool) -> bytes:
     if compact:
-        return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return json.dumps(data, separators=(",", ":")).encode("utf-8")
     return (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 

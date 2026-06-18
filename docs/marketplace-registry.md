@@ -44,7 +44,7 @@ still require an explicit review if replacement content is proposed.
 ```yaml
 name: shipped-skills
 type: shipped-index
-shipped_entries: 89465
+shipped_entries: 85356
 local_index: graph/<skill-index>.json.gz
 hydrated_wiki: external-catalogs/<source>/catalog.json
 refresh: on-demand

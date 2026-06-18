@@ -4,15 +4,15 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![PyPI](https://img.shields.io/pypi/v/claude-ctx.svg)](https://pypi.org/project/claude-ctx/)
 [![Tests](https://img.shields.io/badge/Tests-4086_collected-brightgreen.svg)](https://github.com/stevesolun/ctx/actions/workflows/test.yml)
-[![Graph](https://img.shields.io/badge/Graph-102%2C928_nodes_/_2.9M_edges-red.svg)](https://stevesolun.github.io/ctx/knowledge-graph/)
-[![Skills](https://img.shields.io/badge/Skills-91%2C464-blue.svg)](https://stevesolun.github.io/ctx/catalog/?type=skill)
+[![Graph](https://img.shields.io/badge/Graph-98%2C547_nodes_/_2.6M_edges-red.svg)](https://stevesolun.github.io/ctx/knowledge-graph/)
+[![Skills](https://img.shields.io/badge/Skills-87%2C083-blue.svg)](https://stevesolun.github.io/ctx/catalog/?type=skill)
 [![Agents](https://img.shields.io/badge/Agents-467-purple.svg)](https://stevesolun.github.io/ctx/catalog/?type=agent)
 [![MCPs](https://img.shields.io/badge/MCPs-10%2C790-pink.svg)](https://stevesolun.github.io/ctx/catalog/?type=mcp-server)
 [![Harnesses](https://img.shields.io/badge/Harnesses-207-orange.svg)](https://stevesolun.github.io/ctx/catalog/?type=harness)
 [![Docs](https://img.shields.io/badge/docs-MkDocs_Material-blue.svg)](https://stevesolun.github.io/ctx/)
 [![Repo views](https://hits.sh/github.com/stevesolun/ctx.svg?label=repo%20views)](https://hits.sh/github.com/stevesolun/ctx/)
 
-ctx watches what you are building, walks a **102,928-node** graph, and
+ctx watches what you are building, walks a **98,547-node** graph, and
 recommends a small, top-scored bundle of skills, agents, and MCP servers for
 the current task. If you use your own local/API model instead of Claude Code,
 ctx has a separate harness setup flow: tell it the model and goal, review the
@@ -20,9 +20,9 @@ recommended harness, then install with dry-run/update/uninstall controls.
 
 Current shipped snapshot:
 
-- **91,464 skill entity pages**, with **89,465** hydrated installable `SKILL.md` bodies.
+- **87,083 skill entity pages**, with **85,356** hydrated installable `SKILL.md` bodies.
 - **467 agents**, **10,790 MCP servers**, and **207 harnesses**.
-- **2.9M graph edges** across semantic similarity, tags, slug tokens, source overlap, direct links, quality, usage, type affinity, and graph structure.
+- **2.6M graph edges** across semantic similarity, tags, slug tokens, source overlap, direct links, quality, usage, type affinity, and graph structure.
 - **28,612 long skill bodies** converted through the micro-skill gate instead of shipping raw long prompts.
 - Entity updates for skills, agents, MCPs, and harnesses print benefits/risks and skip replacement unless you explicitly approve the update.
 
@@ -66,7 +66,7 @@ ctx-init --graph --graph-install-mode full
 ```
 
 The full `wiki-graph.tar.gz` includes the shipped skill index,
-91,464 skill entity pages under `entities/skills/`, 89,465 hydrated
+87,083 skill entity pages under `entities/skills/`, 85,356 hydrated
 installable `SKILL.md` files under `converted/`,
 and 207 harness pages under
 `entities/harnesses/`.

@@ -50,14 +50,14 @@ _PUBLIC_DOCS_BASE_URL = os.environ.get(
     "https://stevesolun.github.io/ctx",
 ).rstrip("/")
 _GRAPH_DERIVED_STATS: dict[str, int] = {
-    "tag_edges": 897_784,
-    "token_edges": 433_245,
-    "hydrated_incident_edges": 2_605_721,
-    "hydrated_semantic_incident_edges": 1_500_648,
-    "cross_skill_agent_edges": 66_799,
-    "cross_skill_mcp_edges": 41_521,
+    "tag_edges": 765_286,
+    "token_edges": 400_139,
+    "hydrated_incident_edges": 2_344_452,
+    "hydrated_semantic_incident_edges": 1_380_352,
+    "cross_skill_agent_edges": 62_487,
+    "cross_skill_mcp_edges": 38_907,
     "cross_agent_mcp_edges": 229,
-    "harness_edges": 6_576,
+    "harness_edges": 5_858,
 }
 
 
