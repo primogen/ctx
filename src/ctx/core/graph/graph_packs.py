@@ -32,6 +32,14 @@ class GraphPackManifestError(ValueError):
 
 
 @dataclass(frozen=True)
+class GraphPackEntry:
+    """A validated graph pack manifest and its directory."""
+
+    path: Path
+    manifest: "GraphPackManifest"
+
+
+@dataclass(frozen=True)
 class GraphPackManifest:
     """Validated manifest for one graph pack directory."""
 
@@ -157,6 +165,50 @@ def write_pack_manifest(path: Path, manifest: GraphPackManifest) -> None:
     )
 
 
+def discover_pack_manifests(packs_dir: Path) -> list[GraphPackEntry]:
+    """Discover and validate graph pack manifests under ``packs_dir``.
+
+    The returned order is always the active base pack first, followed by
+    overlay packs sorted by pack id. This makes later merged-reader phases
+    deterministic without changing runtime graph loading yet.
+    """
+    if not packs_dir.is_dir():
+        return []
+    entries: list[GraphPackEntry] = []
+    for child in sorted(packs_dir.iterdir(), key=lambda item: item.name):
+        manifest_path = child / GRAPH_PACK_MANIFEST
+        if not child.is_dir() or not manifest_path.is_file():
+            continue
+        manifest = read_pack_manifest(manifest_path)
+        _verify_pack_checksums(child, manifest)
+        entries.append(GraphPackEntry(path=child, manifest=manifest))
+
+    base_entries = [entry for entry in entries if entry.manifest.pack_type == "base"]
+    overlay_entries = [entry for entry in entries if entry.manifest.pack_type == "overlay"]
+    if len(base_entries) > 1:
+        raise GraphPackManifestError("graph packs must contain at most one base pack")
+    if not base_entries and overlay_entries:
+        raise GraphPackManifestError("graph overlay packs require a base pack")
+    if not base_entries:
+        return []
+
+    base = base_entries[0]
+    for overlay in overlay_entries:
+        if overlay.manifest.parent_export_id != base.manifest.base_export_id:
+            raise GraphPackManifestError(
+                f"overlay {overlay.manifest.pack_id} parent_export_id "
+                f"{overlay.manifest.parent_export_id!r} does not match base export "
+                f"{base.manifest.base_export_id!r}"
+            )
+        if overlay.manifest.base_export_id != base.manifest.base_export_id:
+            raise GraphPackManifestError(
+                f"overlay {overlay.manifest.pack_id} base_export_id "
+                f"{overlay.manifest.base_export_id!r} does not match active base "
+                f"{base.manifest.base_export_id!r}"
+            )
+    return [base, *sorted(overlay_entries, key=lambda entry: entry.manifest.pack_id)]
+
+
 def sha256_file(path: Path) -> str:
     """Return SHA-256 hex digest for a file."""
     digest = hashlib.sha256()
@@ -164,6 +216,20 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _verify_pack_checksums(pack_dir: Path, manifest: GraphPackManifest) -> None:
+    for name, expected in manifest.checksums.items():
+        path = pack_dir / name
+        if not path.is_file():
+            raise GraphPackManifestError(
+                f"graph pack {manifest.pack_id} checksum target missing: {name}"
+            )
+        actual = sha256_file(path)
+        if actual != expected:
+            raise GraphPackManifestError(
+                f"graph pack {manifest.pack_id} checksum mismatch for {name}"
+            )
 
 
 def _required_str(payload: dict[str, Any], key: str) -> str:

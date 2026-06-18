@@ -9,6 +9,7 @@ from ctx.core.graph.graph_packs import (
     GraphPackManifest,
     GraphPackManifestError,
     build_pack_manifest,
+    discover_pack_manifests,
     read_pack_manifest,
     sha256_file,
     write_pack_manifest,
@@ -97,3 +98,122 @@ def test_manifest_rejects_bad_checksum_shape() -> None:
 
     with pytest.raises(GraphPackManifestError, match="SHA-256"):
         GraphPackManifest.from_mapping(payload)
+
+
+def test_discover_pack_manifests_orders_base_then_overlays(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "graph" / "packs"
+    base_dir = packs_dir / "base-export-1"
+    overlay_dir = packs_dir / "overlay-review-skill"
+    base_dir.mkdir(parents=True)
+    overlay_dir.mkdir()
+    (base_dir / "graph.json").write_text('{"nodes":[],"edges":[]}\n', encoding="utf-8")
+    (overlay_dir / "nodes.jsonl").write_text('{"id":"skill:review"}\n', encoding="utf-8")
+    write_pack_manifest(
+        base_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=base_dir,
+            pack_id="base-export-1",
+            pack_type="base",
+            base_export_id="export-1",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            node_count=0,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+    write_pack_manifest(
+        overlay_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=overlay_dir,
+            pack_id="overlay-review-skill",
+            pack_type="overlay",
+            base_export_id="export-1",
+            parent_export_id="export-1",
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            node_count=1,
+            edge_count=0,
+            artifact_paths=["nodes.jsonl"],
+            tombstone_count=2,
+        ),
+    )
+
+    discovered = discover_pack_manifests(packs_dir)
+
+    assert [entry.manifest.pack_id for entry in discovered] == [
+        "base-export-1",
+        "overlay-review-skill",
+    ]
+    assert discovered[1].manifest.tombstone_count == 2
+
+
+def test_discover_pack_manifests_rejects_overlay_parent_mismatch(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "packs"
+    base_dir = packs_dir / "base-export-1"
+    overlay_dir = packs_dir / "overlay-stale"
+    base_dir.mkdir(parents=True)
+    overlay_dir.mkdir()
+    (base_dir / "graph.json").write_text("{}", encoding="utf-8")
+    (overlay_dir / "nodes.jsonl").write_text("{}", encoding="utf-8")
+    write_pack_manifest(
+        base_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=base_dir,
+            pack_id="base-export-1",
+            pack_type="base",
+            base_export_id="export-1",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            node_count=0,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+    write_pack_manifest(
+        overlay_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=overlay_dir,
+            pack_id="overlay-stale",
+            pack_type="overlay",
+            base_export_id="export-1",
+            parent_export_id="old-export",
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            node_count=1,
+            edge_count=0,
+            artifact_paths=["nodes.jsonl"],
+        ),
+    )
+
+    with pytest.raises(GraphPackManifestError, match="parent_export_id"):
+        discover_pack_manifests(packs_dir)
+
+
+def test_discover_pack_manifests_rejects_checksum_drift(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "packs"
+    base_dir = packs_dir / "base-export-1"
+    base_dir.mkdir(parents=True)
+    graph_path = base_dir / "graph.json"
+    graph_path.write_text("{}", encoding="utf-8")
+    write_pack_manifest(
+        base_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=base_dir,
+            pack_id="base-export-1",
+            pack_type="base",
+            base_export_id="export-1",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            node_count=0,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+    graph_path.write_text('{"changed":true}', encoding="utf-8")
+
+    with pytest.raises(GraphPackManifestError, match="checksum mismatch"):
+        discover_pack_manifests(packs_dir)
