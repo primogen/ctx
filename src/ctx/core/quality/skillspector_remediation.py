@@ -27,31 +27,6 @@ PLAN_SCHEMA_VERSION = 1
 REMOVE_STATUSES = frozenset({"blocked", "not_scanned_no_body"})
 REVIEW_STATUSES = frozenset({"findings"})
 KEEP_STATUSES = frozenset({"passed"})
-REMOVE_FINDING_RULES = frozenset({
-    "E2",   # env/secret access
-    "E3",   # sensitive file reconnaissance
-    "E4",   # context exfiltration
-    "MP1",  # persistent memory injection
-    "MP3",  # memory/state manipulation
-    "OH1",  # output used without validation
-    "OH2",  # cross-context output flow
-    "P3",   # user/context exfiltration instructions
-    "P5",   # harmful instructions
-    "P8",   # system-prompt exfiltration via tools
-    "PE2",  # sudo/root escalation
-    "PE3",  # credential file access
-    "RA1",  # self modification
-    "RA2",  # persistence across sessions
-    "SC2",  # remote download and execute
-    "TM2",  # unsafe tool chaining
-    "TM3",  # unsafe tool defaults
-    "TP1",  # hidden metadata instructions
-    "YR1",  # malware signature
-    "YR2",  # webshell signature
-    "YR3",  # cryptominer signature
-    "YR4",  # hack tool/exploit signature
-})
-FINDING_REMOVE_MIN_SCORE = 25
 
 
 @dataclass(frozen=True)
@@ -91,29 +66,11 @@ def decide_record(record: SkillSpectorAuditRecord) -> RemediationDecision:
             action = "remove"
             reason = f"SkillSpector blocked the skill with {severity} risk"
     elif record.status in REVIEW_STATUSES:
-        risky_rules = sorted(set(record.issue_rules) & REMOVE_FINDING_RULES)
-        if (
-            severity == "MEDIUM"
-            or record.recommendation == "CAUTION"
-            or (record.risk_score or 0) >= FINDING_REMOVE_MIN_SCORE
-        ):
-            action = "remove"
-            reason = (
-                "SkillSpector finding is CAUTION/MEDIUM or score is at/above "
-                f"{FINDING_REMOVE_MIN_SCORE}"
-            )
-        elif risky_rules:
-            action = "remove"
-            reason = (
-                "SkillSpector finding uses high-confidence removal rule(s): "
-                + ", ".join(risky_rules)
-            )
-        else:
-            action = "review_remediate"
-            reason = (
-                "SkillSpector found LOW/SAFE heuristic issues; inspect body and "
-                "remediate before promoting"
-            )
+        action = "remove"
+        reason = (
+            "SkillSpector finding remains unresolved; remove until remediated "
+            "and rescanned cleanly"
+        )
     elif record.status in KEEP_STATUSES:
         action = "keep"
         reason = "SkillSpector passed"
@@ -199,10 +156,9 @@ def render_markdown_plan(plan: dict[str, Any]) -> str:
     lines.extend(["", "## Removal Scope", ""])
     lines.append(
         "Remove actions include records SkillSpector blocked, records without a "
-        "converted `SKILL.md` body, and finding records that are CAUTION/MEDIUM, "
-        f"score at least {FINDING_REMOVE_MIN_SCORE}, or match high-confidence "
-        "dangerous rule families. LOW/SAFE heuristic findings remain "
-        "review/remediate candidates.",
+        "converted `SKILL.md` body, and every non-passing finding record. A "
+        "finding can return only after the skill is remediated and rescanned "
+        "cleanly.",
     )
     return "\n".join(lines) + "\n"
 

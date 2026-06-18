@@ -66,7 +66,7 @@ def test_decide_record_removes_blocked_and_no_body() -> None:
     assert "no converted SKILL.md body" in no_body.reason
 
 
-def test_build_remediation_plan_removes_risky_findings_only() -> None:
+def test_build_remediation_plan_removes_all_unresolved_findings() -> None:
     records = {
         "safe": _record("safe", status="passed"),
         "low_finding": _record(
@@ -104,15 +104,15 @@ def test_build_remediation_plan_removes_risky_findings_only() -> None:
     assert plan["summary"]["total"] == 5
     assert plan["summary"]["actions"] == {
         "keep": 1,
-        "remove": 3,
-        "review_remediate": 1,
+        "remove": 4,
     }
     assert plan["remove_slugs"] == [
         "blocked",
         "dangerous_low_finding",
+        "low_finding",
         "medium_finding",
     ]
-    assert plan["review_slugs"] == ["low_finding"]
+    assert plan["review_slugs"] == []
     assert plan["summary"]["top_issue_rules"][0] == {"rule": "EA2", "count": 1}
 
 
@@ -127,9 +127,9 @@ def test_render_markdown_plan_explains_finding_policy() -> None:
 
     text = render_markdown_plan(plan)
 
-    assert "LOW/SAFE heuristic findings remain" in text
-    assert "`remove`: **1**" in text
-    assert "`review_remediate`: **1**" in text
+    assert "every non-passing finding record" in text
+    assert "rescanned cleanly" in text
+    assert "`remove`: **2**" in text
 
 
 def test_main_writes_json_plan(tmp_path: Path) -> None:
@@ -145,5 +145,5 @@ def test_main_writes_json_plan(tmp_path: Path) -> None:
     assert main(["--audit", str(audit), "--out", str(out)]) == 0
 
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["remove_slugs"] == ["blocked"]
-    assert payload["review_slugs"] == ["finding"]
+    assert payload["remove_slugs"] == ["blocked", "finding"]
+    assert payload["review_slugs"] == []
