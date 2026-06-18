@@ -27,6 +27,8 @@ import networkx as nx
 import pytest
 
 from ctx.core.graph import resolve_graph
+from ctx.core.graph.graph_packs import build_pack_manifest, write_pack_manifest
+from ctx.core.graph.graph_packs import load_merged_pack_graph
 
 
 # ── Graph builders ────────────────────────────────────────────────────────────
@@ -76,6 +78,13 @@ def _serialise_graph(G: nx.Graph, *, edges_key: str = "edges") -> dict:
     from networkx.readwrite import node_link_data
     data = node_link_data(G, edges=edges_key)
     return data
+
+
+def _edge_snapshot(G: nx.Graph) -> dict[tuple[str, str], dict[str, Any]]:
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    for source, target, attrs in G.edges(data=True):
+        result[tuple(sorted((source, target)))] = dict(attrs)
+    return result
 
 
 # ── TestLoadGraph ─────────────────────────────────────────────────────────────
@@ -137,6 +146,134 @@ class TestLoadGraph:
         G = resolve_graph.load_graph(p)
         assert G.number_of_nodes() == 3
         assert G.number_of_edges() == 3
+
+    def test_missing_graph_json_loads_pack_fallback(self, tmp_path: Path) -> None:
+        graph_dir = tmp_path / "graphify-out"
+        base_dir = graph_dir / "packs" / "base-export-1"
+        overlay_dir = graph_dir / "packs" / "overlay-review"
+        base_dir.mkdir(parents=True)
+        overlay_dir.mkdir()
+        (base_dir / "graph.json").write_text(
+            json.dumps({
+                "nodes": [
+                    {"id": "skill:A", "type": "skill", "tags": ["python"]},
+                    {"id": "mcp-server:github", "type": "mcp-server", "tags": ["github"]},
+                ],
+                "edges": [
+                    {"source": "skill:A", "target": "mcp-server:github", "weight": 0.5},
+                ],
+            }),
+            encoding="utf-8",
+        )
+        (overlay_dir / "nodes.jsonl").write_text(
+            json.dumps({"id": "skill:review", "type": "skill", "tags": ["review"]}) + "\n",
+            encoding="utf-8",
+        )
+        (overlay_dir / "edges.jsonl").write_text(
+            json.dumps({"source": "skill:review", "target": "mcp-server:github", "weight": 0.8}) + "\n",
+            encoding="utf-8",
+        )
+        write_pack_manifest(
+            base_dir / "graph-pack-manifest.json",
+            build_pack_manifest(
+                pack_dir=base_dir,
+                pack_id="base-export-1",
+                pack_type="base",
+                base_export_id="export-1",
+                parent_export_id=None,
+                config_hash="config-sha",
+                model_id="bge-small-en-v1.5",
+                node_count=2,
+                edge_count=1,
+                artifact_paths=["graph.json"],
+            ),
+        )
+        write_pack_manifest(
+            overlay_dir / "graph-pack-manifest.json",
+            build_pack_manifest(
+                pack_dir=overlay_dir,
+                pack_id="overlay-review",
+                pack_type="overlay",
+                base_export_id="export-1",
+                parent_export_id="export-1",
+                config_hash="config-sha",
+                model_id="bge-small-en-v1.5",
+                node_count=1,
+                edge_count=1,
+                artifact_paths=["nodes.jsonl", "edges.jsonl"],
+            ),
+        )
+
+        G = resolve_graph.load_graph(graph_dir / "graph.json")
+
+        assert G.has_edge("skill:review", "mcp-server:github")
+        assert G.graph["ctx_graph_pack_fallback"] is True
+
+    def test_graph_json_takes_precedence_over_pack_fallback(self, tmp_path: Path) -> None:
+        graph_dir = tmp_path / "graphify-out"
+        base_dir = graph_dir / "packs" / "base-export-1"
+        graph_dir.mkdir()
+        base_dir.mkdir(parents=True)
+        p = graph_dir / "graph.json"
+        p.write_text(json.dumps(_serialise_graph(_build_simple_graph())), encoding="utf-8")
+        (base_dir / "graph.json").write_text(
+            json.dumps({
+                "nodes": [{"id": "skill:pack-only"}],
+                "edges": [],
+            }),
+            encoding="utf-8",
+        )
+        write_pack_manifest(
+            base_dir / "graph-pack-manifest.json",
+            build_pack_manifest(
+                pack_dir=base_dir,
+                pack_id="base-export-1",
+                pack_type="base",
+                base_export_id="export-1",
+                parent_export_id=None,
+                config_hash="config-sha",
+                model_id="bge-small-en-v1.5",
+                node_count=1,
+                edge_count=0,
+                artifact_paths=["graph.json"],
+            ),
+        )
+
+        G = resolve_graph.load_graph(p)
+
+        assert "skill:pack-only" not in G
+        assert G.number_of_nodes() == 3
+
+    def test_pack_reader_matches_legacy_graph_json_fixture(self, tmp_path: Path) -> None:
+        source = _build_simple_graph()
+        graph_dir = tmp_path / "graphify-out"
+        base_dir = graph_dir / "packs" / "base-export-1"
+        graph_dir.mkdir()
+        base_dir.mkdir(parents=True)
+        payload = _serialise_graph(source, edges_key="edges")
+        (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+        (base_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+        write_pack_manifest(
+            base_dir / "graph-pack-manifest.json",
+            build_pack_manifest(
+                pack_dir=base_dir,
+                pack_id="base-export-1",
+                pack_type="base",
+                base_export_id="export-1",
+                parent_export_id=None,
+                config_hash="config-sha",
+                model_id="bge-small-en-v1.5",
+                node_count=3,
+                edge_count=3,
+                artifact_paths=["graph.json"],
+            ),
+        )
+
+        legacy = resolve_graph.load_graph(graph_dir / "graph.json", apply_runtime_filter=False)
+        packed = load_merged_pack_graph(graph_dir / "packs")
+
+        assert dict(legacy.nodes(data=True)) == dict(packed.nodes(data=True))
+        assert _edge_snapshot(legacy) == _edge_snapshot(packed)
 
     def test_entity_overlay_jsonl_merges_nodes_and_edges(self, tmp_path: Path) -> None:
         """Small entity adds should not require rewriting the packed graph tar."""
