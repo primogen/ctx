@@ -78,7 +78,7 @@ GraphSignature = tuple[FileSignature | None, FileSignature | None]
 
 
 def _response_format_from_args(args: Mapping[str, Any]) -> str:
-    raw = args.get("_response_format", "json")
+    raw = args.get("_response_format", args.get("output_format", "json"))
     requested = str(raw or "json").strip().lower()
     return requested or "json"
 
@@ -90,7 +90,7 @@ def _encode_response(data: Mapping[str, Any], response_format: str) -> str:
     if requested != "gcf":
         return json.dumps({
             "error": (
-                "unsupported _response_format "
+                "unsupported response format "
                 f"{response_format!r}; expected one of "
                 f"{', '.join(SUPPORTED_RESPONSE_FORMATS)}"
             ),
@@ -198,6 +198,7 @@ class CtxCoreToolbox:
                                 "Default false keeps recommendations latency-safe."
                             ),
                         },
+                        "output_format": dict(_RESPONSE_FORMAT_PROPERTY),
                         "_response_format": dict(_RESPONSE_FORMAT_PROPERTY),
                     },
                     "required": ["query"],
@@ -237,6 +238,7 @@ class CtxCoreToolbox:
                             "minimum": 1,
                             "maximum": 50,
                         },
+                        "output_format": dict(_RESPONSE_FORMAT_PROPERTY),
                         "_response_format": dict(_RESPONSE_FORMAT_PROPERTY),
                     },
                     "required": ["seeds"],
@@ -260,6 +262,7 @@ class CtxCoreToolbox:
                             "minimum": 1,
                             "maximum": 100,
                         },
+                        "output_format": dict(_RESPONSE_FORMAT_PROPERTY),
                         "_response_format": dict(_RESPONSE_FORMAT_PROPERTY),
                     },
                     "required": ["query"],
@@ -285,6 +288,7 @@ class CtxCoreToolbox:
                                 "Use it to disambiguate duplicate slugs."
                             ),
                         },
+                        "output_format": dict(_RESPONSE_FORMAT_PROPERTY),
                         "_response_format": dict(_RESPONSE_FORMAT_PROPERTY),
                     },
                     "required": ["slug"],

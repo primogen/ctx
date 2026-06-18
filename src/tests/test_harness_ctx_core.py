@@ -312,6 +312,9 @@ class TestToolDefinitions:
 
         for tool_name in read_tools:
             schema = by_name[tool_name].parameters
+            output_format = schema["properties"]["output_format"]
+            assert output_format["enum"] == ["json", "gcf"]
+            assert "output_format" not in schema.get("required", [])
             response_format = schema["properties"]["_response_format"]
             assert response_format["enum"] == ["json", "gcf"]
             assert "_response_format" not in schema.get("required", [])
@@ -368,6 +371,34 @@ class TestDispatchRouting:
                 "query": "python",
                 "top_n": 1,
                 "_response_format": "gcf",
+            },
+        ))
+
+        assert raw.startswith("GCF profile=generic\n")
+        assert "query=python" in raw
+
+    def test_read_tools_accept_public_output_format_alias(
+        self,
+        toolbox: CtxCoreToolbox,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setitem(
+            sys.modules,
+            "gcf",
+            SimpleNamespace(
+                encode_generic=lambda data: (
+                    f"GCF profile=generic\nquery={data['query']}"
+                )
+            ),
+        )
+
+        raw = toolbox.dispatch(ToolCall(
+            id="c1",
+            name="ctx__wiki_search",
+            arguments={
+                "query": "python",
+                "top_n": 1,
+                "output_format": "gcf",
             },
         ))
 
