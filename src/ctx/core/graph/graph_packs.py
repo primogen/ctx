@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import networkx as nx
+
 from ctx.utils._fs_utils import atomic_write_text
 
 GRAPH_PACK_MANIFEST = "graph-pack-manifest.json"
@@ -209,6 +211,22 @@ def discover_pack_manifests(packs_dir: Path) -> list[GraphPackEntry]:
     return [base, *sorted(overlay_entries, key=lambda entry: entry.manifest.pack_id)]
 
 
+def load_merged_pack_graph(packs_dir: Path) -> nx.Graph:
+    """Load one base graph pack plus active overlay packs into a NetworkX graph."""
+    entries = discover_pack_manifests(packs_dir)
+    if not entries:
+        return nx.Graph()
+    base = entries[0]
+    graph = _load_base_graph(base.path / "graph.json")
+    pack_ids = [base.manifest.pack_id]
+    for overlay in entries[1:]:
+        _apply_overlay_pack(graph, overlay.path)
+        pack_ids.append(overlay.manifest.pack_id)
+    graph.graph["ctx_pack_ids"] = pack_ids
+    graph.graph["ctx_pack_base_export_id"] = base.manifest.base_export_id
+    return graph
+
+
 def sha256_file(path: Path) -> str:
     """Return SHA-256 hex digest for a file."""
     digest = hashlib.sha256()
@@ -230,6 +248,89 @@ def _verify_pack_checksums(pack_dir: Path, manifest: GraphPackManifest) -> None:
             raise GraphPackManifestError(
                 f"graph pack {manifest.pack_id} checksum mismatch for {name}"
             )
+
+
+def _load_base_graph(path: Path) -> nx.Graph:
+    payload = _read_json_object(path)
+    graph = nx.Graph()
+    graph_meta = payload.get("graph")
+    if isinstance(graph_meta, dict):
+        graph.graph.update(graph_meta)
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list):
+        raise GraphPackManifestError(f"{path} missing nodes list")
+    for raw_node in nodes:
+        if not isinstance(raw_node, dict):
+            raise GraphPackManifestError(f"{path} contains non-object node")
+        node_id = raw_node.get("id")
+        if not isinstance(node_id, str) or not node_id:
+            raise GraphPackManifestError(f"{path} contains node without id")
+        graph.add_node(node_id, **{key: value for key, value in raw_node.items() if key != "id"})
+    raw_edges = payload.get("edges", payload.get("links", []))
+    if not isinstance(raw_edges, list):
+        raise GraphPackManifestError(f"{path} edges must be a list")
+    for raw_edge in raw_edges:
+        _add_edge(graph, raw_edge, context=str(path))
+    return graph
+
+
+def _apply_overlay_pack(graph: nx.Graph, overlay_dir: Path) -> None:
+    for tombstone in _read_jsonl_objects(overlay_dir / "tombstones.jsonl"):
+        node_id = tombstone.get("node_id", tombstone.get("id"))
+        if not isinstance(node_id, str) or not node_id:
+            raise GraphPackManifestError(f"{overlay_dir} tombstone missing node_id")
+        if node_id in graph:
+            graph.remove_node(node_id)
+    for raw_node in _read_jsonl_objects(overlay_dir / "nodes.jsonl"):
+        node_id = raw_node.get("id")
+        if not isinstance(node_id, str) or not node_id:
+            raise GraphPackManifestError(f"{overlay_dir} node overlay missing id")
+        graph.add_node(node_id, **{key: value for key, value in raw_node.items() if key != "id"})
+    for raw_edge in _read_jsonl_objects(overlay_dir / "edges.jsonl"):
+        _add_edge(graph, raw_edge, context=str(overlay_dir))
+
+
+def _add_edge(graph: nx.Graph, raw_edge: object, *, context: str) -> None:
+    if not isinstance(raw_edge, dict):
+        raise GraphPackManifestError(f"{context} contains non-object edge")
+    source = raw_edge.get("source")
+    target = raw_edge.get("target")
+    if not isinstance(source, str) or not isinstance(target, str) or not source or not target:
+        raise GraphPackManifestError(f"{context} contains edge without source/target")
+    if source not in graph or target not in graph:
+        raise GraphPackManifestError(f"{context} contains edge with unknown endpoint")
+    graph.add_edge(
+        source,
+        target,
+        **{key: value for key, value in raw_edge.items() if key not in {"source", "target"}},
+    )
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise GraphPackManifestError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise GraphPackManifestError(f"{path} did not contain a JSON object")
+    return payload
+
+
+def _read_jsonl_objects(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise GraphPackManifestError(f"{path} line {lineno} is not valid JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise GraphPackManifestError(f"{path} line {lineno} did not contain a JSON object")
+        rows.append(payload)
+    return rows
 
 
 def _required_str(payload: dict[str, Any], key: str) -> str:
