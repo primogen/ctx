@@ -209,7 +209,7 @@ class TestLoadGraph:
         assert G.has_edge("skill:review", "mcp-server:github")
         assert G.graph["ctx_graph_pack_fallback"] is True
 
-    def test_graph_json_takes_precedence_over_pack_fallback(self, tmp_path: Path) -> None:
+    def test_graph_packs_take_precedence_over_legacy_graph_json(self, tmp_path: Path) -> None:
         graph_dir = tmp_path / "graphify-out"
         base_dir = graph_dir / "packs" / "base-export-1"
         graph_dir.mkdir()
@@ -241,8 +241,86 @@ class TestLoadGraph:
 
         G = resolve_graph.load_graph(p)
 
-        assert "skill:pack-only" not in G
-        assert G.number_of_nodes() == 3
+        assert "skill:pack-only" in G
+        assert G.number_of_nodes() == 1
+        assert G.graph["ctx_graph_pack_source"] == "packs"
+        assert G.graph["ctx_graph_pack_fallback"] is False
+
+    def test_invalid_graph_packs_do_not_fall_back_to_stale_graph_json(self, tmp_path: Path) -> None:
+        graph_dir = tmp_path / "graphify-out"
+        base_dir = graph_dir / "packs" / "base-export-1"
+        graph_dir.mkdir()
+        base_dir.mkdir(parents=True)
+        p = graph_dir / "graph.json"
+        p.write_text(json.dumps(_serialise_graph(_build_simple_graph())), encoding="utf-8")
+        pack_graph = base_dir / "graph.json"
+        pack_graph.write_text(
+            json.dumps({"nodes": [{"id": "skill:pack-only"}], "edges": []}),
+            encoding="utf-8",
+        )
+        write_pack_manifest(
+            base_dir / "graph-pack-manifest.json",
+            build_pack_manifest(
+                pack_dir=base_dir,
+                pack_id="base-export-1",
+                pack_type="base",
+                base_export_id="export-1",
+                parent_export_id=None,
+                config_hash="config-sha",
+                model_id="bge-small-en-v1.5",
+                node_count=1,
+                edge_count=0,
+                artifact_paths=["graph.json"],
+            ),
+        )
+        pack_graph.write_text("corrupted after manifest\n", encoding="utf-8")
+
+        G = resolve_graph.load_graph(p)
+
+        assert G.number_of_nodes() == 0
+
+    def test_graph_packs_still_apply_legacy_entity_overlay_jsonl(self, tmp_path: Path) -> None:
+        graph_dir = tmp_path / "graphify-out"
+        base_dir = graph_dir / "packs" / "base-export-1"
+        graph_dir.mkdir()
+        base_dir.mkdir(parents=True)
+        p = graph_dir / "graph.json"
+        p.write_text(json.dumps(_serialise_graph(_build_simple_graph())), encoding="utf-8")
+        (base_dir / "graph.json").write_text(
+            json.dumps({
+                "nodes": [{"id": "skill:A", "type": "skill", "tags": ["python"]}],
+                "edges": [],
+            }),
+            encoding="utf-8",
+        )
+        (graph_dir / "entity-overlays.jsonl").write_text(
+            json.dumps({
+                "nodes": [{"id": "harness:mirage", "type": "harness", "tags": ["sandbox"]}],
+                "edges": [{"source": "harness:mirage", "target": "skill:A", "weight": 0.4}],
+            }) + "\n",
+            encoding="utf-8",
+        )
+        write_pack_manifest(
+            base_dir / "graph-pack-manifest.json",
+            build_pack_manifest(
+                pack_dir=base_dir,
+                pack_id="base-export-1",
+                pack_type="base",
+                base_export_id="export-1",
+                parent_export_id=None,
+                config_hash="config-sha",
+                model_id="bge-small-en-v1.5",
+                node_count=1,
+                edge_count=0,
+                artifact_paths=["graph.json"],
+            ),
+        )
+
+        G = resolve_graph.load_graph(p)
+
+        assert G.has_edge("harness:mirage", "skill:A")
+        assert G.graph["ctx_graph_pack_source"] == "packs"
+        assert G.graph["ctx_entity_overlay_edges"] == 1
 
     def test_pack_reader_matches_legacy_graph_json_fixture(self, tmp_path: Path) -> None:
         source = _build_simple_graph()

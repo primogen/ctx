@@ -275,12 +275,12 @@ def _authoritative_overlay_nodes(payload: Mapping[str, Any]) -> set[str]:
     return node_ids
 
 
-def _load_graph_pack_fallback(
+def _load_graph_packs(
     graph_path: Path,
     *,
     apply_runtime_filter: bool,
 ) -> nx.Graph | None:
-    """Load graph packs beside ``graph.json`` when the legacy file is absent."""
+    """Load active graph packs beside ``graph.json`` when present."""
     packs_dir = graph_path.parent / "packs"
     if not packs_dir.is_dir():
         return None
@@ -297,7 +297,9 @@ def _load_graph_pack_fallback(
     if graph.number_of_nodes() == 0:
         return None
     graph.graph.setdefault("ctx_graph_path", str(graph_path))
-    graph.graph["ctx_graph_pack_fallback"] = True
+    graph.graph["ctx_graph_pack_source"] = "packs"
+    graph.graph["ctx_graph_pack_fallback"] = not graph_path.exists()
+    graph = _apply_entity_overlays(graph, graph_path)
     if apply_runtime_filter:
         return _filter_runtime_edges(graph, _configured_semantic_min_cosine())
     return graph
@@ -308,20 +310,20 @@ def load_graph(
     *,
     apply_runtime_filter: bool = True,
 ) -> nx.Graph:
-    """Load the knowledge graph from graph.json.
+    """Load the knowledge graph from active packs or legacy graph.json.
 
     Returns an empty graph on any parse or schema error rather than crashing.
     Callers that *require* a populated graph (e.g. CLI main) should check
     ``G.number_of_nodes() == 0`` and handle accordingly.
     """
     graph_path = path if path is not None else GRAPH_PATH
+    packed = _load_graph_packs(
+        graph_path,
+        apply_runtime_filter=apply_runtime_filter,
+    )
+    if packed is not None:
+        return packed
     if not graph_path.exists():
-        fallback = _load_graph_pack_fallback(
-            graph_path,
-            apply_runtime_filter=apply_runtime_filter,
-        )
-        if fallback is not None:
-            return fallback
         message = "graph.json not found at %s; returning empty graph"
         if os.environ.get("CTX_ALLOW_MISSING_GRAPH") == "1":
             logger.debug(message, graph_path)
