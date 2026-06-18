@@ -105,6 +105,9 @@ embeddings = [
 ann = [
     "hnswlib>=0.8,<0.9; platform_python_implementation == 'CPython'",
 ]
+gcf = [
+    "gcf-python>=2.1.0,<3",
+]
 harness = [
     # LiteLLM is the substrate for the model-agnostic harness
     # (ctx.adapters.generic.providers). Every remote provider —
