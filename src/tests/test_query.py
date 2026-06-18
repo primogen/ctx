@@ -14,8 +14,32 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ctx.core.wiki import wiki_query as wq  # noqa: E402
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack, write_wiki_overlay_pack  # noqa: E402
 
 from ._wiki_helpers import make_entity_page, make_wiki  # noqa: E402
+
+
+def _entity_page_text(
+    *,
+    title: str,
+    entity_type: str,
+    tags: list[str],
+    body: str,
+    description: str = "",
+    status: str = "installed",
+) -> str:
+    tags_str = "[" + ", ".join(tags) + "]"
+    return "\n".join([
+        "---",
+        f"title: {title}",
+        f"type: {entity_type}",
+        *([f"description: {description}"] if description else []),
+        f"tags: {tags_str}",
+        f"status: {status}",
+        "---",
+        "",
+        body,
+    ])
 
 
 def _write_entity_page(
@@ -31,19 +55,15 @@ def _write_entity_page(
 ) -> Path:
     path = wiki / relpath
     path.parent.mkdir(parents=True, exist_ok=True)
-    tags_str = "[" + ", ".join(tags) + "]"
     path.write_text(
-        "\n".join([
-            "---",
-            f"title: {title}",
-            f"type: {entity_type}",
-            *([f"description: {description}"] if description else []),
-            f"tags: {tags_str}",
-            f"status: {status}",
-            "---",
-            "",
-            body,
-        ]),
+        _entity_page_text(
+            title=title,
+            entity_type=entity_type,
+            tags=tags,
+            body=body,
+            description=description,
+            status=status,
+        ),
         encoding="utf-8",
     )
     return path
@@ -92,6 +112,75 @@ class TestQueryKeywordMatch:
         assert by_name["code-reviewer"].entity_type == "agent"
         assert by_name["filesystem"].entity_type == "mcp-server"
         assert by_name["filesystem"].wikilink == "[[entities/mcp-servers/f/filesystem]]"
+
+    def test_load_all_pages_reads_modular_wiki_packs(self, tmp_path: Path) -> None:
+        wiki = make_wiki(tmp_path)
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={
+                "entities/skills/python-patterns.md": _entity_page_text(
+                    title="Python Patterns",
+                    entity_type="skill",
+                    tags=["python", "patterns"],
+                    body="Python implementation patterns.",
+                ),
+                "entities/mcp-servers/g/github.md": _entity_page_text(
+                    title="GitHub MCP",
+                    entity_type="mcp-server",
+                    tags=["github"],
+                    body="Repository automation tools.",
+                ),
+            },
+        )
+
+        pages = wq.load_all_pages(wiki)
+
+        by_name = {p.name: p for p in pages}
+        assert by_name["python-patterns"].entity_type == "skill"
+        assert by_name["python-patterns"].tags == ["python", "patterns"]
+        assert by_name["github"].entity_type == "mcp-server"
+        assert by_name["github"].wikilink == "[[entities/mcp-servers/g/github]]"
+
+    def test_load_all_pages_prefers_wiki_packs_over_stale_disk_pages(self, tmp_path: Path) -> None:
+        wiki = make_wiki(tmp_path)
+        make_entity_page(wiki, "disk-only", ["stale"], body="This disk page is stale.")
+        make_entity_page(wiki, "remove-me", ["stale"], body="This should be tombstoned.")
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={
+                "entities/skills/remove-me.md": _entity_page_text(
+                    title="Remove Me",
+                    entity_type="skill",
+                    tags=["old"],
+                    body="Old packed page.",
+                )
+            },
+        )
+        write_wiki_overlay_pack(
+            pack_dir=wiki / "wiki-packs" / "overlay-review",
+            pack_id="overlay-review",
+            base_export_id="wiki-export-1",
+            parent_export_id="wiki-export-1",
+            pages={
+                "entities/agents/reviewer.md": _entity_page_text(
+                    title="Reviewer",
+                    entity_type="agent",
+                    tags=["review"],
+                    body="Packed overlay page.",
+                )
+            },
+            tombstones=["entities/skills/remove-me.md"],
+        )
+
+        pages = wq.load_all_pages(wiki)
+
+        by_name = {p.name: p for p in pages}
+        assert set(by_name) == {"reviewer"}
+        assert by_name["reviewer"].entity_type == "agent"
 
     def test_load_all_pages_validates_mcp_shards_and_slugs(self, tmp_path: Path) -> None:
         wiki = make_wiki(tmp_path)
