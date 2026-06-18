@@ -621,6 +621,79 @@ class TestAddSkill:
         assert result["converted"] is False
         assert result["is_new_page"] is True
 
+    def test_required_security_scan_blocks_before_install(
+        self, tmp_path, monkeypatch
+    ):
+        wiki = self._setup_wiki(tmp_path)
+        skills_dir = tmp_path / "skills"
+        source = tmp_path / "candidate" / "SKILL.md"
+        source.parent.mkdir()
+        source.write_text(self._skill_text(), encoding="utf-8")
+        _fake_intake.check_intake.reset_mock()
+        monkeypatch.setattr(
+            _sa,
+            "run_skillspector_scan",
+            lambda *args, **kwargs: _sa.SkillSpectorResult(
+                status="findings",
+                command=["skillspector", "scan"],
+                exit_code=1,
+                output="unsafe instruction",
+            ),
+        )
+
+        with pytest.raises(ValueError, match="SkillSpector security scan did not pass"):
+            add_skill(
+                source_path=source,
+                name="myskill",
+                wiki_path=wiki,
+                skills_dir=skills_dir,
+                security_scan=True,
+                security_scan_required=True,
+            )
+
+        assert not (skills_dir / "myskill").exists()
+        _fake_intake.check_intake.assert_not_called()
+
+    def test_security_scan_metadata_is_written_to_entity_page(
+        self, tmp_path, monkeypatch
+    ):
+        wiki = self._setup_wiki(tmp_path)
+        skills_dir = tmp_path / "skills"
+        source = tmp_path / "candidate" / "SKILL.md"
+        source.parent.mkdir()
+        source.write_text(self._skill_text(), encoding="utf-8")
+        self._setup_intake_allow()
+        _fake_batch_convert.convert_skill.return_value = {"status": "error"}
+        monkeypatch.setattr(_sa, "update_index", MagicMock())
+        monkeypatch.setattr(_sa, "append_log", MagicMock())
+        monkeypatch.setattr(
+            _sa,
+            "run_skillspector_scan",
+            lambda target, **kwargs: _sa.SkillSpectorResult(
+                status="passed",
+                command=["skillspector", "scan", str(target)],
+                exit_code=0,
+                output="clean",
+            ),
+        )
+
+        result = add_skill(
+            source_path=source,
+            name="myskill",
+            wiki_path=wiki,
+            skills_dir=skills_dir,
+            security_scan=True,
+            security_scan_required=True,
+        )
+
+        entity = (wiki / "entities" / "skills" / "myskill.md").read_text(
+            encoding="utf-8"
+        )
+        assert result["security_scan"]["status"] == "passed"
+        assert "skillspector_checked: true" in entity
+        assert "skillspector_status: passed" in entity
+        assert "## Security Check" in entity
+
     def test_oversized_file_raises_value_error(self, tmp_path):
         wiki = self._setup_wiki(tmp_path)
         skills_dir = tmp_path / "skills"

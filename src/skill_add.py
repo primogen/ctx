@@ -22,6 +22,10 @@ from pathlib import Path
 
 from batch_convert import convert_skill
 from ctx.core.entity_update import build_update_review, render_update_review
+from ctx.core.quality.skillspector_service import SkillSpectorResult
+from ctx.core.quality.skillspector_service import render_scan_report
+from ctx.core.quality.skillspector_service import run_skillspector_scan
+from ctx.core.quality.skillspector_service import skill_scan_target
 from ctx_config import cfg
 from intake_pipeline import IntakeRejected, check_intake, record_embedding
 from ctx.adapters.claude_code.install.install_utils import safe_copy_file
@@ -104,6 +108,7 @@ def build_entity_page(
     original_path: Path,
     related: list[str],
     scan_sources: list[str],
+    security_scan: SkillSpectorResult | None = None,
 ) -> str:
     """Render the full entity page markdown for a skill."""
     pipeline_path_str = (
@@ -131,6 +136,11 @@ def build_entity_page(
     }
     if scan_sources:
         fm_dict["sources"] = scan_sources
+    if security_scan is not None:
+        fm_dict["skillspector_checked"] = True
+        fm_dict["skillspector_status"] = security_scan.status
+        fm_dict["skillspector_exit_code"] = security_scan.exit_code
+        fm_dict["skillspector_note"] = "ctx-run SkillSpector check; not NVIDIA endorsement"
 
     frontmatter_body = yaml.safe_dump(fm_dict, default_flow_style=False, allow_unicode=True, sort_keys=False)
     frontmatter_block = f"---\n{frontmatter_body}---"
@@ -144,6 +154,16 @@ def build_entity_page(
         if has_pipeline
         else f"Skill is {line_count} lines — under the {cfg.line_threshold}-line threshold, no pipeline generated."
     )
+
+    security_section = ""
+    if security_scan is not None:
+        security_section = f"""
+
+## Security Check
+
+SkillSpector status: `{security_scan.status}`.
+This is a ctx-run check, not NVIDIA endorsement or certification.
+"""
 
     return frontmatter_block + f"""
 
@@ -166,6 +186,7 @@ def build_entity_page(
 | Date | Action | Notes |
 |------|--------|-------|
 | {TODAY} | Added | Ingested via skill_add.py |
+{security_section}
 """
 
 
@@ -300,6 +321,12 @@ def add_skill(
     skills_dir: Path,
     review_existing: bool = False,
     update_existing: bool = False,
+    security_scan: bool = False,
+    security_scan_required: bool = False,
+    security_scan_use_llm: bool = False,
+    security_scan_command: list[str] | None = None,
+    skillspector_bin: str | None = None,
+    security_scan_timeout: int = 120,
 ) -> dict:
     """Add a single skill: install, convert if needed, ingest into wiki.
 
@@ -353,6 +380,21 @@ def add_skill(
             "update_review": render_update_review(review),
         }
 
+    scan_result = None
+    if security_scan:
+        scan_result = run_skillspector_scan(
+            skill_scan_target(source_path),
+            command=security_scan_command,
+            binary=skillspector_bin,
+            use_llm=security_scan_use_llm,
+            timeout_seconds=security_scan_timeout,
+        )
+        if security_scan_required and scan_result.status != "passed":
+            raise ValueError(
+                "SkillSpector security scan did not pass: "
+                f"{scan_result.status}\n\n{render_scan_report(scan_result)}"
+            )
+
     if not has_existing:
         # Intake gate: reject broken/duplicate candidates before we touch
         # skills-dir. Existing updates bypass similarity intake because
@@ -404,6 +446,7 @@ def add_skill(
         original_path=installed_path,
         related=related,
         scan_sources=scan_sources,
+        security_scan=scan_result,
     )
     is_new = write_entity_page(wiki_path, name, page_content)
 
@@ -451,6 +494,9 @@ def add_skill(
                 "converted": converted,
                 "tags": tags,
                 "related": related,
+                "skillspector_status": (
+                    scan_result.status if scan_result is not None else None
+                ),
             },
         )
         if converted:
@@ -469,6 +515,7 @@ def add_skill(
         "skipped": False,
         "update_required": False,
         "queued_job_id": queue_job.id,
+        "security_scan": scan_result.to_json() if scan_result is not None else None,
     }
 
 
@@ -484,6 +531,32 @@ def main() -> None:
         "--update-existing",
         action="store_true",
         help="Apply the reviewed replacement when a skill already exists",
+    )
+    parser.add_argument(
+        "--no-security-scan",
+        action="store_true",
+        help="Do not run SkillSpector before adding or updating a skill",
+    )
+    parser.add_argument(
+        "--security-scan-optional",
+        action="store_true",
+        help="Run SkillSpector but do not fail the add when it reports findings or is missing",
+    )
+    parser.add_argument(
+        "--security-scan-use-llm",
+        action="store_true",
+        help="Allow SkillSpector LLM analysis instead of static-only --no-llm",
+    )
+    parser.add_argument(
+        "--skillspector-bin",
+        default=None,
+        help="SkillSpector executable. Defaults to CTX_SKILLSPECTOR_BIN or 'skillspector' on PATH.",
+    )
+    parser.add_argument(
+        "--security-scan-timeout",
+        type=int,
+        default=120,
+        help="SkillSpector timeout in seconds (default: 120)",
     )
     parser.add_argument("--wiki", default=str(cfg.wiki_dir), help="Wiki path")
     parser.add_argument("--skills-dir", default=str(cfg.skills_dir), help="Skills install path")
@@ -546,6 +619,13 @@ def main() -> None:
                 skills_dir=skills_dir,
                 review_existing=True,
                 update_existing=args.update_existing,
+                security_scan=not args.no_security_scan,
+                security_scan_required=(
+                    not args.no_security_scan and not args.security_scan_optional
+                ),
+                security_scan_use_llm=args.security_scan_use_llm,
+                skillspector_bin=args.skillspector_bin,
+                security_scan_timeout=args.security_scan_timeout,
             )
             if result.get("skipped"):
                 skipped += 1
@@ -564,7 +644,13 @@ def main() -> None:
                 if not result["is_new_page"]
                 else "converted" if result["converted"] else "installed"
             )
-            print(f"  [{i}/{total}] [{status}] {name}")
+            scan = result.get("security_scan")
+            scan_suffix = (
+                f"; SkillSpector: {scan.get('status')}"
+                if isinstance(scan, dict)
+                else ""
+            )
+            print(f"  [{i}/{total}] [{status}] {name}{scan_suffix}")
         except Exception as exc:
             errors += 1
             print(f"  [{i}/{total}] ERROR: {name}: {exc}", file=sys.stderr)
