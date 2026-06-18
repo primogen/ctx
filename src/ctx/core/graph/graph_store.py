@@ -6,6 +6,7 @@ small local SQLite store for fast node search and neighborhood lookups.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
 from pathlib import Path
@@ -69,6 +70,28 @@ def build_graph_store(db_path: Path, graph: nx.Graph) -> None:
             """,
             (_edge_row(source, target, attrs) for source, target, attrs in graph.edges(data=True)),
         )
+
+
+def build_graph_store_from_graph_dir(
+    graph_dir: Path,
+    db_path: Path,
+    *,
+    apply_runtime_filter: bool = True,
+) -> dict[str, int]:
+    """Build a SQLite store from a graphify-out directory.
+
+    ``resolve_graph.load_graph`` is the single source of truth for graph
+    loading. It prefers active graph packs beside ``graph.json`` and falls
+    back to the legacy monolithic ``graph.json`` only when packs are absent.
+    """
+    from ctx.core.graph.resolve_graph import load_graph  # noqa: PLC0415
+
+    graph = load_graph(
+        graph_dir / "graph.json",
+        apply_runtime_filter=apply_runtime_filter,
+    )
+    build_graph_store(db_path, graph)
+    return graph_store_stats(db_path)
 
 
 def graph_store_stats(db_path: Path) -> dict[str, int]:
@@ -145,6 +168,38 @@ def load_neighborhood(db_path: Path, node_id: str, *, limit: int = 50) -> dict[s
             )
     edges = [_edge_result(row, center_id=node_id) for row in edge_rows]
     return {"nodes": nodes, "edges": edges}
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI for materializing a graph directory into the SQLite store."""
+    parser = argparse.ArgumentParser(
+        prog="python -m ctx.core.graph.graph_store",
+        description="Build and inspect the ctx SQLite graph operational store.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    build = sub.add_parser(
+        "build",
+        help="Build a SQLite store from graphify-out packs or graph.json.",
+    )
+    build.add_argument("--graph-dir", required=True, help="Path to graphify-out")
+    build.add_argument("--db", required=True, help="Destination SQLite database")
+    build.add_argument(
+        "--no-runtime-filter",
+        action="store_true",
+        help="Preserve all stored edges instead of applying runtime graph filters.",
+    )
+
+    args = parser.parse_args(argv)
+    if args.command == "build":
+        stats = build_graph_store_from_graph_dir(
+            Path(args.graph_dir),
+            Path(args.db),
+            apply_runtime_filter=not args.no_runtime_filter,
+        )
+        print(json.dumps(stats, sort_keys=True))
+        return 0
+    parser.error(f"unknown command: {args.command}")
+    return 2
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -226,3 +281,7 @@ def _jsonable(value: object) -> object:
     except (TypeError, ValueError):
         return str(value)
     return value
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import networkx as nx
 
 from ctx.core.graph.graph_store import (
     build_graph_store,
+    build_graph_store_from_graph_dir,
     graph_store_stats,
     load_neighborhood,
+    main,
     search_nodes,
 )
+from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack
 
 
 def _sample_graph() -> nx.Graph:
@@ -87,3 +91,91 @@ def test_load_neighborhood_returns_center_and_edges(tmp_path: Path) -> None:
         "mcp-server:github",
         "agent:reviewer",
     }
+
+
+def test_build_graph_store_from_graph_dir_prefers_active_packs(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    packs_dir = graph_dir / "packs"
+    base_graph = nx.Graph()
+    base_graph.add_node(
+        "skill:base",
+        label="base",
+        title="Base",
+        type="skill",
+        tags=["base"],
+    )
+    base_graph.add_node(
+        "mcp-server:github",
+        label="github",
+        title="GitHub",
+        type="mcp-server",
+        tags=["github"],
+    )
+    base_graph.add_edge("skill:base", "mcp-server:github", weight=0.2)
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=base_graph,
+    )
+    write_overlay_pack(
+        pack_dir=packs_dir / "overlay-review",
+        pack_id="overlay-review",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        nodes=[
+            {
+                "id": "skill:review",
+                "label": "review",
+                "title": "Code Review",
+                "type": "skill",
+                "tags": ["review"],
+            }
+        ],
+        edges=[
+            {
+                "source": "skill:review",
+                "target": "mcp-server:github",
+                "weight": 0.9,
+            }
+        ],
+        tombstones=[],
+    )
+    db_path = tmp_path / "graph.sqlite3"
+
+    build_graph_store_from_graph_dir(graph_dir, db_path)
+
+    assert graph_store_stats(db_path) == {"nodes": 3, "edges": 2}
+    assert [row["id"] for row in search_nodes(db_path, "review")] == ["skill:review"]
+    neighborhood = load_neighborhood(db_path, "skill:review")
+    assert {edge["target"] for edge in neighborhood["edges"]} == {"mcp-server:github"}
+
+
+def test_build_graph_store_from_graph_dir_falls_back_to_legacy_graph_json(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_dir.mkdir()
+    graph = _sample_graph()
+    payload = nx.node_link_data(graph, edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+    db_path = tmp_path / "graph.sqlite3"
+
+    build_graph_store_from_graph_dir(graph_dir, db_path)
+
+    assert graph_store_stats(db_path) == {"nodes": 3, "edges": 2}
+    assert search_nodes(db_path, "github")[0]["id"] == "mcp-server:github"
+
+
+def test_cli_builds_graph_store_from_graph_dir(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_dir.mkdir()
+    payload = nx.node_link_data(_sample_graph(), edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+    db_path = tmp_path / "graph.sqlite3"
+
+    assert main(["build", "--graph-dir", str(graph_dir), "--db", str(db_path)]) == 0
+
+    assert graph_store_stats(db_path) == {"nodes": 3, "edges": 2}
