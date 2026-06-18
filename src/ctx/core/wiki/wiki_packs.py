@@ -162,6 +162,48 @@ def write_wiki_overlay_pack(
     )
 
 
+def write_active_wiki_overlay_pack(
+    *,
+    packs_dir: Path,
+    pages: dict[str, str] | None = None,
+    tombstones: list[str] | None = None,
+    created_at: str | None = None,
+) -> WikiPackManifest | None:
+    """Append a small overlay to the active base wiki pack, if one exists."""
+    page_map = {
+        _normalise_page_path(path): text
+        for path, text in (pages or {}).items()
+    }
+    tombstone_paths = [
+        _normalise_page_path(path)
+        for path in (tombstones or [])
+    ]
+    if not page_map and not tombstone_paths:
+        return None
+
+    entries = discover_wiki_pack_manifests(packs_dir)
+    if not entries:
+        return None
+
+    base = entries[0].manifest
+    base_pack_id = _active_overlay_pack_id(page_map, tombstone_paths)
+    for suffix in ["", *[f"-{index}" for index in range(1, 1000)]]:
+        pack_id = f"{base_pack_id}{suffix}"
+        pack_dir = packs_dir / pack_id
+        if pack_dir.exists():
+            continue
+        return write_wiki_overlay_pack(
+            pack_dir=pack_dir,
+            pack_id=pack_id,
+            base_export_id=base.base_export_id,
+            parent_export_id=base.base_export_id,
+            pages=page_map,
+            tombstones=tombstone_paths,
+            created_at=created_at,
+        )
+    raise WikiPackManifestError("could not allocate unique wiki overlay pack id")
+
+
 def read_wiki_pack_manifest(path: Path) -> WikiPackManifest:
     """Read and validate ``wiki-pack-manifest.json``."""
     try:
@@ -430,6 +472,24 @@ def _normalise_page_path(value: str) -> str:
     if not normalised.endswith(".md"):
         raise WikiPackManifestError("wiki pack page path must end with .md")
     return normalised
+
+
+def _active_overlay_pack_id(pages: dict[str, str], tombstones: list[str]) -> str:
+    paths = sorted([*pages, *tombstones])
+    first_path = paths[0] if paths else "empty.md"
+    stem = first_path.removesuffix(".md").replace("/", "-").replace("\\", "-")
+    stem = stem[:80].strip("-") or "wiki"
+    action = "delete" if tombstones and not pages else "upsert"
+    digest_source = json.dumps(
+        {
+            "pages": {path: _sha256_text(text) for path, text in sorted(pages.items())},
+            "tombstones": sorted(tombstones),
+        },
+        sort_keys=True,
+    )
+    digest = _sha256_text(digest_source)[:12]
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"overlay-{timestamp}-{stem}-{action}-{digest}"
 
 
 def _validate_relative_name(value: str, label: str) -> None:

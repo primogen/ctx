@@ -8,7 +8,6 @@ import socket
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
@@ -18,7 +17,7 @@ from ctx.core.graph.graph_packs import GraphPackManifestError, discover_pack_man
 from ctx.core.graph.incremental_attach import attach_entity
 from ctx.core.wiki.artifact_promotion import promote_staged_artifact
 from ctx.core.wiki import wiki_queue
-from ctx.core.wiki.wiki_packs import discover_wiki_pack_manifests, write_wiki_overlay_pack
+from ctx.core.wiki.wiki_packs import write_active_wiki_overlay_pack
 from ctx.core.wiki.wiki_sync import update_index
 from ctx.utils._fs_utils import reject_symlink_path
 from ctx_config import cfg
@@ -178,40 +177,16 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
 
 
 def _emit_wiki_page_upsert(wiki_path: Path, relpath: str, text: str) -> None:
-    packs_dir = wiki_path / "wiki-packs"
-    entries = discover_wiki_pack_manifests(packs_dir)
-    if not entries:
-        return
-    base = entries[0].manifest
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    content_hash = sha256(text.encode("utf-8")).hexdigest()[:12]
-    stem = relpath.removesuffix(".md").replace("/", "-").replace("\\", "-")
-    pack_id = f"overlay-{timestamp}-{stem}-{content_hash}"
-    write_wiki_overlay_pack(
-        pack_dir=packs_dir / pack_id,
-        pack_id=pack_id,
-        base_export_id=base.base_export_id,
-        parent_export_id=base.base_export_id,
+    write_active_wiki_overlay_pack(
+        packs_dir=wiki_path / "wiki-packs",
         pages={relpath: text},
         tombstones=[],
     )
 
 
 def _emit_wiki_page_tombstone(wiki_path: Path, relpath: str) -> None:
-    packs_dir = wiki_path / "wiki-packs"
-    entries = discover_wiki_pack_manifests(packs_dir)
-    if not entries:
-        return
-    base = entries[0].manifest
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    rel_hash = sha256(relpath.encode("utf-8")).hexdigest()[:12]
-    stem = relpath.removesuffix(".md").replace("/", "-").replace("\\", "-")
-    pack_id = f"overlay-{timestamp}-{stem}-delete-{rel_hash}"
-    write_wiki_overlay_pack(
-        pack_dir=packs_dir / pack_id,
-        pack_id=pack_id,
-        base_export_id=base.base_export_id,
-        parent_export_id=base.base_export_id,
+    write_active_wiki_overlay_pack(
+        packs_dir=wiki_path / "wiki-packs",
         pages={},
         tombstones=[relpath],
     )

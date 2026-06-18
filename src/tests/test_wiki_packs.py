@@ -12,6 +12,7 @@ from ctx.core.wiki.wiki_packs import (
     load_merged_wiki_pages,
     promote_wiki_pack_set,
     read_wiki_pack_manifest,
+    write_active_wiki_overlay_pack,
     write_wiki_base_pack,
     write_wiki_overlay_pack,
 )
@@ -67,6 +68,34 @@ def test_load_merged_wiki_pages_applies_overlay_and_tombstones(tmp_path: Path) -
     assert pages == {
         "entities/agents/reviewer.md": "# Reviewer\n",
         "entities/skills/python.md": "# Python\nnew body\n",
+    }
+
+
+def test_write_active_wiki_overlay_pack_uses_current_base_export(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={
+            "entities/skills/old.md": "# Old\n",
+            "index.md": "# Index\n",
+        },
+    )
+
+    manifest = write_active_wiki_overlay_pack(
+        packs_dir=packs_dir,
+        pages={"entities/skills/new.md": "# New\n"},
+        tombstones=["entities/skills/old.md"],
+    )
+
+    assert manifest is not None
+    assert manifest.pack_type == "overlay"
+    assert manifest.base_export_id == "wiki-export-1"
+    assert manifest.parent_export_id == "wiki-export-1"
+    assert load_merged_wiki_pages(packs_dir) == {
+        "entities/skills/new.md": "# New\n",
+        "index.md": "# Index\n",
     }
 
 
