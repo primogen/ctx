@@ -67,9 +67,9 @@ _RESPONSE_FORMAT_PROPERTY = {
     "type": "string",
     "enum": list(SUPPORTED_RESPONSE_FORMATS),
     "description": (
-        "Optional response codec for large read-only responses. Default json "
-        "preserves the stable ctx contract; gcf requires the optional "
-        "claude-ctx[gcf] extra."
+        "Optional response codec for large read-only responses. "
+        "Default json preserves the stable ctx contract; gcf requires "
+        "the optional claude-ctx[gcf] extra."
     ),
 }
 
@@ -90,7 +90,8 @@ def _encode_response(data: Mapping[str, Any], response_format: str) -> str:
     if requested != "gcf":
         return json.dumps({
             "error": (
-                f"unsupported response format {response_format!r}; expected one of "
+                "unsupported response format "
+                f"{response_format!r}; expected one of "
                 f"{', '.join(SUPPORTED_RESPONSE_FORMATS)}"
             ),
             "response_format": "json",
@@ -101,8 +102,9 @@ def _encode_response(data: Mapping[str, Any], response_format: str) -> str:
     except Exception:
         return json.dumps({
             "error": (
-                "GCF response format requires optional dependency gcf-python. "
-                "Install with `pip install \"claude-ctx[gcf]\"`."
+                "GCF response format requires optional dependency "
+                "gcf-python. Install with `pip install "
+                "\"claude-ctx[gcf]\"`."
             ),
             "response_format": "json",
         })

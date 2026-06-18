@@ -358,7 +358,9 @@ class TestDispatchRouting:
             sys.modules,
             "gcf",
             SimpleNamespace(
-                encode_generic=lambda data: f"GCF profile=generic\nquery={data['query']}"
+                encode_generic=lambda data: (
+                    f"GCF profile=generic\nquery={data['query']}"
+                )
             ),
         )
 
@@ -384,7 +386,9 @@ class TestDispatchRouting:
             sys.modules,
             "gcf",
             SimpleNamespace(
-                encode_generic=lambda data: f"GCF profile=generic\nquery={data['query']}"
+                encode_generic=lambda data: (
+                    f"GCF profile=generic\nquery={data['query']}"
+                )
             ),
         )
 
