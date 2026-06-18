@@ -302,6 +302,40 @@ def test_process_next_entity_upsert_writes_overlay_pack_when_base_pack_exists(
     assert graph.has_edge("skill:worker-python", "skill:python-testing")
 
 
+def test_process_next_entity_upsert_writes_wiki_page_overlay_when_base_pack_exists(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    entity_text = "---\ntags:\n  - review\n---\n# custom-reviewer\n"
+    entity_path = _write_entity(wiki, "entities/agents/custom-reviewer.md", entity_text)
+    packs_dir = wiki / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"index.md": "# index\n"},
+    )
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="agent",
+        slug="custom-reviewer",
+        entity_path=entity_path,
+        content=entity_text,
+        action="created",
+        source="test",
+        now=10.0,
+    )
+    monkeypatch.setattr(wiki_queue_worker, "update_index", MagicMock())
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    merged = load_merged_wiki_pages(packs_dir)
+    assert merged["entities/agents/custom-reviewer.md"] == entity_text
+
+
 def test_process_next_entity_upsert_does_not_fail_when_incremental_attach_fails(
     tmp_path: Path,
     monkeypatch: Any,

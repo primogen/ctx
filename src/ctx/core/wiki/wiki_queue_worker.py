@@ -158,7 +158,9 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
             f"{entity_type}:{slug}: expected {expected_hash}, got {actual_hash}"
         )
 
+    page_relpath = _wiki_relative_path(wiki_path, entity_path)
     update_index(str(wiki_path), [slug], subject_type=subject_type)
+    _emit_wiki_page_upsert(wiki_path, page_relpath, text)
     attach_message = _try_incremental_attach(
         wiki_path=wiki_path,
         entity_type=entity_type,
@@ -173,6 +175,26 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
         source="entity-upsert",
     )
     return f"refreshed {subject_type} index for {slug}; {attach_message}"
+
+
+def _emit_wiki_page_upsert(wiki_path: Path, relpath: str, text: str) -> None:
+    packs_dir = wiki_path / "wiki-packs"
+    entries = discover_wiki_pack_manifests(packs_dir)
+    if not entries:
+        return
+    base = entries[0].manifest
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    content_hash = sha256(text.encode("utf-8")).hexdigest()[:12]
+    stem = relpath.removesuffix(".md").replace("/", "-").replace("\\", "-")
+    pack_id = f"overlay-{timestamp}-{stem}-{content_hash}"
+    write_wiki_overlay_pack(
+        pack_dir=packs_dir / pack_id,
+        pack_id=pack_id,
+        base_export_id=base.base_export_id,
+        parent_export_id=base.base_export_id,
+        pages={relpath: text},
+        tombstones=[],
+    )
 
 
 def _emit_wiki_page_tombstone(wiki_path: Path, relpath: str) -> None:
