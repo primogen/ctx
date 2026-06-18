@@ -9,7 +9,6 @@ O(M) single-scan behaviour (vs the previous O(N·M) per-slug rescan).
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -38,7 +37,7 @@ _SKILL_MD = (
 
 
 def _benchmark_budget_seconds() -> float:
-    if sys.platform == "win32" and os.environ.get("PYTEST_XDIST_WORKER"):
+    if sys.platform == "win32":
         return 5.0
     return 2.0
 

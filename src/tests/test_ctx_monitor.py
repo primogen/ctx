@@ -2781,16 +2781,16 @@ def test_render_home_formats_large_counts_with_commas(
     monkeypatch.setattr(cm, "_read_manifest", lambda: {"load": [None] * 10000})
     monkeypatch.setattr(cm, "_read_jsonl", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cm, "_graph_stats", lambda: {
-        "nodes": 100000,
-        "edges": 2900834,
+        "nodes": 79958,
+        "edges": 1778069,
         "available": True,
     })
     monkeypatch.setattr(cm, "_wiki_stats", lambda: {
-        "skills": 10000,
-        "agents": 464,
-        "mcps": 10787,
+        "skills": 68494,
+        "agents": 467,
+        "mcps": 10790,
         "harnesses": 207,
-        "total": 121458,
+        "total": 79958,
         "split_known": True,
     })
     monkeypatch.setattr(cm, "_runtime_lifecycle_summary", lambda: {
@@ -2802,11 +2802,10 @@ def test_render_home_formats_large_counts_with_commas(
     html_out = cm._render_home()
 
     assert ">10,000</div>" in html_out
-    assert ">121,458</div>" in html_out
-    assert ">100,000</div>" in html_out
-    assert "2,900,834 edges" in html_out
-    assert "10,000 skills" in html_out
-    assert "10,787 MCPs" in html_out
+    assert ">79,958</div>" in html_out
+    assert "1,778,069 edges" in html_out
+    assert "68,494 skills" in html_out
+    assert "10,790 MCPs" in html_out
     assert "10000</div>" not in html_out
     assert "100000</div>" not in html_out
 

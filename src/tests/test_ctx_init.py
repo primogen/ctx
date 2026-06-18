@@ -431,8 +431,8 @@ def test_lfs_pointer_graph_archive_is_ignored(
     graph_dir.mkdir()
     (graph_dir / "wiki-graph-runtime.tar.gz").write_text(
         "version https://git-lfs.github.com/spec/v1\n"
-        "oid sha256:98f67b3336f8b812799e8b901f33c4b1198da18ffaed539c1b83933a6d8ff4ad\n"
-        "size 137197902\n",
+        "oid sha256:993fc08377fdb09edcff4414c59b10fc121189b4a161bf796e3f8f6600907bb1\n"
+        "size 122141091\n",
         encoding="utf-8",
     )
     cwd = tmp_path / "cwd"

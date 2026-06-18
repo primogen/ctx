@@ -13,9 +13,9 @@ agents, and MCP servers.
 ## What's in it
 
 Authoritative numbers from the shipped tarball. The curated-core snapshot
-is **13,015 nodes** (1,551 curated skills + 467 agents + 10,790 MCP servers + 207 harnesses). Harness pages under `entities/harnesses/` are ingested into
+is **12,934 nodes** (1,470 curated skills + 467 agents + 10,790 MCP servers + 207 harnesses). Harness pages under `entities/harnesses/` are ingested into
 local rebuilds and the separate harness recommendation path. The
-tarball also carries **76,035 skill pages**; **74,484**
+tarball also carries **68,494 skill pages**; **67,024**
 skill bodies are hydrated as installable `SKILL.md` files under
 `converted/`; the **28,612** entries over the configured line
 limit were converted to gated micro-skill orchestrators. Full original bodies
@@ -25,19 +25,19 @@ are omitted from the shipped tarball.
 
 | | Count |
 |---|---:|
-| Total nodes | **87,499** |
-| Curated core nodes | **13,015** (1,551 skills + 467 agents + 10,790 MCP servers + 207 harnesses) |
-| Body-backed skill nodes | **74,484** hydrated installable skill entries |
-| Total edges | **2,067,487** |
-| Hydrated skill incident edges | **1,796,950** |
-| Hydrated skill semantic incident edges | **1,082,054** |
+| Total nodes | **79,958** |
+| Curated core nodes | **12,934** (1,470 skills + 467 agents + 10,790 MCP servers + 207 harnesses) |
+| Body-backed skill nodes | **67,024** hydrated installable skill entries |
+| Total edges | **1,778,069** |
+| Hydrated skill incident edges | **1,516,298** |
+| Hydrated skill semantic incident edges | **911,922** |
 | Communities | **52** (Louvain) |
-| Edge sources (overlap-deduped) | semantic 1,259,531 - tag 563,897 - token 317,507 |
-| Cross-type edges (skill <-> agent) | ~55,650 |
-| Cross-type edges (skill <-> MCP) | ~33,615 |
+| Edge sources (overlap-deduped) | semantic 1,088,763 - tag 474,837 - token 280,275 |
+| Cross-type edges (skill <-> agent) | ~52,382 |
+| Cross-type edges (skill <-> MCP) | ~30,295 |
 | Cross-type edges (agent <-> MCP) | ~229 |
-| Harness edges | **5,324** |
-| Shipped skill index | **74,484** observed body-backed skill entries |
+| Harness edges | **5,063** |
+| Shipped skill index | **67,024** observed body-backed skill entries |
 
 ## Install
 
@@ -168,7 +168,7 @@ raw = json.loads(
 edges_key = "links" if "links" in raw else "edges"
 G = node_link_graph(raw, edges=edges_key)
 
-# 87,499 nodes, 2,067,487 edges
+# 79,958 nodes, 1,778,069 edges
 print(G.number_of_nodes(), G.number_of_edges())
 
 # Find entities related to 'fastapi-pro' by edge weight
@@ -316,9 +316,9 @@ This page is intentionally current-state only. Older graph sizes made the public
 page look stale even when the headline table was correct, so historical refresh
 notes live in `CHANGELOG.md` instead of being repeated here.
 
-The shipped artifact currently records **87,499 nodes**, **2,067,487 edges**,
-**52 Louvain communities**, **1,259,531 semantic edges**, **563,897 tag edges**,
-and **317,507 slug-token edges**. The current build is fully reproducible from
+The shipped artifact currently records **79,958 nodes**, **1,778,069 edges**,
+**52 Louvain communities**, **1,088,763 semantic edges**, **474,837 tag edges**,
+and **280,275 slug-token edges**. The current build is fully reproducible from
 the wiki content and the checked-in graph build configuration.
 
 ## Pre-ship gates

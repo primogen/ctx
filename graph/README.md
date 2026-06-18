@@ -4,14 +4,14 @@ This directory ships the pre-built ctx LLM-wiki and knowledge graph.
 
 Current snapshot:
 
-- **87,499 graph nodes**
-- **2,067,487 graph edges**
+- **79,958 graph nodes**
+- **1,778,069 graph edges**
 - **52 Louvain communities**
-- **76,035 skill entity pages**; **74,484** have hydrated catalog bodies
+- **68,494 skill entity pages**; **67,024** have hydrated catalog bodies
 - **467 agent pages**
 - **10,790 MCP server pages**
 - **207 harness pages**
-- **74,484 hydrated imported `SKILL.md` bodies**
+- **67,024 hydrated imported `SKILL.md` bodies**
 - Long skill bodies are kept behind the configured micro-skill line gate; the
   shipped tarball excludes raw `SKILL.md.original` backups.
 
@@ -27,7 +27,7 @@ The runtime recommendation paths use this graph in two ways:
 | `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the skill index, 207 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
 | `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, skill indexes, SkillSpector stamps, and Obsidian metadata |
 | `skillspector-audit.jsonl.gz` | Compact per-skill audit records produced by a ctx-run static `--no-llm` pass with [NVIDIA SkillSpector](https://github.com/NVIDIA/SkillSpector). This is not NVIDIA endorsement or certification. The same gzip is embedded in `wiki-graph.tar.gz` as `security/skillspector-audit.jsonl.gz`. |
-| Skill catalog gzip | Compressed skill index for the 74,484 body-backed skill entries shipped in the wiki |
+| Skill catalog gzip | Compressed skill index for the 67,024 body-backed skill entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
 | `entity-overlays.jsonl` | Release overlay for first-class entities added after the base graph export; installed beside `graphify-out/graph.json` by `ctx-init --graph` |
 | `graphify-out/dashboard-neighborhoods.sqlite3` inside both tarballs | Compact top-neighbor index used by `ctx-monitor` so `/api/graph/<slug>.json` does not cold-parse the 818 MiB graph JSON |
@@ -114,14 +114,14 @@ For release-count validation, pin the exact snapshot numbers:
 
 ```bash
 python src/validate_graph_artifacts.py --deep \
-  --expected-nodes 87499 \
-  --expected-edges 2067487 \
-  --expected-semantic-edges 1259531 \
+  --expected-nodes 79958 \
+  --expected-edges 1778069 \
+  --expected-semantic-edges 1088763 \
   --expected-harness-nodes 207 \
-  --expected-skills-sh-nodes 74490 \
-  --expected-skills-sh-catalog-entries 74484 \
-  --expected-skills-sh-converted 74484 \
-  --expected-skill-pages 76035 \
+  --expected-skills-sh-nodes 67028 \
+  --expected-skills-sh-catalog-entries 67024 \
+  --expected-skills-sh-converted 67024 \
+  --expected-skill-pages 68494 \
   --expected-agent-pages 467 \
   --expected-mcp-pages 10790 \
   --expected-harness-pages 207
