@@ -77,6 +77,7 @@ ctx-tag-backfill = "ctx.core.quality.tag_backfill:main"
 # it currently requires Python 3.12+ while ctx supports Python 3.11.
 ctx-skillspector-scan = "ctx.core.quality.skillspector_service:main"
 ctx-skillspector-audit = "ctx.core.quality.skillspector_audit:main"
+ctx-skillspector-remediation = "ctx.core.quality.skillspector_remediation:main"
 # Plan 001 phase H7: the generic harness CLI — `ctx run`,
 # `ctx resume`, `ctx sessions`. Ships v1 of the model-agnostic
 # harness; requires the [harness] optional dep for LiteLLM.
