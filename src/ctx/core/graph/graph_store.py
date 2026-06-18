@@ -52,9 +52,9 @@ def build_graph_store(db_path: Path, graph: nx.Graph) -> None:
             CREATE INDEX idx_edges_target ON edges(target);
             """
         )
-        conn.execute(
-            "INSERT INTO metadata(key, value) VALUES(?, ?)",
-            ("schema_version", str(SCHEMA_VERSION)),
+        conn.executemany(
+            "INSERT INTO metadata(key, value) VALUES(:key, :value)",
+            _metadata_rows(graph),
         )
         conn.executemany(
             """
@@ -101,6 +101,13 @@ def graph_store_stats(db_path: Path) -> dict[str, int]:
             "nodes": int(conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]),
             "edges": int(conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]),
         }
+
+
+def graph_store_metadata(db_path: Path) -> dict[str, str]:
+    """Return metadata recorded when the graph store was materialized."""
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT key, value FROM metadata ORDER BY key").fetchall()
+    return {row["key"]: row["value"] for row in rows}
 
 
 def search_nodes(db_path: Path, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -208,6 +215,32 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def _metadata_rows(graph: nx.Graph) -> list[dict[str, str]]:
+    metadata = {
+        "schema_version": str(SCHEMA_VERSION),
+        "node_count": str(graph.number_of_nodes()),
+        "edge_count": str(graph.number_of_edges()),
+    }
+    for key, value in sorted(graph.graph.items()):
+        if value is None:
+            continue
+        metadata[str(key)] = _metadata_value(value)
+    return [
+        {"key": key, "value": value}
+        for key, value in sorted(metadata.items())
+    ]
+
+
+def _metadata_value(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    return json.dumps(_jsonable(value), sort_keys=True, default=str)
 
 
 def _node_row(node_id: str, attrs: dict[str, Any]) -> dict[str, Any]:

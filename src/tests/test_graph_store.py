@@ -8,6 +8,7 @@ import networkx as nx
 from ctx.core.graph.graph_store import (
     build_graph_store,
     build_graph_store_from_graph_dir,
+    graph_store_metadata,
     graph_store_stats,
     load_neighborhood,
     main,
@@ -153,6 +154,12 @@ def test_build_graph_store_from_graph_dir_prefers_active_packs(tmp_path: Path) -
     assert [row["id"] for row in search_nodes(db_path, "review")] == ["skill:review"]
     neighborhood = load_neighborhood(db_path, "skill:review")
     assert {edge["target"] for edge in neighborhood["edges"]} == {"mcp-server:github"}
+    metadata = graph_store_metadata(db_path)
+    assert metadata["ctx_graph_pack_source"] == "packs"
+    assert json.loads(metadata["ctx_pack_ids"]) == ["base-export-1", "overlay-review"]
+    assert metadata["ctx_pack_base_export_id"] == "export-1"
+    assert metadata["node_count"] == "3"
+    assert metadata["edge_count"] == "2"
 
 
 def test_build_graph_store_from_graph_dir_falls_back_to_legacy_graph_json(tmp_path: Path) -> None:
