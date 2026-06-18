@@ -9,6 +9,7 @@ from ctx.core.graph.graph_store import (
     build_graph_store,
     build_graph_store_from_graph_dir,
     graph_store_metadata,
+    graph_store_is_fresh,
     graph_store_stats,
     load_neighborhood,
     main,
@@ -160,6 +161,27 @@ def test_build_graph_store_from_graph_dir_prefers_active_packs(tmp_path: Path) -
     assert metadata["ctx_pack_base_export_id"] == "export-1"
     assert metadata["node_count"] == "3"
     assert metadata["edge_count"] == "2"
+    assert graph_store_is_fresh(db_path, graph_dir) is True
+    write_overlay_pack(
+        pack_dir=packs_dir / "overlay-docs",
+        pack_id="overlay-docs",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        nodes=[
+            {
+                "id": "skill:docs",
+                "label": "docs",
+                "title": "Docs",
+                "type": "skill",
+                "tags": ["docs"],
+            }
+        ],
+        edges=[],
+        tombstones=[],
+    )
+    assert graph_store_is_fresh(db_path, graph_dir) is False
 
 
 def test_build_graph_store_from_graph_dir_falls_back_to_legacy_graph_json(tmp_path: Path) -> None:
@@ -174,6 +196,11 @@ def test_build_graph_store_from_graph_dir_falls_back_to_legacy_graph_json(tmp_pa
 
     assert graph_store_stats(db_path) == {"nodes": 3, "edges": 2}
     assert search_nodes(db_path, "github")[0]["id"] == "mcp-server:github"
+    assert graph_store_is_fresh(db_path, graph_dir) is True
+    graph.add_node("skill:docs", label="docs", type="skill", tags=["docs"])
+    payload = nx.node_link_data(graph, edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert graph_store_is_fresh(db_path, graph_dir) is False
 
 
 def test_cli_builds_graph_store_from_graph_dir(tmp_path: Path) -> None:

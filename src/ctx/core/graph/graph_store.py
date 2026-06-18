@@ -7,8 +7,10 @@ small local SQLite store for fast node search and neighborhood lookups.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +19,12 @@ import networkx as nx
 SCHEMA_VERSION = 1
 
 
-def build_graph_store(db_path: Path, graph: nx.Graph) -> None:
+def build_graph_store(
+    db_path: Path,
+    graph: nx.Graph,
+    *,
+    extra_metadata: Mapping[str, str] | None = None,
+) -> None:
     """Materialize *graph* into a SQLite store at *db_path*."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
@@ -54,7 +61,7 @@ def build_graph_store(db_path: Path, graph: nx.Graph) -> None:
         )
         conn.executemany(
             "INSERT INTO metadata(key, value) VALUES(:key, :value)",
-            _metadata_rows(graph),
+            _metadata_rows(graph, extra_metadata=extra_metadata),
         )
         conn.executemany(
             """
@@ -90,7 +97,11 @@ def build_graph_store_from_graph_dir(
         graph_dir / "graph.json",
         apply_runtime_filter=apply_runtime_filter,
     )
-    build_graph_store(db_path, graph)
+    build_graph_store(
+        db_path,
+        graph,
+        extra_metadata=_graph_dir_source_metadata(graph_dir),
+    )
     return graph_store_stats(db_path)
 
 
@@ -108,6 +119,18 @@ def graph_store_metadata(db_path: Path) -> dict[str, str]:
     with _connect(db_path) as conn:
         rows = conn.execute("SELECT key, value FROM metadata ORDER BY key").fetchall()
     return {row["key"]: row["value"] for row in rows}
+
+
+def graph_store_is_fresh(db_path: Path, graph_dir: Path) -> bool:
+    """Return whether *db_path* still reflects *graph_dir* sources."""
+    if not db_path.is_file():
+        return False
+    try:
+        stored = graph_store_metadata(db_path)
+        current = _graph_dir_source_metadata(graph_dir)
+    except (OSError, sqlite3.DatabaseError, ValueError):
+        return False
+    return all(stored.get(key) == value for key, value in current.items())
 
 
 def search_nodes(db_path: Path, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -217,7 +240,11 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _metadata_rows(graph: nx.Graph) -> list[dict[str, str]]:
+def _metadata_rows(
+    graph: nx.Graph,
+    *,
+    extra_metadata: Mapping[str, str] | None = None,
+) -> list[dict[str, str]]:
     metadata = {
         "schema_version": str(SCHEMA_VERSION),
         "node_count": str(graph.number_of_nodes()),
@@ -227,10 +254,61 @@ def _metadata_rows(graph: nx.Graph) -> list[dict[str, str]]:
         if value is None:
             continue
         metadata[str(key)] = _metadata_value(value)
+    if extra_metadata:
+        metadata.update(extra_metadata)
     return [
         {"key": key, "value": value}
         for key, value in sorted(metadata.items())
     ]
+
+
+def _graph_dir_source_metadata(graph_dir: Path) -> dict[str, str]:
+    from ctx.core.graph.graph_packs import (  # noqa: PLC0415
+        discover_pack_manifests,
+        sha256_file,
+    )
+
+    packs_dir = graph_dir / "packs"
+    if packs_dir.is_dir():
+        entries = discover_pack_manifests(packs_dir)
+        if entries:
+            pack_ids = [entry.manifest.pack_id for entry in entries]
+            pack_payload = [
+                {
+                    "pack_id": entry.manifest.pack_id,
+                    "pack_type": entry.manifest.pack_type,
+                    "base_export_id": entry.manifest.base_export_id,
+                    "parent_export_id": entry.manifest.parent_export_id,
+                    "checksums": entry.manifest.checksums,
+                }
+                for entry in entries
+            ]
+            return {
+                "ctx_graph_store_source": "packs",
+                "ctx_graph_store_fingerprint": _fingerprint_payload(pack_payload),
+                "ctx_graph_store_pack_ids": json.dumps(pack_ids, sort_keys=True),
+            }
+
+    graph_json = graph_dir / "graph.json"
+    if graph_json.is_file():
+        return {
+            "ctx_graph_store_source": "graph.json",
+            "ctx_graph_store_fingerprint": sha256_file(graph_json),
+        }
+    return {
+        "ctx_graph_store_source": "missing",
+        "ctx_graph_store_fingerprint": "",
+    }
+
+
+def _fingerprint_payload(payload: object) -> str:
+    encoded = json.dumps(
+        _jsonable(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _metadata_value(value: object) -> str:
