@@ -4,15 +4,16 @@ This directory ships the pre-built ctx LLM-wiki and knowledge graph.
 
 Current snapshot:
 
-- **102,928 graph nodes**
-- **2,913,960 graph edges**
+- **79,958 graph nodes**
+- **1,778,069 graph edges**
 - **52 Louvain communities**
-- **91,464 skill entity pages**; **89,465** have hydrated catalog bodies
+- **68,494 skill entity pages**; **67,024** have hydrated catalog bodies
 - **467 agent pages**
 - **10,790 MCP server pages**
 - **207 harness pages**
-- **89,465 hydrated `SKILL.md` bodies**
-- **28,612 long skill bodies converted through the micro-skill gate**
+- **67,024 hydrated imported `SKILL.md` bodies**
+- Long skill bodies are kept behind the configured micro-skill line gate; the
+  shipped tarball excludes raw `SKILL.md.original` backups.
 
 The runtime recommendation paths use this graph in two ways:
 
@@ -24,8 +25,9 @@ The runtime recommendation paths use this graph in two ways:
 | File | Contents |
 |---|---|
 | `wiki-graph-runtime.tar.gz` | Fast install artifact used by default `ctx-init --graph`: `graphify-out/*`, the skill index, 207 harness pages, wiki index files, and Obsidian metadata needed for recommendations and harness dry-runs without expanding every entity page |
-| `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, skill indexes, and Obsidian metadata |
-| Skill catalog gzip | Compressed skill index for the 89,465 body-backed skill entries shipped in the wiki |
+| `wiki-graph.tar.gz` | Full LLM-wiki: entity pages, converted skill bodies, mirrored agent bodies, concept pages, `graphify-out/graph.json`, `graph-delta.json`, export manifest, communities, skill indexes, SkillSpector stamps, and Obsidian metadata |
+| `skillspector-audit.jsonl.gz` | Compact per-skill audit records produced by a ctx-run static `--no-llm` pass with [NVIDIA SkillSpector](https://github.com/NVIDIA/SkillSpector). This is not NVIDIA endorsement or certification. The same gzip is embedded in `wiki-graph.tar.gz` as `security/skillspector-audit.jsonl.gz`. |
+| Skill catalog gzip | Compressed skill index for the 67,024 body-backed skill entries shipped in the wiki |
 | `communities.json` | Current Louvain community export |
 | `entity-overlays.jsonl` | Release overlay for first-class entities added after the base graph export; installed beside `graphify-out/graph.json` by `ctx-init --graph` |
 | `graphify-out/dashboard-neighborhoods.sqlite3` inside both tarballs | Compact top-neighbor index used by `ctx-monitor` so `/api/graph/<slug>.json` does not cold-parse the 818 MiB graph JSON |
@@ -59,6 +61,7 @@ want local wiki browsing, Obsidian, or the converted skill body tree.
 - `converted-agents/` - mirrored agent bodies
 - `concepts/` - community concept pages
 - `external-catalogs/` - machine-readable skill index, summary, and coverage metadata
+- `security/skillspector-audit.jsonl.gz` - per-skill SkillSpector audit records
 - `graphify-out/graph.json` - NetworkX node-link graph
 - `graphify-out/graph-delta.json` - delta export for the latest graph generation
 - `graphify-out/graph-export-manifest.json` - export manifest tying graph, delta, communities, and report to one generation
@@ -111,14 +114,14 @@ For release-count validation, pin the exact snapshot numbers:
 
 ```bash
 python src/validate_graph_artifacts.py --deep \
-  --expected-nodes 102928 \
-  --expected-edges 2913960 \
-  --expected-semantic-edges 1683193 \
+  --expected-nodes 79958 \
+  --expected-edges 1778069 \
+  --expected-semantic-edges 1088763 \
   --expected-harness-nodes 207 \
-  --expected-skills-sh-nodes 89471 \
-  --expected-skills-sh-catalog-entries 89465 \
-  --expected-skills-sh-converted 89465 \
-  --expected-skill-pages 91464 \
+  --expected-skills-sh-nodes 67028 \
+  --expected-skills-sh-catalog-entries 67024 \
+  --expected-skills-sh-converted 67024 \
+  --expected-skill-pages 68494 \
   --expected-agent-pages 467 \
   --expected-mcp-pages 10790 \
   --expected-harness-pages 207

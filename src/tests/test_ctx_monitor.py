@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import hashlib
+import gzip
 import json
 import os
 import sqlite3
@@ -87,6 +88,16 @@ def _write_graph_manifest(claude: Path, export_id: str) -> None:
         json.dumps({"version": 1, "export_id": export_id}),
         encoding="utf-8",
     )
+
+
+def _write_skillspector_audit(claude: Path, records: list[dict]) -> Path:
+    path = claude / "skill-wiki" / "security" / "skillspector-audit.jsonl.gz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt", encoding="utf-8", newline="\n") as f:
+        for record in records:
+            f.write(json.dumps(record, sort_keys=True))
+            f.write("\n")
+    return path
 
 
 def test_read_jsonl_skips_non_object_lines(tmp_path: Path) -> None:
@@ -1938,6 +1949,170 @@ def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
     }
 
 
+def test_skillspector_payload_filters_by_tag_and_graph_family(
+    fake_claude: Path,
+) -> None:
+    _write_graph_manifest(fake_claude, "audit-export")
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    index_path = graph_dir / "dashboard-neighborhoods.sqlite3"
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE nodes(id TEXT PRIMARY KEY,label TEXT,type TEXT,tags TEXT,"
+            "description TEXT,quality_score REAL,usage_score REAL,degree INTEGER)"
+        )
+        conn.executemany(
+            "INSERT INTO meta VALUES(?,?)",
+            [
+                ("export_id", json.dumps("audit-export")),
+                ("max_degree", "10"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "skill:danger-skill",
+                    "Danger Skill",
+                    "skill",
+                    '["security","shell"]',
+                    "Runs shell checks for exfiltration review.",
+                    0.2,
+                    0.0,
+                    9,
+                ),
+                (
+                    "skill:safe-skill",
+                    "Safe Skill",
+                    "skill",
+                    '["python"]',
+                    "Safe Python helper.",
+                    0.9,
+                    0.1,
+                    2,
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    (graph_dir / "communities.json").write_text(
+        json.dumps({
+            "communities": {
+                "7": {
+                    "label": "Security Tools",
+                    "members": ["skill:danger-skill"],
+                },
+                "8": {
+                    "label": "Python Tools",
+                    "members": ["skill:safe-skill"],
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    _write_skillspector_audit(fake_claude, [
+        {
+            "schema_version": 1,
+            "slug": "danger-skill",
+            "status": "blocked",
+            "risk_score": 99,
+            "risk_severity": "CRITICAL",
+            "recommendation": "BLOCK",
+            "issues": 2,
+            "components": 1,
+            "content_sha256": "a" * 64,
+            "scanned_at": "2026-06-18T00:00:00+00:00",
+            "scanner": "NVIDIA SkillSpector",
+            "scanner_repo": "https://github.com/NVIDIA/SkillSpector",
+            "scanner_version": "2.2.3",
+            "mode": "static-no-llm",
+            "llm_requested": False,
+            "issue_rules": ["exfiltration-risk"],
+        },
+        {
+            "schema_version": 1,
+            "slug": "safe-skill",
+            "status": "passed",
+            "risk_score": 0,
+            "risk_severity": "LOW",
+            "recommendation": "SAFE",
+            "issues": 0,
+            "components": 1,
+            "content_sha256": "b" * 64,
+            "scanned_at": "2026-06-18T00:00:00+00:00",
+            "scanner": "NVIDIA SkillSpector",
+            "scanner_repo": "https://github.com/NVIDIA/SkillSpector",
+            "scanner_version": "2.2.3",
+            "mode": "static-no-llm",
+            "llm_requested": False,
+            "issue_rules": [],
+        },
+    ])
+
+    payload = cm._skillspector_audit_payload({
+        "q": "exfiltration",
+        "status": "blocked",
+        "severity": "CRITICAL",
+        "tag": "security",
+        "family": "Security Tools",
+        "limit": "10",
+    })
+
+    assert payload["summary"]["total"] == 2
+    assert payload["summary"]["problematic"] == 1
+    assert payload["summary"]["visible"] == 1
+    assert payload["records"][0]["slug"] == "danger-skill"
+    assert payload["records"][0]["family"] == "Security Tools"
+    assert payload["records"][0]["tags"] == ["security", "shell"]
+    assert {"value": "security", "count": 1} in payload["filters"]["tags"]
+    assert {"value": "Security Tools", "count": 1} in payload["filters"]["families"]
+
+
+def test_skillspector_page_and_api_route_render_audit(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_skillspector_audit(fake_claude, [{
+        "schema_version": 1,
+        "slug": "review-skill",
+        "status": "findings",
+        "risk_score": 80,
+        "risk_severity": "HIGH",
+        "recommendation": "REVIEW",
+        "issues": 1,
+        "components": 1,
+        "content_sha256": "c" * 64,
+        "scanned_at": "2026-06-18T00:00:00+00:00",
+        "scanner": "NVIDIA SkillSpector",
+        "scanner_repo": "https://github.com/NVIDIA/SkillSpector",
+        "scanner_version": "2.2.3",
+        "mode": "static-no-llm",
+        "llm_requested": False,
+        "issue_rules": ["prompt-injection"],
+    }])
+
+    html_out = cm._render_skillspector({"q": "prompt", "severity": "HIGH"})
+
+    assert "SkillSpector audit" in html_out
+    assert "/api/skillspector.json" in html_out
+    assert "review-skill" in html_out
+    assert "prompt-injection" in html_out
+    assert "/skillspector" in cm._layout("test", "<p>body</p>")
+
+    server, _thread, port = _serve_monitor(monkeypatch)
+    try:
+        status, payload = _get_json(port, "/api/skillspector.json?severity=HIGH&q=prompt")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert status == 200
+    assert payload["summary"]["visible"] == 1
+    assert payload["records"][0]["slug"] == "review-skill"
+
+
 def test_graph_neighborhood_uses_dashboard_index_when_overlay_is_already_indexed(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2606,16 +2781,16 @@ def test_render_home_formats_large_counts_with_commas(
     monkeypatch.setattr(cm, "_read_manifest", lambda: {"load": [None] * 10000})
     monkeypatch.setattr(cm, "_read_jsonl", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cm, "_graph_stats", lambda: {
-        "nodes": 100000,
-        "edges": 2900834,
+        "nodes": 79958,
+        "edges": 1778069,
         "available": True,
     })
     monkeypatch.setattr(cm, "_wiki_stats", lambda: {
-        "skills": 10000,
-        "agents": 464,
-        "mcps": 10787,
+        "skills": 68494,
+        "agents": 467,
+        "mcps": 10790,
         "harnesses": 207,
-        "total": 121458,
+        "total": 79958,
         "split_known": True,
     })
     monkeypatch.setattr(cm, "_runtime_lifecycle_summary", lambda: {
@@ -2627,11 +2802,10 @@ def test_render_home_formats_large_counts_with_commas(
     html_out = cm._render_home()
 
     assert ">10,000</div>" in html_out
-    assert ">121,458</div>" in html_out
-    assert ">100,000</div>" in html_out
-    assert "2,900,834 edges" in html_out
-    assert "10,000 skills" in html_out
-    assert "10,787 MCPs" in html_out
+    assert ">79,958</div>" in html_out
+    assert "1,778,069 edges" in html_out
+    assert "68,494 skills" in html_out
+    assert "10,790 MCPs" in html_out
     assert "10000</div>" not in html_out
     assert "100000</div>" not in html_out
 

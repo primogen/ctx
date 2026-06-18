@@ -68,18 +68,18 @@ def test_graph_contract_stats_use_preflight_exact_counts() -> None:
     stats = urs._read_graph_contract_stats()
 
     assert stats is not None
-    assert stats["nodes"] == 102928
-    assert stats["edges"] == 2913960
-    assert stats["skills"] == 91464
+    assert stats["nodes"] == 79958
+    assert stats["edges"] == 1778069
+    assert stats["skills"] == 68494
     assert stats["agents"] == 467
     assert stats["mcps"] == 10790
     assert stats["harnesses"] == 207
-    assert stats["skills_sh_entries"] == 89465
-    assert stats["skills_sh_bodies"] == 89465
-    assert stats["semantic_edges"] == 1683193
-    assert stats["tag_edges"] == 897784
-    assert stats["token_edges"] == 433245
-    assert stats["harness_edges"] == 6576
+    assert stats["skills_sh_entries"] == 67024
+    assert stats["skills_sh_bodies"] == 67024
+    assert stats["semantic_edges"] == 1088763
+    assert stats["tag_edges"] == 474837
+    assert stats["token_edges"] == 280275
+    assert stats["harness_edges"] == 5063
 
 
 def test_read_graph_stats_prefers_preflight_contract(

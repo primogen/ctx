@@ -50,14 +50,14 @@ _PUBLIC_DOCS_BASE_URL = os.environ.get(
     "https://stevesolun.github.io/ctx",
 ).rstrip("/")
 _GRAPH_DERIVED_STATS: dict[str, int] = {
-    "tag_edges": 897_784,
-    "token_edges": 433_245,
-    "hydrated_incident_edges": 2_605_721,
-    "hydrated_semantic_incident_edges": 1_500_648,
-    "cross_skill_agent_edges": 66_799,
-    "cross_skill_mcp_edges": 41_521,
+    "tag_edges": 474_837,
+    "token_edges": 280_275,
+    "hydrated_incident_edges": 1_516_298,
+    "hydrated_semantic_incident_edges": 911_922,
+    "cross_skill_agent_edges": 52_382,
+    "cross_skill_mcp_edges": 30_295,
     "cross_agent_mcp_edges": 229,
-    "harness_edges": 6_576,
+    "harness_edges": 5_063,
 }
 
 
@@ -620,10 +620,10 @@ def format_edges(n: int) -> str:
 Replacement = tuple[re.Pattern[str], str]
 
 _ENTITY_COUNT_REPLACEMENTS: tuple[tuple[str, str, str, str], ...] = (
-    ("skills", "Skills", "skill", r"badge/Skills-[0-9%,]+-"),
-    ("agents", "Agents", "agent", r"badge/Agents-[0-9%,]+-"),
-    ("mcps", "MCPs", "mcp-server", r"badge/MCPs-[0-9,%]+-"),
-    ("harnesses", "Harnesses", "harness", r"badge/Harnesses-[0-9,%]+-"),
+    ("skills", "Skills", "skill", r"badge/Skills-[0-9A-Fa-f%,]+-"),
+    ("agents", "Agents", "agent", r"badge/Agents-[0-9A-Fa-f%,]+-"),
+    ("mcps", "MCPs", "mcp-server", r"badge/MCPs-[0-9A-Fa-f%,]+-"),
+    ("harnesses", "Harnesses", "harness", r"badge/Harnesses-[0-9A-Fa-f%,]+-"),
 )
 _CATALOG_BEGIN = "<!-- ctx-catalog:begin -->"
 _CATALOG_END = "<!-- ctx-catalog:end -->"

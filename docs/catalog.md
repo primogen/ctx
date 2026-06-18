@@ -48,7 +48,7 @@ It is public and always reachable. The full live catalog runs locally inside
     <article class="ctx-catalog-card" data-type="skill" data-search="skill prompt workflow testing code review frontend backend security research">
       <span class="ctx-catalog-pill">Skills</span>
       <h3>Skills</h3>
-      <p class="ctx-catalog-muted">91,464 entities</p>
+      <p class="ctx-catalog-muted">68,494 entities</p>
       <a class="md-button" href="./?type=skill">Filter tiles</a>
       <a class="md-button" href="../dashboard/#catalog-badge-links">Open full catalog locally</a>
     </article>
