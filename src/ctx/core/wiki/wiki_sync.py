@@ -481,6 +481,12 @@ def upsert_usage(wiki_path: str, skill_name: str, session_date: str, used: bool)
 
         atomic_write_text(page_path, content, encoding="utf-8")
 
+    _emit_wiki_page_overlay(
+        wiki_path,
+        f"entities/skills/{skill_name}.md",
+        content,
+    )
+
 
 def mark_stale(wiki_path: str, skill_name: str) -> None:
     """Mark a skill entity page as stale."""
@@ -494,6 +500,12 @@ def mark_stale(wiki_path: str, skill_name: str) -> None:
         if old_status:
             content = content.replace(f"status: {old_status}", "status: stale")
         atomic_write_text(page_path, content, encoding="utf-8")
+
+    _emit_wiki_page_overlay(
+        wiki_path,
+        f"entities/skills/{skill_name}.md",
+        content,
+    )
 
 
 def main():

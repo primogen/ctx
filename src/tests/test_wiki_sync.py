@@ -1018,6 +1018,26 @@ class TestUpsertUsage:
         updated = (wiki / "entities" / "skills" / "my-skill.md").read_text(encoding="utf-8")
         assert "last_used: 2025-07-04" in updated
 
+    def test_usage_update_emits_overlay_when_base_wiki_pack_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wiki = self._wiki(tmp_path, monkeypatch)
+        original = _minimal_skill_page(date="2020-01-01")
+        self._write_page(wiki, "my-skill", original)
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"entities/skills/my-skill.md": original},
+        )
+
+        wiki_sync.upsert_usage(str(wiki), "my-skill", "2025-07-04", used=True)
+
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "use_count: 4" in merged["entities/skills/my-skill.md"]
+        assert "last_used: 2025-07-04" in merged["entities/skills/my-skill.md"]
+
     def test_atomic_write_failure_preserves_original_usage_page(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1121,6 +1141,26 @@ class TestMarkStale:
         # "status: installed" must be gone, "status: stale" appears exactly once
         assert "status: installed" not in updated
         assert updated.count("status: stale") == 1
+
+    def test_mark_stale_emits_overlay_when_base_wiki_pack_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wiki = self._wiki(tmp_path, monkeypatch)
+        page = wiki / "entities" / "skills" / "my-skill.md"
+        original = _minimal_skill_page()
+        page.write_text(original, encoding="utf-8")
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"entities/skills/my-skill.md": original},
+        )
+
+        wiki_sync.mark_stale(str(wiki), "my-skill")
+
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "status: stale" in merged["entities/skills/my-skill.md"]
 
     def test_page_without_status_field_not_corrupted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
