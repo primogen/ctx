@@ -21,6 +21,8 @@ def _record(
     *,
     status: str,
     severity: str | None = "LOW",
+    score: int | None = None,
+    recommendation: str | None = "SAFE",
     issues: int = 0,
     rules: tuple[str, ...] = (),
 ) -> SkillSpectorAuditRecord:
@@ -28,9 +30,9 @@ def _record(
         schema_version=1,
         slug=slug,
         status=status,
-        risk_score=100 if severity == "CRITICAL" else 0,
+        risk_score=score if score is not None else (100 if severity == "CRITICAL" else 0),
         risk_severity=severity,
-        recommendation="review",
+        recommendation=recommendation,
         issues=issues,
         components=1,
         content_sha256="abc",
@@ -64,10 +66,32 @@ def test_decide_record_removes_blocked_and_no_body() -> None:
     assert "no converted SKILL.md body" in no_body.reason
 
 
-def test_build_remediation_plan_keeps_findings_review_only() -> None:
+def test_build_remediation_plan_removes_risky_findings_only() -> None:
     records = {
         "safe": _record("safe", status="passed"),
-        "finding": _record("finding", status="findings", issues=2, rules=("EA2", "E1")),
+        "low_finding": _record(
+            "low_finding",
+            status="findings",
+            issues=2,
+            rules=("EA2", "E1"),
+            score=10,
+        ),
+        "medium_finding": _record(
+            "medium_finding",
+            status="findings",
+            severity="MEDIUM",
+            score=25,
+            recommendation="CAUTION",
+            issues=1,
+            rules=("TM1",),
+        ),
+        "dangerous_low_finding": _record(
+            "dangerous_low_finding",
+            status="findings",
+            issues=1,
+            rules=("SC2",),
+            score=5,
+        ),
         "blocked": _record("blocked", status="blocked", severity="HIGH", issues=1),
     }
 
@@ -77,24 +101,25 @@ def test_build_remediation_plan_keeps_findings_review_only() -> None:
         generated_at="2026-06-18T00:00:00+00:00",
     )
 
-    assert plan["summary"]["total"] == 3
+    assert plan["summary"]["total"] == 5
     assert plan["summary"]["actions"] == {
         "keep": 1,
-        "remove": 1,
+        "remove": 3,
         "review_remediate": 1,
     }
-    assert plan["remove_slugs"] == ["blocked"]
-    assert plan["review_slugs"] == ["finding"]
-    assert plan["summary"]["top_issue_rules"] == [
-        {"rule": "EA2", "count": 1},
-        {"rule": "E1", "count": 1},
+    assert plan["remove_slugs"] == [
+        "blocked",
+        "dangerous_low_finding",
+        "medium_finding",
     ]
+    assert plan["review_slugs"] == ["low_finding"]
+    assert plan["summary"]["top_issue_rules"][0] == {"rule": "EA2", "count": 1}
 
 
-def test_render_markdown_plan_explains_non_destructive_scope() -> None:
+def test_render_markdown_plan_explains_finding_policy() -> None:
     plan = build_remediation_plan(
         {
-            "finding": _record("finding", status="findings", issues=1),
+            "finding": _record("finding", status="findings", issues=1, score=10),
             "blocked": _record("blocked", status="blocked", severity="CRITICAL"),
         },
         generated_at="2026-06-18T00:00:00+00:00",
@@ -102,7 +127,7 @@ def test_render_markdown_plan_explains_non_destructive_scope() -> None:
 
     text = render_markdown_plan(plan)
 
-    assert "Finding records are review/remediate candidates" in text
+    assert "LOW/SAFE heuristic findings remain" in text
     assert "`remove`: **1**" in text
     assert "`review_remediate`: **1**" in text
 
@@ -114,7 +139,7 @@ def test_main_writes_json_plan(tmp_path: Path) -> None:
     _write_audit(
         audit,
         _record("blocked", status="blocked", severity="HIGH", issues=1),
-        _record("finding", status="findings", issues=1, rules=("EA2",)),
+        _record("finding", status="findings", issues=1, rules=("EA2",), score=10),
     )
 
     assert main(["--audit", str(audit), "--out", str(out)]) == 0

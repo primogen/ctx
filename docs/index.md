@@ -7,7 +7,7 @@ hide:
 
 [![Repo views](https://hits.sh/github.com/stevesolun/ctx.svg?label=repo%20views)](https://hits.sh/github.com/stevesolun/ctx/)
 
-Watches what you develop, walks a knowledge graph of **87,083 skill pages, 467 agents, 10,790 MCP servers, and 207 cataloged harnesses**, and recommends the
+Watches what you develop, walks a knowledge graph of **76,035 skill pages, 467 agents, 10,790 MCP servers, and 207 cataloged harnesses**, and recommends the
 right execution bundle on the fly. The live execution bundle is skills,
 agents, and MCP servers only; custom/API/local model users get a separate
 harness recommendation based on model choice and task goal. You decide
@@ -90,14 +90,14 @@ graph-based discovery:
 
 - A Karpathy 3-layer wiki at `~/.claude/skill-wiki/` is the single source
   of truth.
-- **98,547 graph nodes** for the shipped skill/agent/MCP/harness
-  inventory, including 87,083 skill pages
+- **87,499 graph nodes** for the shipped skill/agent/MCP/harness
+  inventory, including 76,035 skill pages
   and 207 harness pages under `entities/harnesses/`.
   Each page tracks tags, status, provenance, and usage where it applies.
-- A **knowledge graph** (98,547 nodes, 2,632,883 edges) built from a
-  13,191-node core plus 85,356 body-backed skill nodes.
+- A **knowledge graph** (87,499 nodes, 2,067,487 edges) built from a
+  13,015-node core plus 74,484 body-backed skill nodes.
   The graph has 52 Louvain communities and blends semantic cosine,
-  tag overlap, and slug-token overlap; 85,356 skill bodies are
+  tag overlap, and slug-token overlap; 74,484 skill bodies are
   shipped as installable `SKILL.md` files. Entries over the configured line
   threshold are converted to gated micro-skill orchestrators. Full source
   bodies were used for semantic graphing before packaging; `SKILL.md.original`
@@ -131,8 +131,8 @@ ones are flagged. New ones self-ingest.
 
     ---
 
-    98,547 shipped graph nodes: 13,191 curated skill/agent/MCP/harness nodes plus 85,356 body-backed skill nodes. The graph has
-    2,632,883 weighted edges and 52 Louvain communities.
+    87,499 shipped graph nodes: 13,015 curated skill/agent/MCP/harness nodes plus 74,484 body-backed skill nodes. The graph has
+    2,067,487 weighted edges and 52 Louvain communities.
     Ships pre-built in `graph/wiki-graph.tar.gz` and powers the
     graph-aware recommendations + the pre-ship `ctx-dedup-check` gate.
 
@@ -208,7 +208,7 @@ ones are flagged. New ones self-ingest.
     `ctx-incremental-attach`, `ctx-incremental-shadow`, `ctx-dedup-check`
     (pre-ship near-duplicate gate), and
     `ctx-tag-backfill` (entity hygiene), plus a fast runtime graph artifact
-    and the full ~439 MiB wiki tarball with **98,547 nodes / 2,632,883 edges / 52 Louvain communities**.
+    and the full ~439 MiB wiki tarball with **87,499 nodes / 2,067,487 edges / 52 Louvain communities**.
 
     [:octicons-arrow-right-24: CHANGELOG](https://github.com/stevesolun/ctx/blob/main/CHANGELOG.md) ·
     [Repository](https://github.com/stevesolun/ctx)

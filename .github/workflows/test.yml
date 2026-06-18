@@ -353,12 +353,12 @@ jobs:
           release_asset_poll_seconds = 10
           expected_graph_assets = {
               "graph/wiki-graph.tar.gz": {
-                  "sha256": "91b30795e7d200cf31a62a8749969d12658f5f74636d2de06d6b2b24b393c12f",
-                  "size": 457545675,
+                  "sha256": "26dccf94042f1d545674b58861344cd0e01532ad62400f9be63e4000b05c144d",
+                  "size": 364777883,
               },
               "graph/wiki-graph-runtime.tar.gz": {
-                  "sha256": "334fb19bace3fd6e4b92087850f17297fb248032957d123f3f1432dfde2e36c0",
-                  "size": 175773376,
+                  "sha256": "98f67b3336f8b812799e8b901f33c4b1198da18ffaed539c1b83933a6d8ff4ad",
+                  "size": 137197902,
               },
           }
 
@@ -453,18 +453,18 @@ jobs:
           python src/validate_graph_artifacts.py \
             --graph-dir graph \
             --deep \
-            --min-nodes 98000 \
+            --min-nodes 87000 \
             --min-edges 2000000 \
-            --min-skills-sh-nodes 85000 \
+            --min-skills-sh-nodes 74000 \
             --min-semantic-edges 1000000 \
-            --expected-nodes 98547 \
-            --expected-edges 2632883 \
-            --expected-semantic-edges 1559276 \
+            --expected-nodes 87499 \
+            --expected-edges 2067487 \
+            --expected-semantic-edges 1259531 \
             --expected-harness-nodes 207 \
-            --expected-skills-sh-nodes 85362 \
-            --expected-skills-sh-catalog-entries 85356 \
-            --expected-skills-sh-converted 85356 \
-            --expected-skill-pages 87083 \
+            --expected-skills-sh-nodes 74490 \
+            --expected-skills-sh-catalog-entries 74484 \
+            --expected-skills-sh-converted 74484 \
+            --expected-skill-pages 76035 \
             --expected-agent-pages 467 \
             --expected-mcp-pages 10790 \
             --expected-harness-pages 207 \
