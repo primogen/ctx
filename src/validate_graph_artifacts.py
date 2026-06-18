@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
+from ctx.core.graph.graph_packs import GraphPackManifestError, discover_pack_manifests
+
 GIT_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 DEFAULT_HARNESSES = {
     "agentops",
@@ -622,6 +624,7 @@ def validate_graph_artifacts(
     overlay_path = graph_dir / "entity-overlays.jsonl"
     for path in (tarball, runtime_tarball, catalog_path, communities_path, overlay_path):
         _require_real_file(path)
+    _validate_graph_packs(graph_dir / "packs")
 
     expected_harnesses = DEFAULT_HARNESSES if expected_harnesses is None else expected_harnesses
     runtime_export_id = _validate_runtime_graph_archive(
@@ -876,6 +879,16 @@ def validate_graph_artifacts(
                 f"{field_name} exact count mismatch: expected {expected}, got {actual}",
             )
     return stats
+
+
+def _validate_graph_packs(packs_dir: Path) -> None:
+    """Validate optional modular graph packs when present."""
+    if not packs_dir.exists():
+        return
+    try:
+        discover_pack_manifests(packs_dir)
+    except GraphPackManifestError as exc:
+        raise GraphArtifactError(f"graph pack validation failed: {exc}") from exc
 
 
 def _validate_runtime_graph_archive(

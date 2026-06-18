@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+from ctx.core.graph.graph_packs import build_pack_manifest, write_pack_manifest
 from scripts.ci_preflight import GRAPH_VALIDATE_ARGS
 from validate_graph_artifacts import (
     DEFAULT_HARNESSES,
@@ -747,6 +748,37 @@ def test_validate_graph_artifacts_rejects_invalid_entity_overlay(tmp_path: Path)
 
     with pytest.raises(GraphArtifactError, match="weight must be 0..1"):
         validate_graph_artifacts(tmp_path)
+
+
+def test_validate_graph_artifacts_rejects_corrupt_graph_pack(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    pack_dir = tmp_path / "packs" / "base-export-test"
+    pack_dir.mkdir(parents=True)
+    graph_path = pack_dir / "graph.json"
+    graph_path.write_text('{"nodes":[],"edges":[]}\n', encoding="utf-8")
+    write_pack_manifest(
+        pack_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=pack_dir,
+            pack_id="base-export-test",
+            pack_type="base",
+            base_export_id="export-test",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            node_count=0,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+    graph_path.write_text('{"nodes":[{"id":"skill:changed"}],"edges":[]}\n', encoding="utf-8")
+
+    with pytest.raises(GraphArtifactError, match="graph pack"):
+        validate_graph_artifacts(tmp_path, expected_harnesses={"langgraph"})
 
 
 def test_validate_graph_artifacts_rejects_original_backup_members(tmp_path: Path) -> None:
