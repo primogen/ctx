@@ -8,8 +8,10 @@ rewriting or extracting the full shipped wiki tarball for every entity update.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -363,6 +365,77 @@ def promote_wiki_pack_set(
     return result
 
 
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m ctx.core.wiki.wiki_packs",
+        description="Manage ctx LLM-wiki base and overlay packs.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    compact = sub.add_parser(
+        "compact",
+        help="Merge active base+overlay wiki packs into one staged base pack.",
+    )
+    compact.add_argument("--packs-dir", required=True, help="Active wiki packs directory")
+    compact.add_argument(
+        "--staged-pack-dir",
+        required=True,
+        help="Destination directory for the compacted base pack",
+    )
+    compact.add_argument("--base-export-id", required=True, help="New compacted wiki export id")
+    compact.add_argument("--created-at", help="Optional created_at value for the new manifest")
+    compact.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    promote = sub.add_parser(
+        "promote",
+        help="Promote a staged wiki pack set into the active packs directory.",
+    )
+    promote.add_argument(
+        "--staged-packs-dir",
+        required=True,
+        help="Validated staged wiki packs root to promote",
+    )
+    promote.add_argument("--active-packs-dir", required=True, help="Active wiki packs root")
+    promote.add_argument("--backup-packs-dir", help="Optional rollback directory for old packs")
+    promote.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    args = parser.parse_args(argv)
+
+    if args.command == "compact":
+        try:
+            manifest = compact_wiki_packs(
+                packs_dir=Path(args.packs_dir),
+                compacted_pack_dir=Path(args.staged_pack_dir),
+                base_export_id=args.base_export_id,
+                created_at=args.created_at,
+            )
+        except WikiPackManifestError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        payload = manifest.to_mapping()
+        payload["pack_dir"] = str(Path(args.staged_pack_dir))
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"compacted {manifest.pack_id}: {manifest.page_count} pages")
+        return 0
+    if args.command == "promote":
+        try:
+            result = promote_wiki_pack_set(
+                staged_packs_dir=Path(args.staged_packs_dir),
+                active_packs_dir=Path(args.active_packs_dir),
+                backup_packs_dir=Path(args.backup_packs_dir) if args.backup_packs_dir else None,
+            )
+        except WikiPackManifestError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        payload = result.to_mapping()
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            backup = result.backup_packs_dir or "<none>"
+            print(f"promoted {', '.join(result.promoted_pack_ids)}; backup: {backup}")
+        return 0
+    return 1
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -561,3 +634,7 @@ def _checksums(value: object) -> dict[str, str]:
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through main() tests.
+    raise SystemExit(main())

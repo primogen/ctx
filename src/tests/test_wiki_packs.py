@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from ctx.core.wiki import wiki_packs
 from ctx.core.wiki.wiki_packs import (
     WikiPackManifestError,
     compact_wiki_packs,
@@ -226,3 +227,73 @@ def test_promote_wiki_pack_set_replaces_active_and_writes_rollback_metadata(
     assert rollback_metadata["backup_packs_dir"] == str(backup_packs)
     assert rollback_metadata["promoted_pack_ids"] == ["base-export-2"]
     assert rollback_metadata["replaced_pack_ids"] == ["base-export-1"]
+
+
+def test_wiki_pack_cli_compact_emits_json(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    active_packs = tmp_path / "wiki" / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=active_packs / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"entities/skills/python.md": "# Python\nold\n"},
+    )
+    write_wiki_overlay_pack(
+        pack_dir=active_packs / "overlay-python",
+        pack_id="overlay-python",
+        base_export_id="wiki-export-1",
+        parent_export_id="wiki-export-1",
+        pages={"entities/skills/python.md": "# Python\nnew\n"},
+        tombstones=[],
+    )
+    staged_pack = tmp_path / "staged" / "base-export-2"
+
+    rc = wiki_packs.main([
+        "compact",
+        "--packs-dir",
+        str(active_packs),
+        "--staged-pack-dir",
+        str(staged_pack),
+        "--base-export-id",
+        "wiki-export-2",
+        "--json",
+    ])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pack_id"] == "base-export-2"
+    assert payload["page_count"] == 1
+    assert load_merged_wiki_pages(tmp_path / "staged") == {
+        "entities/skills/python.md": "# Python\nnew\n",
+    }
+
+
+def test_wiki_pack_cli_promote_emits_json(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    active_packs = tmp_path / "wiki" / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=active_packs / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"entities/skills/old.md": "# Old\n"},
+    )
+    staged_packs = tmp_path / "staged-packs"
+    write_wiki_base_pack(
+        pack_dir=staged_packs / "base-export-2",
+        pack_id="base-export-2",
+        base_export_id="wiki-export-2",
+        pages={"entities/skills/new.md": "# New\n"},
+    )
+
+    rc = wiki_packs.main([
+        "promote",
+        "--staged-packs-dir",
+        str(staged_packs),
+        "--active-packs-dir",
+        str(active_packs),
+        "--json",
+    ])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["promoted_pack_ids"] == ["base-export-2"]
+    assert payload["replaced_pack_ids"] == ["base-export-1"]
+    assert load_merged_wiki_pages(active_packs) == {"entities/skills/new.md": "# New\n"}
