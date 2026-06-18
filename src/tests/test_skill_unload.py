@@ -19,7 +19,10 @@ import sys
 import types
 from pathlib import Path
 
+import networkx as nx
 import pytest
+
+from ctx.core.graph.graph_packs import load_merged_pack_graph, write_base_pack
 
 
 @pytest.fixture()
@@ -275,3 +278,26 @@ def test_permanent_suppression_updates_graph_node(fake_home):
     assert unload.restore_load(["real-skill"]) == ["real-skill"]
     payload = json.loads(graph_path.read_text(encoding="utf-8"))
     assert payload["nodes"][0]["never_load"] is False
+
+
+def test_permanent_suppression_updates_graph_pack_node(fake_home):
+    unload, home = fake_home
+    packs_dir = home / ".claude" / "skill-wiki" / "graphify-out" / "packs"
+    graph = nx.Graph()
+    graph.add_node("skill:real-skill", label="real-skill", type="skill")
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="test-model",
+        graph=graph,
+    )
+
+    assert unload.set_never_load(["real-skill"]) == ["real-skill"]
+    merged = load_merged_pack_graph(packs_dir)
+    assert merged.nodes["skill:real-skill"]["never_load"] is True
+
+    assert unload.restore_load(["real-skill"]) == ["real-skill"]
+    merged = load_merged_pack_graph(packs_dir)
+    assert merged.nodes["skill:real-skill"]["never_load"] is False

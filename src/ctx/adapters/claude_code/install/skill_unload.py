@@ -17,8 +17,16 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 
+from ctx.core.graph.graph_packs import (
+    GraphPackManifestError,
+    discover_pack_manifests,
+    load_merged_pack_graph,
+    write_overlay_pack,
+)
 from ctx.core.wiki.wiki_utils import validate_skill_name
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
@@ -45,10 +53,16 @@ def _graph_node_id_for_page(name: str, page: Path) -> str | None:
 
 
 def _sync_graph_never_load(name: str, page: Path, value: bool) -> bool:
-    """Best-effort mirror of never_load into graph.json for immediate filtering."""
+    """Best-effort mirror of never_load into graph artifacts for immediate filtering."""
     node_id = _graph_node_id_for_page(name, page)
     if node_id is None:
         return False
+    legacy_changed = _sync_graph_json_never_load(node_id, value)
+    pack_changed = _sync_graph_pack_never_load(node_id, value)
+    return legacy_changed or pack_changed
+
+
+def _sync_graph_json_never_load(node_id: str, value: bool) -> bool:
     graph_json = WIKI_DIR / "graphify-out" / "graph.json"
     if not graph_json.is_file():
         return False
@@ -71,6 +85,42 @@ def _sync_graph_never_load(name: str, page: Path, value: bool) -> bool:
         return False
     _atomic_write_text(graph_json, json.dumps(payload, indent=2))
     return True
+
+
+def _sync_graph_pack_never_load(node_id: str, value: bool) -> bool:
+    packs_dir = WIKI_DIR / "graphify-out" / "packs"
+    try:
+        entries = discover_pack_manifests(packs_dir)
+        if not entries:
+            return False
+        graph = load_merged_pack_graph(packs_dir)
+        if node_id not in graph or bool(graph.nodes[node_id].get("never_load")) == value:
+            return False
+        base = entries[0].manifest
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        digest = sha256(f"{node_id}:{value}".encode("utf-8")).hexdigest()[:12]
+        stem = node_id.replace(":", "-")
+        pack_id = f"overlay-{timestamp}-{stem}-never-load-{digest}"
+        for suffix in ["", *[f"-{index}" for index in range(1, 1000)]]:
+            candidate = f"{pack_id}{suffix}"
+            pack_dir = packs_dir / candidate
+            if pack_dir.exists():
+                continue
+            write_overlay_pack(
+                pack_dir=pack_dir,
+                pack_id=candidate,
+                base_export_id=base.base_export_id,
+                parent_export_id=base.base_export_id,
+                config_hash=base.config_hash,
+                model_id=base.model_id,
+                nodes=[{"id": node_id, "never_load": value}],
+                edges=[],
+                tombstones=[],
+            )
+            return True
+    except (GraphPackManifestError, OSError):
+        return False
+    return False
 
 
 
