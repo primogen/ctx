@@ -831,6 +831,24 @@ class TestUpdateIndex:
         content = (wiki / "index.md").read_text(encoding="utf-8")
         assert "[[entities/plugins/my-plugin]]" in content
 
+    def test_update_index_emits_overlay_when_base_wiki_pack_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wiki = self._wiki_with_index(tmp_path, monkeypatch)
+        original = (wiki / "index.md").read_text(encoding="utf-8")
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"index.md": original},
+        )
+
+        wiki_sync.update_index(str(wiki), ["my-skill"])
+
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "[[entities/skills/my-skill]]" in merged["index.md"]
+
 
 # ---------------------------------------------------------------------------
 # TestAppendLog
@@ -930,6 +948,25 @@ class TestAppendLog:
         wiki_sync.append_log(str(wiki), "update", "some-skill", [])
         log = (wiki / "log.md").read_text(encoding="utf-8")
         assert f"## [{_FIXED_DATE}] update | some-skill" in log
+
+    def test_append_log_emits_overlay_when_base_wiki_pack_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wiki = self._wiki(tmp_path, monkeypatch)
+        original = (wiki / "log.md").read_text(encoding="utf-8")
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"log.md": original},
+        )
+
+        wiki_sync.append_log(str(wiki), "scan", "repo", ["detail"])
+
+        merged = load_merged_wiki_pages(packs_dir)
+        assert f"## [{_FIXED_DATE}] scan | repo" in merged["log.md"]
+        assert "- detail" in merged["log.md"]
 
 
 # ---------------------------------------------------------------------------

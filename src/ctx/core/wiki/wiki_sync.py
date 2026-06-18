@@ -425,7 +425,10 @@ def update_index(
                 lines[i] = re.sub(r"Last updated: [\d-]+", f"Last updated: {TODAY}", lines[i])
                 break
 
-        atomic_write_text(index_path, "\n".join(lines), encoding="utf-8")
+        updated_content = "\n".join(lines)
+        atomic_write_text(index_path, updated_content, encoding="utf-8")
+
+    _emit_wiki_page_overlay(wiki_path, "index.md", updated_content)
 
 
 def append_log(wiki_path: str, action: str, subject: str, details: list[str]) -> None:
@@ -438,7 +441,10 @@ def append_log(wiki_path: str, action: str, subject: str, details: list[str]) ->
     with file_lock(log_path):
         _reject_symlink(log_path)
         existing = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
-        atomic_write_text(log_path, existing + entry, encoding="utf-8")
+        content = existing + entry
+        atomic_write_text(log_path, content, encoding="utf-8")
+
+    _emit_wiki_page_overlay(wiki_path, "log.md", content)
 
 
 def upsert_usage(wiki_path: str, skill_name: str, session_date: str, used: bool) -> None:
