@@ -13,6 +13,7 @@ from ctx.core.graph.graph_packs import (
     load_merged_pack_graph,
     read_pack_manifest,
     sha256_file,
+    write_overlay_pack,
     write_pack_manifest,
 )
 
@@ -349,3 +350,71 @@ def test_load_merged_pack_graph_applies_tombstones(tmp_path: Path) -> None:
 
     assert "skill:old" not in graph
     assert graph.number_of_edges() == 0
+
+
+def test_write_overlay_pack_creates_jsonl_artifacts_and_manifest(tmp_path: Path) -> None:
+    pack_dir = tmp_path / "packs" / "overlay-review"
+
+    manifest = write_overlay_pack(
+        pack_dir=pack_dir,
+        pack_id="overlay-review",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        nodes=[{"id": "skill:review", "type": "skill"}],
+        edges=[{"source": "skill:review", "target": "skill:python", "weight": 0.7}],
+        tombstones=[{"node_id": "skill:old"}],
+    )
+
+    assert manifest.pack_type == "overlay"
+    assert manifest.node_count == 1
+    assert manifest.edge_count == 1
+    assert manifest.tombstone_count == 1
+    assert (pack_dir / "nodes.jsonl").read_text(encoding="utf-8").count("\n") == 1
+    assert (pack_dir / "edges.jsonl").read_text(encoding="utf-8").count("\n") == 1
+    assert (pack_dir / "tombstones.jsonl").read_text(encoding="utf-8").count("\n") == 1
+    assert read_pack_manifest(pack_dir / "graph-pack-manifest.json") == manifest
+
+
+def test_write_overlay_pack_rejects_empty_pack(tmp_path: Path) -> None:
+    with pytest.raises(GraphPackManifestError, match="empty overlay pack"):
+        write_overlay_pack(
+            pack_dir=tmp_path / "overlay-empty",
+            pack_id="overlay-empty",
+            base_export_id="export-1",
+            parent_export_id="export-1",
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            nodes=[],
+            edges=[],
+            tombstones=[],
+        )
+
+
+def test_write_overlay_pack_rejects_existing_manifest(tmp_path: Path) -> None:
+    pack_dir = tmp_path / "packs" / "overlay-review"
+    write_overlay_pack(
+        pack_dir=pack_dir,
+        pack_id="overlay-review",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        nodes=[{"id": "skill:review"}],
+        edges=[],
+        tombstones=[],
+    )
+
+    with pytest.raises(GraphPackManifestError, match="already exists"):
+        write_overlay_pack(
+            pack_dir=pack_dir,
+            pack_id="overlay-review",
+            base_export_id="export-1",
+            parent_export_id="export-1",
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            nodes=[{"id": "skill:changed"}],
+            edges=[],
+            tombstones=[],
+        )

@@ -167,6 +167,62 @@ def write_pack_manifest(path: Path, manifest: GraphPackManifest) -> None:
     )
 
 
+def write_overlay_pack(
+    *,
+    pack_dir: Path,
+    pack_id: str,
+    base_export_id: str,
+    parent_export_id: str,
+    config_hash: str,
+    model_id: str,
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    tombstones: list[dict[str, Any]],
+    created_at: str | None = None,
+) -> GraphPackManifest:
+    """Write a first-class overlay pack with JSONL payload artifacts."""
+    artifact_paths: list[str] = []
+    if nodes:
+        artifact_paths.append("nodes.jsonl")
+    if edges:
+        artifact_paths.append("edges.jsonl")
+    if tombstones:
+        artifact_paths.append("tombstones.jsonl")
+    if not artifact_paths:
+        raise GraphPackManifestError("empty overlay pack cannot be written")
+
+    manifest_path = pack_dir / GRAPH_PACK_MANIFEST
+    if manifest_path.exists():
+        raise GraphPackManifestError(f"graph overlay pack already exists: {pack_id}")
+
+    pack_dir.mkdir(parents=True, exist_ok=True)
+    for stale_name in ("nodes.jsonl", "edges.jsonl", "tombstones.jsonl"):
+        (pack_dir / stale_name).unlink(missing_ok=True)
+    if nodes:
+        _write_jsonl(pack_dir / "nodes.jsonl", nodes)
+    if edges:
+        _write_jsonl(pack_dir / "edges.jsonl", edges)
+    if tombstones:
+        _write_jsonl(pack_dir / "tombstones.jsonl", tombstones)
+
+    manifest = build_pack_manifest(
+        pack_dir=pack_dir,
+        pack_id=pack_id,
+        pack_type="overlay",
+        base_export_id=base_export_id,
+        parent_export_id=parent_export_id,
+        config_hash=config_hash,
+        model_id=model_id,
+        node_count=len(nodes),
+        edge_count=len(edges),
+        artifact_paths=artifact_paths,
+        tombstone_count=len(tombstones),
+        created_at=created_at,
+    )
+    write_pack_manifest(manifest_path, manifest)
+    return manifest
+
+
 def discover_pack_manifests(packs_dir: Path) -> list[GraphPackEntry]:
     """Discover and validate graph pack manifests under ``packs_dir``.
 
@@ -248,6 +304,14 @@ def _verify_pack_checksums(pack_dir: Path, manifest: GraphPackManifest) -> None:
             raise GraphPackManifestError(
                 f"graph pack {manifest.pack_id} checksum mismatch for {name}"
             )
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    atomic_write_text(
+        path,
+        "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
+        encoding="utf-8",
+    )
 
 
 def _load_base_graph(path: Path) -> nx.Graph:
