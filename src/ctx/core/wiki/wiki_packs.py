@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -91,6 +92,30 @@ class WikiPackEntry:
 
     path: Path
     manifest: WikiPackManifest
+
+
+@dataclass(frozen=True)
+class WikiPackPromotion:
+    """Result of promoting a staged wiki pack set into the active location."""
+
+    active_packs_dir: Path
+    backup_packs_dir: Path | None
+    rollback_metadata_path: Path
+    promoted_pack_ids: list[str]
+    replaced_pack_ids: list[str]
+    replaced_validation_error: str | None = None
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "schema_version": WIKI_PACK_SCHEMA_VERSION,
+            "operation": "wiki-pack-promote",
+            "active_packs_dir": str(self.active_packs_dir),
+            "backup_packs_dir": str(self.backup_packs_dir) if self.backup_packs_dir else None,
+            "rollback_metadata_path": str(self.rollback_metadata_path),
+            "promoted_pack_ids": self.promoted_pack_ids,
+            "replaced_pack_ids": self.replaced_pack_ids,
+            "replaced_validation_error": self.replaced_validation_error,
+        }
 
 
 def write_wiki_base_pack(
@@ -203,6 +228,97 @@ def load_merged_wiki_pages(packs_dir: Path) -> dict[str, str]:
         for row in _read_jsonl_objects(entry.path / "tombstones.jsonl"):
             pages.pop(_normalise_page_path(_required_str(row, "path")), None)
     return pages
+
+
+def compact_wiki_packs(
+    *,
+    packs_dir: Path,
+    compacted_pack_dir: Path,
+    base_export_id: str,
+    created_at: str | None = None,
+) -> WikiPackManifest:
+    """Merge active base+overlay wiki packs into one staged immutable base pack."""
+    entries = discover_wiki_pack_manifests(packs_dir)
+    if len(entries) <= 1:
+        raise WikiPackManifestError("wiki pack compaction requires at least one overlay pack")
+    pages = load_merged_wiki_pages(packs_dir)
+    return write_wiki_base_pack(
+        pack_dir=compacted_pack_dir,
+        pack_id=compacted_pack_dir.name,
+        base_export_id=base_export_id,
+        pages=pages,
+        created_at=created_at,
+    )
+
+
+def promote_wiki_pack_set(
+    *,
+    staged_packs_dir: Path,
+    active_packs_dir: Path,
+    backup_packs_dir: Path | None = None,
+) -> WikiPackPromotion:
+    """Promote a validated staged wiki pack set into the active packs directory."""
+    if _paths_same(staged_packs_dir, active_packs_dir):
+        raise WikiPackManifestError("staged and active wiki pack directories must differ")
+
+    staged_entries = discover_wiki_pack_manifests(staged_packs_dir)
+    if not staged_entries:
+        raise WikiPackManifestError("staged wiki pack set does not contain a valid base pack")
+    load_merged_wiki_pages(staged_packs_dir)
+    promoted_pack_ids = [entry.manifest.pack_id for entry in staged_entries]
+
+    replaced_pack_ids: list[str] = []
+    replaced_validation_error: str | None = None
+    active_exists = active_packs_dir.exists()
+    if active_exists:
+        if not active_packs_dir.is_dir():
+            raise WikiPackManifestError("active wiki packs path exists but is not a directory")
+        try:
+            replaced_pack_ids = [
+                entry.manifest.pack_id for entry in discover_wiki_pack_manifests(active_packs_dir)
+            ]
+        except WikiPackManifestError as exc:
+            replaced_validation_error = str(exc)
+
+    backup_dir = backup_packs_dir if active_exists else None
+    if backup_dir is None and active_exists:
+        backup_dir = _next_rollback_dir(active_packs_dir)
+    if backup_dir is not None:
+        if _paths_same(backup_dir, active_packs_dir) or _paths_same(backup_dir, staged_packs_dir):
+            raise WikiPackManifestError("backup wiki packs directory must be distinct")
+        if backup_dir.exists():
+            raise WikiPackManifestError(f"backup wiki packs directory already exists: {backup_dir}")
+        backup_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    active_packs_dir.parent.mkdir(parents=True, exist_ok=True)
+    moved_active = False
+    try:
+        if active_exists and backup_dir is not None:
+            active_packs_dir.replace(backup_dir)
+            moved_active = True
+        staged_packs_dir.replace(active_packs_dir)
+    except OSError as exc:
+        if moved_active and backup_dir is not None and backup_dir.exists() and not active_packs_dir.exists():
+            backup_dir.replace(active_packs_dir)
+        raise WikiPackManifestError(f"failed to promote wiki pack set: {exc}") from exc
+
+    metadata_path = active_packs_dir.with_name(f"{active_packs_dir.name}.rollback.json")
+    result = WikiPackPromotion(
+        active_packs_dir=active_packs_dir,
+        backup_packs_dir=backup_dir,
+        rollback_metadata_path=metadata_path,
+        promoted_pack_ids=promoted_pack_ids,
+        replaced_pack_ids=replaced_pack_ids,
+        replaced_validation_error=replaced_validation_error,
+    )
+    metadata = result.to_mapping()
+    metadata["created_at"] = datetime.now(UTC).isoformat()
+    atomic_write_text(
+        metadata_path,
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return result
 
 
 def sha256_file(path: Path) -> str:
@@ -323,6 +439,24 @@ def _validate_relative_name(value: str, label: str) -> None:
     parts = value.replace("\\", "/").split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise WikiPackManifestError(f"wiki pack manifest {label} is unsafe")
+
+
+def _paths_same(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left.absolute() == right.absolute()
+
+
+def _next_rollback_dir(active_packs_dir: Path) -> Path:
+    first = active_packs_dir.with_name(f"{active_packs_dir.name}.rollback")
+    if not first.exists():
+        return first
+    for index in range(2, 1000):
+        candidate = active_packs_dir.with_name(f"{active_packs_dir.name}.rollback-{index}")
+        if not candidate.exists():
+            return candidate
+    raise WikiPackManifestError("could not allocate wiki packs rollback directory")
 
 
 def _required_str(payload: dict[str, Any], key: str) -> str:

@@ -7,8 +7,10 @@ import pytest
 
 from ctx.core.wiki.wiki_packs import (
     WikiPackManifestError,
+    compact_wiki_packs,
     discover_wiki_pack_manifests,
     load_merged_wiki_pages,
+    promote_wiki_pack_set,
     read_wiki_pack_manifest,
     write_wiki_base_pack,
     write_wiki_overlay_pack,
@@ -115,3 +117,83 @@ def test_load_merged_wiki_pages_rejects_page_checksum_drift(tmp_path: Path) -> N
 
     with pytest.raises(WikiPackManifestError, match="checksum mismatch"):
         load_merged_wiki_pages(packs_dir)
+
+
+def test_compact_wiki_packs_writes_staged_base_without_mutating_active_packs(
+    tmp_path: Path,
+) -> None:
+    active_packs = tmp_path / "active" / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=active_packs / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={
+            "entities/skills/python.md": "# Python\nold\n",
+            "entities/skills/docker.md": "# Docker\n",
+        },
+    )
+    write_wiki_overlay_pack(
+        pack_dir=active_packs / "overlay-review",
+        pack_id="overlay-review",
+        base_export_id="wiki-export-1",
+        parent_export_id="wiki-export-1",
+        pages={
+            "entities/skills/python.md": "# Python\nnew\n",
+            "entities/agents/reviewer.md": "# Reviewer\n",
+        },
+        tombstones=["entities/skills/docker.md"],
+    )
+    staged_pack = tmp_path / "staged" / "base-export-2"
+
+    manifest = compact_wiki_packs(
+        packs_dir=active_packs,
+        compacted_pack_dir=staged_pack,
+        base_export_id="wiki-export-2",
+    )
+
+    assert manifest.pack_type == "base"
+    assert manifest.base_export_id == "wiki-export-2"
+    assert [entry.manifest.pack_id for entry in discover_wiki_pack_manifests(active_packs)] == [
+        "base-export-1",
+        "overlay-review",
+    ]
+    assert load_merged_wiki_pages(tmp_path / "staged") == {
+        "entities/agents/reviewer.md": "# Reviewer\n",
+        "entities/skills/python.md": "# Python\nnew\n",
+    }
+
+
+def test_promote_wiki_pack_set_replaces_active_and_writes_rollback_metadata(
+    tmp_path: Path,
+) -> None:
+    active_packs = tmp_path / "wiki" / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=active_packs / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"entities/skills/old.md": "# Old\n"},
+    )
+    staged_packs = tmp_path / "staged-packs"
+    write_wiki_base_pack(
+        pack_dir=staged_packs / "base-export-2",
+        pack_id="base-export-2",
+        base_export_id="wiki-export-2",
+        pages={"entities/skills/new.md": "# New\n"},
+    )
+    backup_packs = tmp_path / "wiki" / "wiki-packs.rollback"
+
+    result = promote_wiki_pack_set(
+        staged_packs_dir=staged_packs,
+        active_packs_dir=active_packs,
+        backup_packs_dir=backup_packs,
+    )
+
+    assert result.promoted_pack_ids == ["base-export-2"]
+    assert result.replaced_pack_ids == ["base-export-1"]
+    assert not staged_packs.exists()
+    assert load_merged_wiki_pages(active_packs) == {"entities/skills/new.md": "# New\n"}
+    assert load_merged_wiki_pages(backup_packs) == {"entities/skills/old.md": "# Old\n"}
+    rollback_metadata = json.loads(result.rollback_metadata_path.read_text(encoding="utf-8"))
+    assert rollback_metadata["backup_packs_dir"] == str(backup_packs)
+    assert rollback_metadata["promoted_pack_ids"] == ["base-export-2"]
+    assert rollback_metadata["replaced_pack_ids"] == ["base-export-1"]
