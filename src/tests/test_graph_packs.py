@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import networkx as nx
 import pytest
 
 from ctx.core.graph.graph_packs import (
     GraphPackManifest,
     GraphPackManifestError,
     build_pack_manifest,
+    compact_graph_packs,
     discover_pack_manifests,
     load_merged_pack_graph,
     read_pack_manifest,
     sha256_file,
+    write_base_pack,
     write_overlay_pack,
     write_pack_manifest,
 )
@@ -418,3 +421,125 @@ def test_write_overlay_pack_rejects_existing_manifest(tmp_path: Path) -> None:
             edges=[],
             tombstones=[],
         )
+
+
+def test_write_base_pack_creates_graph_json_and_manifest(tmp_path: Path) -> None:
+    graph = nx.Graph()
+    graph.add_node("skill:python", type="skill")
+    graph.add_node("agent:review", type="agent")
+    graph.add_edge("skill:python", "agent:review", weight=0.6)
+
+    manifest = write_base_pack(
+        pack_dir=tmp_path / "base-export-2",
+        pack_id="base-export-2",
+        base_export_id="export-2",
+        config_hash="config-sha",
+        model_id="model-a",
+        graph=graph,
+    )
+
+    payload = json.loads((tmp_path / "base-export-2" / "graph.json").read_text(encoding="utf-8"))
+    assert payload["graph"]["export_id"] == "export-2"
+    assert "edges" in payload
+    assert manifest.pack_type == "base"
+    assert manifest.node_count == 2
+    assert manifest.edge_count == 1
+    assert read_pack_manifest(tmp_path / "base-export-2" / "graph-pack-manifest.json") == manifest
+
+
+def test_pack_writers_reject_unsafe_pack_id_before_payload_write(tmp_path: Path) -> None:
+    graph = nx.Graph()
+    graph.add_node("skill:python", type="skill")
+
+    with pytest.raises(GraphPackManifestError, match="pack_id is unsafe"):
+        write_base_pack(
+            pack_dir=tmp_path / "base-bad",
+            pack_id="../base-bad",
+            base_export_id="export-2",
+            config_hash="config-sha",
+            model_id="model-a",
+            graph=graph,
+        )
+    assert not (tmp_path / "base-bad" / "graph.json").exists()
+
+    with pytest.raises(GraphPackManifestError, match="pack_id is unsafe"):
+        write_overlay_pack(
+            pack_dir=tmp_path / "overlay-bad",
+            pack_id="../overlay-bad",
+            base_export_id="export-1",
+            parent_export_id="export-1",
+            config_hash="config-sha",
+            model_id="model-a",
+            nodes=[{"id": "skill:review"}],
+            edges=[],
+            tombstones=[],
+        )
+    assert not (tmp_path / "overlay-bad" / "nodes.jsonl").exists()
+
+
+def test_compact_graph_packs_writes_staged_base_without_mutating_active_packs(
+    tmp_path: Path,
+) -> None:
+    active_packs = tmp_path / "active" / "packs"
+    base_dir = active_packs / "base-export-1"
+    overlay_dir = active_packs / "overlay-review"
+    base_dir.mkdir(parents=True)
+    overlay_dir.mkdir()
+    (base_dir / "graph.json").write_text(
+        json.dumps({
+            "graph": {"export_id": "export-1"},
+            "nodes": [
+                {"id": "skill:python", "type": "skill"},
+                {"id": "agent:review", "type": "agent"},
+            ],
+            "edges": [],
+        }),
+        encoding="utf-8",
+    )
+    write_pack_manifest(
+        base_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=base_dir,
+            pack_id="base-export-1",
+            pack_type="base",
+            base_export_id="export-1",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="model-a",
+            node_count=2,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+    write_overlay_pack(
+        pack_dir=overlay_dir,
+        pack_id="overlay-review",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="model-a",
+        nodes=[{"id": "skill:review", "type": "skill"}],
+        edges=[{"source": "skill:review", "target": "agent:review", "weight": 0.8}],
+        tombstones=[{"node_id": "skill:python"}],
+    )
+
+    staged_pack = tmp_path / "staged" / "base-export-2"
+    manifest = compact_graph_packs(
+        packs_dir=active_packs,
+        compacted_pack_dir=staged_pack,
+        base_export_id="export-2",
+    )
+
+    assert manifest.pack_type == "base"
+    assert manifest.base_export_id == "export-2"
+    assert [entry.manifest.pack_id for entry in discover_pack_manifests(active_packs)] == [
+        "base-export-1",
+        "overlay-review",
+    ]
+    staged_packs_root = tmp_path / "staged"
+    compacted = load_merged_pack_graph(staged_packs_root)
+    assert "skill:python" not in compacted
+    assert compacted.has_edge("skill:review", "agent:review")
+    assert compacted.graph["export_id"] == "export-2"
+    assert compacted.graph["ctx_compacted_from_base_export_id"] == "export-1"
+    assert compacted.graph["ctx_compacted_overlay_count"] == 1

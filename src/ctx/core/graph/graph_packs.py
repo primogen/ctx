@@ -4,8 +4,8 @@ Graph packs are the planned modular graph artifact unit:
 
 ``base-*`` packs hold a complete graph export, while ``overlay-*`` packs hold
 incremental nodes, edges, and tombstones that can be merged over a base pack.
-This module defines only the manifest contract. Reader migration is a separate
-phase so existing graph installs and recommendations keep their current path.
+This module defines the pack manifest contract plus the small reader/writer
+primitives used to stage overlay packs and periodic compacted base packs.
 """
 
 from __future__ import annotations
@@ -181,6 +181,7 @@ def write_overlay_pack(
     created_at: str | None = None,
 ) -> GraphPackManifest:
     """Write a first-class overlay pack with JSONL payload artifacts."""
+    _validate_relative_manifest_name(pack_id, "pack_id")
     artifact_paths: list[str] = []
     if nodes:
         artifact_paths.append("nodes.jsonl")
@@ -221,6 +222,80 @@ def write_overlay_pack(
     )
     write_pack_manifest(manifest_path, manifest)
     return manifest
+
+
+def write_base_pack(
+    *,
+    pack_dir: Path,
+    pack_id: str,
+    base_export_id: str,
+    config_hash: str,
+    model_id: str,
+    graph: nx.Graph,
+    created_at: str | None = None,
+) -> GraphPackManifest:
+    """Write an immutable base graph pack from a NetworkX graph."""
+    _validate_relative_manifest_name(pack_id, "pack_id")
+    manifest_path = pack_dir / GRAPH_PACK_MANIFEST
+    if manifest_path.exists():
+        raise GraphPackManifestError(f"graph base pack already exists: {pack_id}")
+
+    pack_dir.mkdir(parents=True, exist_ok=True)
+    graph_copy = graph.copy()
+    graph_copy.graph["export_id"] = base_export_id
+    graph_data = _node_link_payload(graph_copy)
+    atomic_write_text(
+        pack_dir / "graph.json",
+        json.dumps(graph_data, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    manifest = build_pack_manifest(
+        pack_dir=pack_dir,
+        pack_id=pack_id,
+        pack_type="base",
+        base_export_id=base_export_id,
+        parent_export_id=None,
+        config_hash=config_hash,
+        model_id=model_id,
+        node_count=graph_copy.number_of_nodes(),
+        edge_count=graph_copy.number_of_edges(),
+        artifact_paths=["graph.json"],
+        created_at=created_at,
+    )
+    write_pack_manifest(manifest_path, manifest)
+    return manifest
+
+
+def compact_graph_packs(
+    *,
+    packs_dir: Path,
+    compacted_pack_dir: Path,
+    base_export_id: str,
+    config_hash: str | None = None,
+    model_id: str | None = None,
+    created_at: str | None = None,
+) -> GraphPackManifest:
+    """Merge active base+overlay packs into one staged immutable base pack."""
+    entries = discover_pack_manifests(packs_dir)
+    if len(entries) <= 1:
+        raise GraphPackManifestError("graph pack compaction requires at least one overlay pack")
+
+    source_base = entries[0].manifest
+    graph = load_merged_pack_graph(packs_dir)
+    graph.graph["ctx_compacted_from_base_export_id"] = source_base.base_export_id
+    graph.graph["ctx_compacted_pack_ids"] = [
+        entry.manifest.pack_id for entry in entries
+    ]
+    graph.graph["ctx_compacted_overlay_count"] = len(entries) - 1
+    return write_base_pack(
+        pack_dir=compacted_pack_dir,
+        pack_id=compacted_pack_dir.name,
+        base_export_id=base_export_id,
+        config_hash=config_hash or source_base.config_hash,
+        model_id=model_id or source_base.model_id,
+        graph=graph,
+        created_at=created_at,
+    )
 
 
 def discover_pack_manifests(packs_dir: Path) -> list[GraphPackEntry]:
@@ -312,6 +387,17 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
         encoding="utf-8",
     )
+
+
+def _node_link_payload(graph: nx.Graph) -> dict[str, Any]:
+    try:
+        payload = nx.node_link_data(graph, edges="edges")
+    except TypeError:  # pragma: no cover - networkx < 3 compatibility.
+        payload = nx.node_link_data(graph)
+        payload["edges"] = payload.pop("links", payload.get("edges", []))
+    if not isinstance(payload, dict):
+        raise GraphPackManifestError("node-link export did not produce an object")
+    return payload
 
 
 def _load_base_graph(path: Path) -> nx.Graph:
