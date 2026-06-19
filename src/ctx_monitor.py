@@ -1559,6 +1559,93 @@ def _file_status(path: Path) -> dict[str, Any]:
     }
 
 
+def _pack_dir_status(packs_dir: Path, *, manifest_name: str) -> dict[str, Any]:
+    """Return summary state for a modular base/overlay pack directory."""
+    if not packs_dir.exists():
+        return {
+            "path": str(packs_dir),
+            "exists": False,
+            "size": 0,
+            "mtime": None,
+            "pack_count": 0,
+            "base_count": 0,
+            "overlay_count": 0,
+            "pack_ids": [],
+        }
+    if not packs_dir.is_dir():
+        return {
+            "path": str(packs_dir),
+            "exists": False,
+            "size": 0,
+            "mtime": None,
+            "pack_count": 0,
+            "base_count": 0,
+            "overlay_count": 0,
+            "pack_ids": [],
+            "error": "pack path is not a directory",
+        }
+    total_size = 0
+    newest = 0.0
+    pack_ids: list[str] = []
+    base_count = 0
+    overlay_count = 0
+    errors: list[str] = []
+    try:
+        files = [path for path in packs_dir.rglob("*") if path.is_file()]
+    except OSError as exc:
+        return {
+            "path": str(packs_dir),
+            "exists": False,
+            "size": 0,
+            "mtime": None,
+            "pack_count": 0,
+            "base_count": 0,
+            "overlay_count": 0,
+            "pack_ids": [],
+            "error": str(exc),
+        }
+    for path in files:
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        total_size += stat.st_size
+        newest = max(newest, stat.st_mtime)
+        if path.name != manifest_name:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        if not isinstance(payload, dict):
+            errors.append(f"{path.name}: manifest is not an object")
+            continue
+        pack_id = str(payload.get("pack_id") or path.parent.name)
+        pack_ids.append(pack_id)
+        pack_type = payload.get("pack_type")
+        if pack_type == "base":
+            base_count += 1
+        elif pack_type == "overlay":
+            overlay_count += 1
+        else:
+            errors.append(f"{pack_id}: unknown pack_type {pack_type!r}")
+    status: dict[str, Any] = {
+        "path": str(packs_dir),
+        "exists": True,
+        "size": total_size,
+        "mtime": newest or None,
+        "pack_count": len(pack_ids),
+        "base_count": base_count,
+        "overlay_count": overlay_count,
+        "pack_ids": sorted(pack_ids)[:25],
+    }
+    if errors:
+        status["error"] = "; ".join(errors[:5])
+    return status
+
+
 def _repo_graph_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "graph"
 
@@ -1686,8 +1773,16 @@ def _artifact_status() -> dict[str, Any]:
     ]
     return {
         "graph_json": _file_status(graph_dir / "graph.json"),
+        "graph_packs": _pack_dir_status(
+            graph_dir / "packs",
+            manifest_name="graph-pack-manifest.json",
+        ),
         "graph_delta_json": _file_status(graph_dir / "graph-delta.json"),
         "communities_json": _file_status(graph_dir / "communities.json"),
+        "wiki_packs": _pack_dir_status(
+            wiki / "wiki-packs",
+            manifest_name="wiki-pack-manifest.json",
+        ),
         "wiki_graph_tar": _first_existing_file_status(
             claude_graph_dir / "wiki-graph.tar.gz",
             repo_graph_dir / "wiki-graph.tar.gz",
@@ -6566,8 +6661,10 @@ def _render_status() -> str:
 
     artifact_keys = (
         ("graph_json", "graph.json"),
+        ("graph_packs", "graph packs"),
         ("graph_delta_json", "graph-delta.json"),
         ("communities_json", "communities.json"),
+        ("wiki_packs", "wiki packs"),
         ("wiki_graph_tar", "wiki-graph.tar.gz"),
         ("skills_sh_catalog", "skill-index.json.gz"),
     )
@@ -6576,6 +6673,7 @@ def _render_status() -> str:
         f"<td><code>{label}</code></td>"
         f"<td>{'yes' if artifacts[key].get('exists') else 'no'}</td>"
         f"<td>{int(artifacts[key].get('size') or 0):,}</td>"
+        f"<td class='muted'>{_artifact_detail(artifacts[key])}</td>"
         f"<td class='muted'>{html.escape(str(artifacts[key].get('path') or ''))}</td>"
         "</tr>"
         for key, label in artifact_keys
@@ -6620,7 +6718,7 @@ def _render_status() -> str:
         + job_rows
         + "</table></div>"
         "<div class='card'><strong>Artifact versions</strong>"
-        "<table><tr><th>Artifact</th><th>Exists</th><th>Bytes</th><th>Path</th></tr>"
+        "<table><tr><th>Artifact</th><th>Exists</th><th>Bytes</th><th>Details</th><th>Path</th></tr>"
         + artifact_rows
         + "</table></div>"
         f"<div class='card'><strong>Artifact promotions ({artifacts.get('promotion_count', 0)})</strong>"
@@ -6629,6 +6727,20 @@ def _render_status() -> str:
         + "</table></div>"
     )
     return _layout("Status", body)
+
+
+def _artifact_detail(status: dict[str, Any]) -> str:
+    if "pack_count" not in status:
+        return ""
+    detail = (
+        f"packs: {int(status.get('pack_count') or 0)} "
+        f"(base {int(status.get('base_count') or 0)}, "
+        f"overlay {int(status.get('overlay_count') or 0)})"
+    )
+    error = status.get("error")
+    if error:
+        detail += f" - {error}"
+    return html.escape(detail)
 
 
 def _render_events() -> str:

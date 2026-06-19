@@ -423,10 +423,42 @@ def test_artifact_status_reads_promotion_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import networkx as nx
+
+    from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack
+    from ctx.core.wiki.wiki_packs import write_wiki_base_pack
+
     graph_dir = fake_claude / "skill-wiki" / "graphify-out"
     graph_dir.mkdir(parents=True)
     graph = graph_dir / "graph.json"
     graph.write_text('{"nodes":[],"edges":[]}', encoding="utf-8")
+    pack_graph = nx.Graph()
+    pack_graph.add_node("skill:pack-skill", label="pack-skill", type="skill")
+    write_base_pack(
+        pack_dir=graph_dir / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=pack_graph,
+    )
+    write_overlay_pack(
+        pack_dir=graph_dir / "packs" / "overlay-pack-skill",
+        pack_id="overlay-pack-skill",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        nodes=[{"id": "skill:pack-skill", "label": "pack-skill", "type": "skill"}],
+        edges=[],
+        tombstones=[],
+    )
+    write_wiki_base_pack(
+        pack_dir=fake_claude / "skill-wiki" / "wiki-packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"entities/skills/pack-skill.md": "# Pack Skill\n"},
+    )
     repo_graph = tmp_path / "repo-graph"
     repo_graph.mkdir()
     (repo_graph / "wiki-graph.tar.gz").write_bytes(b"tar")
@@ -451,6 +483,13 @@ def test_artifact_status_reads_promotion_metadata(
 
     assert status["graph_json"]["exists"] is True
     assert status["graph_json"]["size"] == graph.stat().st_size
+    assert status["graph_packs"]["exists"] is True
+    assert status["graph_packs"]["pack_count"] == 2
+    assert status["graph_packs"]["base_count"] == 1
+    assert status["graph_packs"]["overlay_count"] == 1
+    assert status["wiki_packs"]["pack_count"] == 1
+    assert status["wiki_packs"]["base_count"] == 1
+    assert status["wiki_packs"]["overlay_count"] == 0
     assert status["wiki_graph_tar"]["path"] == str(repo_graph / "wiki-graph.tar.gz")
     assert status["skills_sh_catalog"]["path"] == str(runtime_catalog)
     assert status["promotion_count"] == 1
@@ -473,6 +512,9 @@ def test_status_page_and_api_show_queue_and_artifacts(
     html_out = cm._render_status()
     assert "Queue state" in html_out
     assert "Artifact versions" in html_out
+    assert "graph packs" in html_out
+    assert "wiki packs" in html_out
+    assert "packs: 0 (base 0, overlay 0)" in html_out
     assert wiki_queue.GRAPH_EXPORT_JOB in html_out
 
     server, _thread, port = _serve_monitor(monkeypatch)
