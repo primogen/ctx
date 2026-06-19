@@ -165,6 +165,66 @@ class HnswlibVectorIndex(NumpyFlatVectorIndex):
             atomic_write_json(meta_path, asdict(self.meta))
 
 
+class MergedVectorIndex:
+    """Query several compatible vector indexes as one logical index.
+
+    This is the base+delta primitive: a release can ship an immutable base
+    vector index while local entity upserts append a small delta index. Query
+    callers get one merged top-k result without rebuilding the base.
+    """
+
+    def __init__(self, indexes: list[NumpyFlatVectorIndex]) -> None:
+        if not indexes:
+            raise ValueError("at least one vector index is required")
+        first = indexes[0].meta
+        for index in indexes[1:]:
+            if (
+                index.meta.metric != first.metric
+                or index.meta.model_id != first.model_id
+                or index.meta.dim != first.dim
+                or index.meta.normalized != first.normalized
+            ):
+                raise ValueError("vector indexes are incompatible")
+        self.meta = first
+        self.indexes = list(indexes)
+
+    def query(
+        self,
+        vectors: np.ndarray,
+        *,
+        top_k: int,
+        min_score: float,
+        exclude_node_ids: set[str] | None = None,
+    ) -> list[list[Neighbor]]:
+        queries = _normalize_query_vectors(vectors, expected_dim=self.meta.dim)
+        if top_k <= 0:
+            return [[] for _ in range(len(queries))]
+        merged_rows = [dict[str, float]() for _ in range(len(queries))]
+        for index in self.indexes:
+            rows = index.query(
+                queries,
+                top_k=top_k,
+                min_score=min_score,
+                exclude_node_ids=exclude_node_ids,
+            )
+            for row_index, neighbors in enumerate(rows):
+                merged = merged_rows[row_index]
+                for neighbor in neighbors:
+                    previous = merged.get(neighbor.node_id)
+                    if previous is None or neighbor.score > previous:
+                        merged[neighbor.node_id] = neighbor.score
+        return [
+            [
+                Neighbor(node_id, score)
+                for node_id, score in sorted(
+                    row.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )[:top_k]
+            ]
+            for row in merged_rows
+        ]
+
+
 def build_vector_index(
     *,
     kind: str,
