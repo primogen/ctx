@@ -33,7 +33,7 @@ from ctx.adapters.generic.ctx_core_tools import (
 )
 from ctx.adapters.generic.providers import ToolCall, ToolDefinition
 from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack
-from ctx.core.wiki.wiki_packs import write_wiki_base_pack
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack, write_wiki_overlay_pack
 
 
 # ── Helpers: build a synthetic wiki + graph for the toolbox ────────────────
@@ -280,6 +280,48 @@ def test_wiki_page_cache_reloads_when_entity_page_changes(tmp_path: Path) -> Non
 
     assert first["results"] == []
     assert second["results"][0]["slug"] == "new-skill"
+
+
+def test_wiki_page_cache_reloads_when_wiki_pack_overlay_changes(tmp_path: Path) -> None:
+    wiki = tmp_path / "wiki"
+    packs_dir = wiki / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"entities/skills/old-skill.md": "# Old\n"},
+    )
+    toolbox = CtxCoreToolbox(wiki_dir=wiki, graph_path=tmp_path / "missing.json")
+    first = json.loads(toolbox.dispatch(ToolCall(
+        id="c1",
+        name="ctx__wiki_search",
+        arguments={"query": "packunique"},
+    )))
+
+    write_wiki_overlay_pack(
+        pack_dir=packs_dir / "overlay-packunique",
+        pack_id="overlay-packunique",
+        base_export_id="wiki-export-1",
+        parent_export_id="wiki-export-1",
+        pages={
+            "entities/skills/pack-skill.md": (
+                "---\n"
+                "name: pack-skill\n"
+                "tags: [packunique]\n"
+                "---\n"
+                "# Pack Skill\n"
+            ),
+        },
+        tombstones=[],
+    )
+    second = json.loads(toolbox.dispatch(ToolCall(
+        id="c2",
+        name="ctx__wiki_search",
+        arguments={"query": "packunique"},
+    )))
+
+    assert first["results"] == []
+    assert second["results"][0]["slug"] == "pack-skill"
 
 
 def test_semantic_miss_cache_clears_when_embedding_artifacts_change(

@@ -77,6 +77,7 @@ _RESPONSE_FORMAT_PROPERTY = {
 FileSignature = tuple[int, int, str]
 PackSignature = tuple[tuple[str, FileSignature | None], ...]
 GraphSignature = tuple[FileSignature | None, FileSignature | None, PackSignature]
+PageSignature = tuple[int, int, int, PackSignature]
 
 
 def _response_format_from_args(args: Mapping[str, Any]) -> str:
@@ -148,7 +149,7 @@ class CtxCoreToolbox:
         self._graph: Any | None = None       # networkx.Graph
         self._pages: list[Any] | None = None  # list[SkillPage]
         self._graph_signature: GraphSignature | None = None
-        self._pages_signature: tuple[int, int, int] | None = None
+        self._pages_signature: PageSignature | None = None
         self._semantic_signature: tuple[FileSignature | None, ...] | None = None
 
     # ── Public Protocol surface ─────────────────────────────────────────
@@ -806,7 +807,10 @@ def _graph_file_signature(path: Path) -> GraphSignature:
 
 
 def _graph_pack_signature(graph_path: Path) -> PackSignature:
-    packs_dir = graph_path.parent / "packs"
+    return _pack_dir_signature(graph_path.parent / "packs")
+
+
+def _pack_dir_signature(packs_dir: Path) -> PackSignature:
     if not packs_dir.is_dir():
         return ()
 
@@ -839,22 +843,21 @@ def _file_content_fingerprint(path: Path, size: int) -> str:
     return hasher.hexdigest()
 
 
-def _wiki_pages_signature(wiki: Path) -> tuple[int, int, int]:
+def _wiki_pages_signature(wiki: Path) -> PageSignature:
     entity_root = wiki / "entities"
     count = 0
     newest = 0
     total_size = 0
-    if not entity_root.is_dir():
-        return count, newest, total_size
-    for path in entity_root.rglob("*.md"):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        count += 1
-        newest = max(newest, stat.st_mtime_ns)
-        total_size += stat.st_size
-    return count, newest, total_size
+    if entity_root.is_dir():
+        for path in entity_root.rglob("*.md"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            count += 1
+            newest = max(newest, stat.st_mtime_ns)
+            total_size += stat.st_size
+    return count, newest, total_size, _pack_dir_signature(wiki / "wiki-packs")
 
 
 def _semantic_cache_signature(
