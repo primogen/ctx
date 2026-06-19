@@ -26,6 +26,7 @@ import pytest
 from ctx.core.graph.graph_packs import load_merged_pack_graph, write_base_pack
 from ctx.core.graph.graph_store import graph_store_stats
 from ctx.core.wiki import wiki_queue, wiki_queue_worker
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack
 
 
 @pytest.fixture()
@@ -304,6 +305,47 @@ def test_permanent_suppression_updates_graph_pack_node(fake_home):
     assert unload.restore_load(["real-skill"]) == ["real-skill"]
     merged = load_merged_pack_graph(packs_dir)
     assert merged.nodes["skill:real-skill"]["never_load"] is False
+
+
+def test_permanent_suppression_updates_pack_only_wiki_page(fake_home):
+    unload, home = fake_home
+    wiki = home / ".claude" / "skill-wiki"
+    legacy_page = wiki / "entities" / "skills" / "real-skill.md"
+    legacy_page.unlink()
+    write_wiki_base_pack(
+        pack_dir=wiki / "wiki-packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        pages={
+            "entities/skills/real-skill.md": (
+                "---\n"
+                "name: real-skill\n"
+                "status: stale\n"
+                "never_load: false\n"
+                "---\n\n"
+                "# real-skill\n"
+            ),
+        },
+    )
+    packs_dir = wiki / "graphify-out" / "packs"
+    graph = nx.Graph()
+    graph.add_node("skill:real-skill", label="real-skill", type="skill")
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="test-model",
+        graph=graph,
+    )
+
+    assert unload.get_stale_skills(entity_type="skill") == ["real-skill"]
+    assert unload.set_never_load(["real-skill"], entity_type="skill") == ["real-skill"]
+
+    merged_pages = load_merged_wiki_pages(wiki / "wiki-packs")
+    assert "never_load: true" in merged_pages["entities/skills/real-skill.md"]
+    merged_graph = load_merged_pack_graph(packs_dir)
+    assert merged_graph.nodes["skill:real-skill"]["never_load"] is True
 
 
 def test_permanent_suppression_refreshes_graph_store_from_pack_overlay(fake_home):
