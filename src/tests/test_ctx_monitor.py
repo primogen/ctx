@@ -1846,6 +1846,65 @@ def test_graph_helpers_reuse_graph_loaded_from_same_file(
     assert calls == [graph_file]
 
 
+def test_dashboard_graph_cache_reuses_pack_only_graph(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import networkx as nx
+    import sys
+
+    from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack
+
+    graph_out = fake_claude / "skill-wiki" / "graphify-out"
+    graph_file = graph_out / "graph.json"
+    pack_graph = nx.Graph()
+    pack_graph.add_node("skill:python-patterns", label="python-patterns", type="skill")
+    write_base_pack(
+        pack_dir=graph_out / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=pack_graph,
+    )
+    assert not graph_file.exists()
+
+    G = nx.Graph()
+    G.add_node("skill:python-patterns", label="python-patterns", type="skill")
+    calls: list[tuple[Path | None, dict[str, object]]] = []
+
+    def _load_graph(path: Path | None = None, **kwargs: object):
+        calls.append((path, kwargs))
+        return G
+
+    fake = type("M", (), {"load_graph": staticmethod(_load_graph)})
+    monkeypatch.setitem(sys.modules, "ctx.core.graph.resolve_graph", fake)
+    monkeypatch.setattr(cm, "_GRAPH_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_GRAPH_CACHE_VALUE", None)
+
+    assert cm._load_dashboard_graph() is G
+    assert cm._load_dashboard_graph() is G
+    assert calls == [(graph_file, {"apply_runtime_filter": False})]
+
+    write_overlay_pack(
+        pack_dir=graph_out / "packs" / "overlay-pack-target",
+        pack_id="overlay-pack-target",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        nodes=[{"id": "skill:pack-target", "label": "pack-target", "type": "skill"}],
+        edges=[],
+        tombstones=[],
+    )
+
+    assert cm._load_dashboard_graph() is G
+    assert calls == [
+        (graph_file, {"apply_runtime_filter": False}),
+        (graph_file, {"apply_runtime_filter": False}),
+    ]
+
+
 def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
