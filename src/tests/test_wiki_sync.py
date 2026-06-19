@@ -481,6 +481,27 @@ class TestUpsertSkillPage:
         assert "title: my-skill" in merged["entities/skills/my-skill.md"]
         assert "# my-skill" in merged["entities/skills/my-skill.md"]
 
+    def test_new_page_uses_pack_only_entity_page(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _pin_today(monkeypatch)
+        wiki = tmp_path / "wiki"
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"index.md": _minimal_index()},
+        )
+
+        is_new = wiki_sync.upsert_skill_page(str(wiki), "my-skill", self._skill_info())
+
+        assert is_new is True
+        assert not (wiki / "entities" / "skills" / "my-skill.md").exists()
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "title: my-skill" in merged["entities/skills/my-skill.md"]
+        assert "use_count: 1" in merged["entities/skills/my-skill.md"]
+
     # --- update path ---
 
     def test_returns_false_for_existing_page(
@@ -524,6 +545,27 @@ class TestUpsertSkillPage:
 
         merged = load_merged_wiki_pages(packs_dir)
         assert "use_count: 4" in merged["entities/skills/my-skill.md"]
+
+    def test_update_uses_pack_only_entity_page(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _pin_today(monkeypatch)
+        wiki = tmp_path / "wiki"
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"entities/skills/my-skill.md": _minimal_skill_page()},
+        )
+
+        is_new = wiki_sync.upsert_skill_page(str(wiki), "my-skill", self._skill_info())
+
+        assert is_new is False
+        assert not (wiki / "entities" / "skills" / "my-skill.md").exists()
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "use_count: 4" in merged["entities/skills/my-skill.md"]
+        assert f"last_used: {_FIXED_DATE}" in merged["entities/skills/my-skill.md"]
 
     def test_update_bumps_updated_date(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1115,6 +1157,27 @@ class TestUpsertUsage:
         assert "use_count: 4" in merged["entities/skills/my-skill.md"]
         assert "last_used: 2025-07-04" in merged["entities/skills/my-skill.md"]
 
+    def test_usage_update_uses_pack_only_entity_page(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _pin_today(monkeypatch)
+        wiki = tmp_path / "wiki"
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"entities/skills/my-skill.md": _minimal_skill_page(date="2020-01-01")},
+        )
+
+        wiki_sync.upsert_usage(str(wiki), "my-skill", "2025-07-04", used=True)
+
+        assert not (wiki / "entities" / "skills" / "my-skill.md").exists()
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "use_count: 4" in merged["entities/skills/my-skill.md"]
+        assert "session_count: 1" in merged["entities/skills/my-skill.md"]
+        assert "last_used: 2025-07-04" in merged["entities/skills/my-skill.md"]
+
     def test_atomic_write_failure_preserves_original_usage_page(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1236,6 +1299,25 @@ class TestMarkStale:
 
         wiki_sync.mark_stale(str(wiki), "my-skill")
 
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "status: stale" in merged["entities/skills/my-skill.md"]
+
+    def test_mark_stale_uses_pack_only_entity_page(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _pin_today(monkeypatch)
+        wiki = tmp_path / "wiki"
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"entities/skills/my-skill.md": _minimal_skill_page()},
+        )
+
+        wiki_sync.mark_stale(str(wiki), "my-skill")
+
+        assert not (wiki / "entities" / "skills" / "my-skill.md").exists()
         merged = load_merged_wiki_pages(packs_dir)
         assert "status: stale" in merged["entities/skills/my-skill.md"]
 

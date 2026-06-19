@@ -229,6 +229,7 @@ def _write_wiki_page(wiki_path: str, relpath: str, content: str) -> None:
     if path.exists() or not packs_dir.is_dir():
         path.parent.mkdir(parents=True, exist_ok=True)
         _reject_symlink(path.parent)
+        _reject_symlink(path)
         atomic_write_text(path, content, encoding="utf-8")
     if packs_dir.is_dir():
         _emit_wiki_page_overlay(wiki_path, relpath, content)
@@ -250,12 +251,12 @@ def upsert_skill_page(
             f"expected one of {sorted(_ENTITY_TYPE_FOR_SUBJECT_TYPE)!r}"
         )
     entity_type = _ENTITY_TYPE_FOR_SUBJECT_TYPE[subject_type]
-    page_path = _entity_page_path(wiki_path, subject_type, skill_name)
-    page_path.parent.mkdir(parents=True, exist_ok=True)
-    _reject_symlink(page_path.parent)
+    relpath = f"{_entity_index_link(subject_type, skill_name)}.md"
+    page_path = Path(wiki_path) / relpath
     with file_lock(page_path):
         _reject_symlink(page_path)
-        is_new = not page_path.exists()
+        content = _read_wiki_page(wiki_path, relpath)
+        is_new = content is None
 
         if is_new:
             # Infer tags from reason
@@ -311,10 +312,9 @@ Detected and loaded by skill-router.
 |------|------|---------|
 | {TODAY} | {safe_repo} | Loaded by router |
 """
-            atomic_write_text(page_path, content, encoding="utf-8")
         else:
             # Update existing page: bump updated date and use_count
-            content = page_path.read_text(encoding="utf-8")
+            assert content is not None
             content = re.sub(
                 r"^updated: .+$", f"updated: {TODAY}",
                 content, count=1, flags=re.MULTILINE,
@@ -335,13 +335,7 @@ Detected and loaded by skill-router.
                 r"^last_used: .+$", f"last_used: {TODAY}",
                 content, count=1, flags=re.MULTILINE,
             )
-            atomic_write_text(page_path, content, encoding="utf-8")
-
-    _emit_wiki_page_overlay(
-        wiki_path,
-        f"{_entity_index_link(subject_type, skill_name)}.md",
-        content,
-    )
+        _write_wiki_page(wiki_path, relpath, content)
     return is_new
 
 
@@ -464,12 +458,13 @@ def append_log(wiki_path: str, action: str, subject: str, details: list[str]) ->
 
 def upsert_usage(wiki_path: str, skill_name: str, session_date: str, used: bool) -> None:
     """Update use_count and session_count for a skill page. Called by usage-tracker."""
-    page_path = Path(wiki_path) / "entities" / "skills" / f"{skill_name}.md"
+    relpath = f"entities/skills/{skill_name}.md"
+    page_path = Path(wiki_path) / relpath
     with file_lock(page_path):
         _reject_symlink(page_path)
-        if not page_path.exists():
+        content = _read_wiki_page(wiki_path, relpath)
+        if content is None:
             return
-        content = page_path.read_text(encoding="utf-8")
 
         # session_count
         old_session = _find_field(content, "session_count")
@@ -500,33 +495,22 @@ def upsert_usage(wiki_path: str, skill_name: str, session_date: str, used: bool)
                 content, count=1, flags=re.MULTILINE,
             )
 
-        atomic_write_text(page_path, content, encoding="utf-8")
-
-    _emit_wiki_page_overlay(
-        wiki_path,
-        f"entities/skills/{skill_name}.md",
-        content,
-    )
+        _write_wiki_page(wiki_path, relpath, content)
 
 
 def mark_stale(wiki_path: str, skill_name: str) -> None:
     """Mark a skill entity page as stale."""
-    page_path = Path(wiki_path) / "entities" / "skills" / f"{skill_name}.md"
+    relpath = f"entities/skills/{skill_name}.md"
+    page_path = Path(wiki_path) / relpath
     with file_lock(page_path):
         _reject_symlink(page_path)
-        if not page_path.exists():
+        content = _read_wiki_page(wiki_path, relpath)
+        if content is None:
             return
-        content = page_path.read_text(encoding="utf-8")
         old_status = _find_field(content, "status")
         if old_status:
             content = content.replace(f"status: {old_status}", "status: stale")
-        atomic_write_text(page_path, content, encoding="utf-8")
-
-    _emit_wiki_page_overlay(
-        wiki_path,
-        f"entities/skills/{skill_name}.md",
-        content,
-    )
+        _write_wiki_page(wiki_path, relpath, content)
 
 
 def main():
