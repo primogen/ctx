@@ -144,7 +144,12 @@ def main(argv: list[str] | None = None) -> int:
         description="Shadow-validate incremental ANN graph attach.",
     )
     parser.add_argument("--index-dir", required=True)
-    parser.add_argument("--graph", help="Optional graph.json baseline")
+    graph_source = parser.add_mutually_exclusive_group()
+    graph_source.add_argument("--graph", help="Optional graphify-out/graph.json baseline")
+    graph_source.add_argument(
+        "--graph-dir",
+        help="Optional graphify-out directory; supports active packs without graph.json",
+    )
     parser.add_argument("--sample-size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--node", action="append", default=[])
@@ -156,7 +161,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-fail", action="store_true")
     args = parser.parse_args(argv)
 
-    graph = load_graph(Path(args.graph)) if args.graph else None
+    graph_path = Path(args.graph) if args.graph else None
+    if args.graph_dir:
+        graph_path = Path(args.graph_dir) / "graph.json"
+    graph = load_graph(graph_path) if graph_path is not None else None
     report = run_shadow_validation(
         index_dir=Path(args.index_dir),
         graph=graph,
