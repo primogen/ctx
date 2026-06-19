@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import sys
-from types import SimpleNamespace
+from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -301,6 +302,52 @@ def test_process_next_entity_upsert_writes_overlay_pack_when_base_pack_exists(
     assert len(overlay_packs) == 1
     graph = load_merged_pack_graph(packs_dir)
     assert graph.has_edge("skill:worker-python", "skill:python-testing")
+    jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
+    assert [job.kind for job in jobs] == [
+        wiki_queue.ENTITY_UPSERT_JOB,
+        wiki_queue.GRAPH_STORE_REFRESH_JOB,
+    ]
+    assert jobs[1].payload == {"source": "entity-upsert"}
+
+
+def test_process_next_entity_upsert_writes_node_pack_without_vector_index(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_path = _write_base_graph_for_overlay(wiki)
+    packs_dir = _write_base_graph_pack_for_overlay(wiki, graph_path)
+    entity_text = "---\ntags:\n  - docs\n---\n# docs-helper\n"
+    entity_path = _write_entity(wiki, "entities/skills/docs-helper.md", entity_text)
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="docs-helper",
+        entity_path=entity_path,
+        content=entity_text,
+        action="created",
+        source="test",
+        now=10.0,
+    )
+    monkeypatch.setattr(wiki_queue_worker, "update_index", MagicMock())
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert (
+        "incremental attach skipped (no vector index); node overlay pack inserted"
+        in result.message
+    )
+    graph = load_merged_pack_graph(packs_dir)
+    assert graph.nodes["skill:docs-helper"] == {
+        "label": "docs-helper",
+        "title": "docs-helper",
+        "type": "skill",
+        "tags": ["docs"],
+        "source": "entity-upsert",
+        "content_hash": sha256(entity_text.encode("utf-8")).hexdigest(),
+    }
     jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
     assert [job.kind for job in jobs] == [
         wiki_queue.ENTITY_UPSERT_JOB,

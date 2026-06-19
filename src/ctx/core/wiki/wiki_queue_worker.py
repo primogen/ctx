@@ -283,14 +283,28 @@ def _try_incremental_attach(
     entity_path: Path,
     text: str,
 ) -> _AttachOutcome:
+    node_id = f"{entity_type}:{slug}"
     index_dir = _semantic_vector_index_dir(wiki_path)
     if not (index_dir / "vector-index.meta.json").is_file():
+        node_pack_status = _try_graph_pack_node_upsert(
+            wiki_path=wiki_path,
+            node_id=node_id,
+            entity_type=entity_type,
+            slug=slug,
+            text=text,
+        )
+        if node_pack_status:
+            return _AttachOutcome(
+                f"incremental attach skipped (no vector index); "
+                f"node overlay pack {node_pack_status}",
+                graph_pack_attached=True,
+            )
         return _AttachOutcome("incremental attach skipped (no vector index)")
     try:
         result = attach_entity(
             index_dir=index_dir,
             overlay_path=wiki_path / "graphify-out" / "entity-overlays.jsonl",
-            node_id=f"{entity_type}:{slug}",
+            node_id=node_id,
             entity_type=entity_type,
             label=slug,
             tags=_extract_frontmatter_tags(text),
@@ -303,6 +317,18 @@ def _try_incremental_attach(
             **_graph_pack_attach_kwargs(wiki_path),
         )
     except Exception as exc:  # noqa: BLE001 - attach is derived, not source of truth.
+        node_pack_status = _try_graph_pack_node_upsert(
+            wiki_path=wiki_path,
+            node_id=node_id,
+            entity_type=entity_type,
+            slug=slug,
+            text=text,
+        )
+        if node_pack_status:
+            return _AttachOutcome(
+                f"incremental attach skipped ({exc}); node overlay pack {node_pack_status}",
+                graph_pack_attached=True,
+            )
         return _AttachOutcome(f"incremental attach skipped ({exc})")
     status = result.get("status", "unknown")
     overlay_pack = result.get("overlay_pack")
@@ -313,6 +339,50 @@ def _try_incremental_attach(
             graph_pack_attached=True,
         )
     return _AttachOutcome(f"incremental attach {status}")
+
+
+def _try_graph_pack_node_upsert(
+    *,
+    wiki_path: Path,
+    node_id: str,
+    entity_type: str,
+    slug: str,
+    text: str,
+) -> str | None:
+    packs_dir = wiki_path / "graphify-out" / "packs"
+    try:
+        entries = discover_pack_manifests(packs_dir)
+    except GraphPackManifestError:
+        return None
+    if not entries:
+        return None
+    base = entries[0].manifest
+    content_hash = sha256(text.encode("utf-8")).hexdigest()
+    pack_hash = sha256(f"{node_id}:{content_hash}".encode("utf-8")).hexdigest()[:16]
+    pack_id = f"overlay-node-{pack_hash}"
+    pack_dir = packs_dir / pack_id
+    if (pack_dir / GRAPH_PACK_MANIFEST).is_file():
+        return "unchanged"
+    write_overlay_pack(
+        pack_dir=pack_dir,
+        pack_id=pack_id,
+        base_export_id=base.base_export_id,
+        parent_export_id=base.base_export_id,
+        config_hash=base.config_hash,
+        model_id=base.model_id,
+        nodes=[{
+            "id": node_id,
+            "label": slug,
+            "title": slug,
+            "type": entity_type,
+            "tags": _extract_frontmatter_tags(text),
+            "source": "entity-upsert",
+            "content_hash": content_hash,
+        }],
+        edges=[],
+        tombstones=[],
+    )
+    return "inserted"
 
 
 def _graph_pack_attach_kwargs(wiki_path: Path) -> dict[str, Any]:
