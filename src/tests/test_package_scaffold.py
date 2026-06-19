@@ -66,6 +66,7 @@ _EXPECTED_CONSOLE_SCRIPTS: tuple[str, ...] = (
     "ctx-mcp-server",
     "ctx-mcp-uninstall",
     "ctx-monitor",
+    "ctx-pack-compact",
     "ctx-recommend",
     "ctx-scan-repo",
     "ctx-skill-add",
