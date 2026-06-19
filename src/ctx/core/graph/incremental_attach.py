@@ -19,7 +19,7 @@ import numpy as np
 from ctx.core.graph.edge_scoring import type_affinity_score
 from ctx.core.graph.entity_overlays import upsert_overlay_record
 from ctx.core.graph.graph_packs import GRAPH_PACK_MANIFEST, write_overlay_pack
-from ctx.core.graph.vector_index import load_vector_index
+from ctx.core.graph.vector_index import MergedVectorIndex, load_vector_index
 
 _PERCENTILES = (50, 60, 75, 90, 95)
 _DEFAULT_MIN_SEMANTIC_SCORE = 0.80
@@ -147,6 +147,7 @@ def attach_entity(
     base_export_id: str | None = None,
     parent_export_id: str | None = None,
     config_hash: str | None = None,
+    delta_index_dirs: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Attach one new/updated entity to an existing semantic vector index."""
     meta = _read_index_meta(index_dir)
@@ -168,8 +169,23 @@ def attach_entity(
             "vector index metadata mismatch or index files are unreadable "
             f"for model {resolved_model_id!r}"
         )
+    indexes = [index]
+    for delta_index_dir in delta_index_dirs or []:
+        delta_meta = _read_index_meta(delta_index_dir)
+        delta_index = load_vector_index(
+            delta_index_dir,
+            expected_model_id=resolved_model_id,
+            expected_content_fingerprint=str(delta_meta["content_fingerprint"]),
+        )
+        if delta_index is None:
+            raise ValueError(
+                "delta vector index metadata mismatch or index files are unreadable "
+                f"at {delta_index_dir}"
+            )
+        indexes.append(delta_index)
+    query_index = MergedVectorIndex(indexes) if len(indexes) > 1 else index
 
-    neighbors = index.query(
+    neighbors = query_index.query(
         vector,
         top_k=top_k,
         min_score=min_score,
@@ -227,6 +243,12 @@ def main(argv: list[str] | None = None) -> int:
     calibrate.add_argument("--json", action="store_true", help="Emit JSON instead of Markdown")
     attach = sub.add_parser("attach", help="Attach one entity through the semantic vector index")
     attach.add_argument("--index-dir", required=True, help="Path to a persisted vector-index directory")
+    attach.add_argument(
+        "--delta-index-dir",
+        action="append",
+        default=[],
+        help="Additional local vector-index directory; repeatable for base+delta queries",
+    )
     attach.add_argument("--overlay", required=True, help="Path to graphify-out/entity-overlays.jsonl")
     attach.add_argument("--node-id", required=True, help="Graph node id, e.g. skill:my-skill")
     attach.add_argument("--type", required=True, dest="entity_type", help="Entity type")
@@ -298,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
                 base_export_id=args.base_export_id,
                 parent_export_id=args.parent_export_id,
                 config_hash=args.config_hash,
+                delta_index_dirs=[Path(path) for path in args.delta_index_dir or []],
             )
         except Exception as exc:  # noqa: BLE001 - CLI reports concise errors.
             print(f"error: {exc}", file=sys.stderr)

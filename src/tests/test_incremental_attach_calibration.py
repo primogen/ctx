@@ -166,6 +166,48 @@ def test_main_attach_dry_run_outputs_overlay_without_writing(tmp_path, capsys) -
     assert '"target": "skill:python-testing"' in output
 
 
+def test_main_attach_queries_delta_vector_indexes(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "base-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:base-ruby"],
+        content_hashes=["hb"],
+        vectors=np.asarray([[0.0, 1.0]], dtype="float32"),
+    ).save(index_dir)
+    delta_index_dir = tmp_path / "delta-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:delta-python"],
+        content_hashes=["hd"],
+        vectors=np.asarray([[1.0, 0.0]], dtype="float32"),
+    ).save(delta_index_dir)
+    overlay = tmp_path / "entity-overlays.jsonl"
+
+    rc = main([
+        "attach",
+        "--index-dir", str(index_dir),
+        "--delta-index-dir", str(delta_index_dir),
+        "--overlay", str(overlay),
+        "--node-id", "skill:new-python",
+        "--label", "new-python",
+        "--type", "skill",
+        "--text", "new python testing helper",
+        "--model-id", "model-a",
+        "--vector-json", "[1.0, 0.0]",
+        "--top-k", "1",
+        "--min-score", "0.5",
+        "--dry-run",
+    ])
+
+    assert rc == 0
+    assert not overlay.exists()
+    output = capsys.readouterr().out
+    assert '"target": "skill:delta-python"' in output
+    assert '"target": "skill:base-ruby"' not in output
+
+
 def test_main_attach_writes_idempotent_overlay_used_by_resolver(tmp_path) -> None:
     index_dir = tmp_path / "vector-index"
     build_vector_index(
