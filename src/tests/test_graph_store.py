@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import networkx as nx
@@ -12,6 +13,7 @@ from ctx.core.graph.graph_store import (
     graph_store_metadata,
     graph_store_is_fresh,
     graph_store_stats,
+    validate_graph_store,
     load_neighborhood,
     main,
     search_nodes,
@@ -240,3 +242,62 @@ def test_ensure_graph_store_reuses_fresh_store_and_rebuilds_stale_store(
 
     assert third == {"rebuilt": True, "nodes": 4, "edges": 2}
     assert search_nodes(db_path, "docs")[0]["id"] == "skill:docs"
+
+
+def test_validate_graph_store_reports_fresh_store(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_dir.mkdir()
+    payload = nx.node_link_data(_sample_graph(), edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+    db_path = tmp_path / "graph.sqlite3"
+    ensure_graph_store(graph_dir, db_path)
+
+    report = validate_graph_store(db_path, graph_dir)
+
+    assert report == {
+        "ok": True,
+        "fresh": True,
+        "nodes": 3,
+        "edges": 2,
+        "errors": [],
+    }
+
+
+def test_validate_graph_store_reports_stale_source(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_dir.mkdir()
+    graph = _sample_graph()
+    payload = nx.node_link_data(graph, edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+    db_path = tmp_path / "graph.sqlite3"
+    ensure_graph_store(graph_dir, db_path)
+    graph.add_node("skill:docs", label="docs", type="skill", tags=["docs"])
+    payload = nx.node_link_data(graph, edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    report = validate_graph_store(db_path, graph_dir)
+
+    assert report["ok"] is False
+    assert report["fresh"] is False
+    errors = report["errors"]
+    assert isinstance(errors, list)
+    assert "source fingerprint is stale" in errors
+
+
+def test_validate_graph_store_reports_corrupt_count_metadata(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_dir.mkdir()
+    payload = nx.node_link_data(_sample_graph(), edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+    db_path = tmp_path / "graph.sqlite3"
+    ensure_graph_store(graph_dir, db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE metadata SET value = '99' WHERE key = 'node_count'")
+
+    report = validate_graph_store(db_path, graph_dir)
+
+    assert report["ok"] is False
+    assert report["fresh"] is True
+    errors = report["errors"]
+    assert isinstance(errors, list)
+    assert "metadata node_count 99 != actual 3" in errors

@@ -150,6 +150,46 @@ def graph_store_is_fresh(db_path: Path, graph_dir: Path) -> bool:
     return all(stored.get(key) == value for key, value in current.items())
 
 
+def validate_graph_store(db_path: Path, graph_dir: Path) -> dict[str, object]:
+    """Validate a SQLite store against its recorded source graph directory."""
+    errors: list[str] = []
+    if not db_path.is_file():
+        return {
+            "ok": False,
+            "fresh": False,
+            "nodes": 0,
+            "edges": 0,
+            "errors": ["graph store is missing"],
+        }
+
+    try:
+        stats = graph_store_stats(db_path)
+        metadata = graph_store_metadata(db_path)
+    except sqlite3.DatabaseError as exc:
+        return {
+            "ok": False,
+            "fresh": False,
+            "nodes": 0,
+            "edges": 0,
+            "errors": [f"graph store is unreadable: {exc}"],
+        }
+
+    if metadata.get("schema_version") != str(SCHEMA_VERSION):
+        errors.append("schema_version is not supported")
+    _validate_count_metadata(metadata, stats, "node_count", "nodes", errors)
+    _validate_count_metadata(metadata, stats, "edge_count", "edges", errors)
+    fresh = graph_store_is_fresh(db_path, graph_dir)
+    if not fresh:
+        errors.append("source fingerprint is stale")
+    return {
+        "ok": not errors,
+        "fresh": fresh,
+        "nodes": stats["nodes"],
+        "edges": stats["edges"],
+        "errors": errors,
+    }
+
+
 def search_nodes(db_path: Path, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
     """Search nodes by id, label, title, type, or tags."""
     term = query.strip().lower()
@@ -336,6 +376,27 @@ def _metadata_value(value: object) -> str:
     if isinstance(value, int | float):
         return str(value)
     return json.dumps(_jsonable(value), sort_keys=True, default=str)
+
+
+def _validate_count_metadata(
+    metadata: Mapping[str, str],
+    stats: Mapping[str, int],
+    metadata_key: str,
+    stats_key: str,
+    errors: list[str],
+) -> None:
+    raw_value = metadata.get(metadata_key)
+    if raw_value is None:
+        errors.append(f"metadata {metadata_key} is missing")
+        return
+    try:
+        value = int(raw_value)
+    except ValueError:
+        errors.append(f"metadata {metadata_key} is not an integer")
+        return
+    actual = stats[stats_key]
+    if value != actual:
+        errors.append(f"metadata {metadata_key} {value} != actual {actual}")
 
 
 def _node_row(node_id: str, attrs: dict[str, Any]) -> dict[str, Any]:
