@@ -17,6 +17,7 @@ import networkx as nx
 import pytest
 import ctx_init as ci
 from ctx.core.graph.graph_packs import write_base_pack
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack
 
 
 def _write_dashboard_index(path: Path, *, export_id: str = "test-export") -> None:
@@ -304,7 +305,12 @@ def test_main_with_hooks_flag_invokes_inject(tmp_path: Path, monkeypatch) -> Non
     assert not any(c == "inject_hooks" for call in calls for c in call)
 
 
-def _write_graph_archive(tmp_path: Path) -> Path:
+def _write_graph_archive(
+    tmp_path: Path,
+    *,
+    include_wiki_pack: bool = False,
+    wiki_pack_export_id: str = "test-export",
+) -> Path:
     source = tmp_path / "archive-source"
     graph_out = source / "graphify-out"
     graph_out.mkdir(parents=True)
@@ -345,6 +351,16 @@ def _write_graph_archive(tmp_path: Path) -> Path:
     entities.mkdir(parents=True)
     (entities / "current.md").write_text("# Current\n", encoding="utf-8")
     (source / "index.md").write_text("# Wiki\n", encoding="utf-8")
+    if include_wiki_pack:
+        write_wiki_base_pack(
+            pack_dir=source / "wiki-packs" / f"base-{wiki_pack_export_id}",
+            pack_id=f"base-{wiki_pack_export_id}",
+            base_export_id=wiki_pack_export_id,
+            pages={
+                "index.md": "# Wiki\n",
+                "entities/skills/current.md": "# Current\n",
+            },
+        )
     archive = tmp_path / "wiki-graph.tar.gz"
     with tarfile.open(archive, "w:gz") as tf:
         for path in sorted(source.rglob("*")):
@@ -870,6 +886,32 @@ def test_graph_install_validation_accepts_base_pack_without_graph_json(
     (external / "catalog.json").write_text("{}", encoding="utf-8")
 
     ci._validate_graph_install_tree(wiki)
+
+
+def test_runtime_graph_install_extracts_and_validates_wiki_packs(
+    tmp_path: Path,
+) -> None:
+    archive = _write_graph_archive(tmp_path, include_wiki_pack=True)
+    wiki = tmp_path / "installed-wiki"
+
+    ci._extract_graph_archive(archive, wiki, install_mode="runtime")
+
+    assert (wiki / "wiki-packs" / "base-test-export" / "wiki-pack-manifest.json").is_file()
+    assert not (wiki / "entities" / "skills" / "current.md").exists()
+    ci._validate_graph_install_tree(wiki)
+
+
+def test_graph_install_rejects_mismatched_wiki_pack_export_id(
+    tmp_path: Path,
+) -> None:
+    archive = _write_graph_archive(
+        tmp_path,
+        include_wiki_pack=True,
+        wiki_pack_export_id="wrong-export",
+    )
+
+    with pytest.raises(ValueError, match="wiki-packs export_id mismatch"):
+        ci._extract_graph_archive(archive, tmp_path / "installed-wiki", install_mode="runtime")
 
 
 def test_graph_install_force_prunes_stale_generated_files(

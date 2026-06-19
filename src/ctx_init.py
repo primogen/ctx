@@ -263,6 +263,7 @@ _GRAPH_MANAGED_PATHS = (
     "log.md",
     "SCHEMA.md",
     "versions-catalog.md",
+    "wiki-packs",
     ".obsidian",
 )
 _GRAPH_RUNTIME_MANAGED_PATHS = tuple(
@@ -270,7 +271,12 @@ _GRAPH_RUNTIME_MANAGED_PATHS = tuple(
 ) + ("entities/harnesses",)
 _GRAPH_JSON_OUTLINE_BYTES = 1024 * 1024
 _GRAPH_INSTALL_MODES = ("runtime", "full")
-_GRAPH_RUNTIME_PREFIXES = ("graphify-out/", "external-catalogs/", "entities/harnesses/")
+_GRAPH_RUNTIME_PREFIXES = (
+    "graphify-out/",
+    "external-catalogs/",
+    "entities/harnesses/",
+    "wiki-packs/",
+)
 _GRAPH_RUNTIME_ROOT_FILES = frozenset({
     "catalog.md",
     "converted-index.md",
@@ -671,6 +677,7 @@ def _validate_graph_install_tree(wiki_dir: Path) -> None:
         wiki_dir / "graphify-out" / "dashboard-neighborhoods.sqlite3",
         expected_export_id=export_id.strip(),
     )
+    _validate_wiki_pack_outline(wiki_dir / "wiki-packs", expected_export_id=export_id.strip())
 
 
 def _validate_graph_payload_outline(wiki_dir: Path) -> None:
@@ -699,6 +706,32 @@ def _validate_graph_pack_outline(packs_dir: Path) -> None:
     base = entries[0].manifest
     if "graph.json" not in base.checksums:
         raise ValueError("graph base pack is missing graph.json artifact")
+
+
+def _validate_wiki_pack_outline(packs_dir: Path, *, expected_export_id: str) -> None:
+    if not packs_dir.exists():
+        return
+    try:
+        from ctx.core.wiki.wiki_packs import (  # noqa: PLC0415
+            WikiPackManifestError,
+            discover_wiki_pack_manifests,
+            load_merged_wiki_pages,
+        )
+
+        entries = discover_wiki_pack_manifests(packs_dir)
+        pages = load_merged_wiki_pages(packs_dir)
+    except WikiPackManifestError as exc:
+        raise ValueError(f"wiki-packs is invalid: {exc}") from exc
+    if not entries:
+        raise ValueError("wiki-packs exists but does not contain a valid base pack")
+    base_export_id = entries[0].manifest.base_export_id
+    if base_export_id != expected_export_id:
+        raise ValueError(
+            "wiki-packs export_id mismatch: expected "
+            f"{expected_export_id}, got {base_export_id}",
+        )
+    if "index.md" not in pages:
+        raise ValueError("wiki-packs payload is missing index.md")
 
 
 def _validate_graph_json_outline(path: Path) -> None:
