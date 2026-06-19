@@ -24,6 +24,10 @@ import yaml  # type: ignore[import-untyped]
 
 from ctx.core.entity_update import build_update_review, render_update_review
 from ctx.core.wiki.wiki_queue import enqueue_entity_upsert
+from ctx.core.wiki.wiki_packs import (
+    load_merged_wiki_pages,
+    write_active_wiki_overlay_pack,
+)
 from ctx.core.wiki.wiki_sync import append_log, ensure_wiki, update_index
 from ctx.utils._fs_utils import safe_atomic_write_text
 from ctx_config import cfg
@@ -270,6 +274,37 @@ def _merge_sources(
     return tuple(sorted(set(str(source) for source in existing) | set(new_sources)))
 
 
+def _entity_relpath(slug: str) -> str:
+    return f"{_HARNESS_ENTITY_SUBDIR}/{slug}.md"
+
+
+def _read_entity_page(wiki_path: Path, slug: str) -> str | None:
+    relpath = _entity_relpath(slug)
+    packs_dir = wiki_path / "wiki-packs"
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+    target_path = wiki_path / relpath
+    if target_path.exists():
+        return target_path.read_text(encoding="utf-8", errors="replace")
+    return None
+
+
+def _write_entity_page(wiki_path: Path, slug: str, content: str) -> None:
+    relpath = _entity_relpath(slug)
+    target_path = wiki_path / relpath
+    packs_dir = wiki_path / "wiki-packs"
+    if target_path.exists() or not packs_dir.is_dir():
+        safe_atomic_write_text(target_path, content, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: content},
+            tombstones=[],
+        )
+
+
 def add_harness(
     *,
     record: HarnessRecord,
@@ -279,8 +314,9 @@ def add_harness(
     review_existing: bool = False,
     update_existing: bool = False,
 ) -> dict[str, Any]:
-    target_path = wiki_path / _HARNESS_ENTITY_SUBDIR / f"{record.slug}.md"
-    is_new_page = not target_path.exists()
+    target_path = wiki_path / _entity_relpath(record.slug)
+    existing_text = _read_entity_page(wiki_path, record.slug)
+    is_new_page = existing_text is None
 
     if skip_existing and not is_new_page:
         return {
@@ -293,11 +329,9 @@ def add_harness(
         }
 
     existing_fm: dict[str, Any] = {}
-    existing_text = ""
     created = TODAY
     merged_sources = record.sources
-    if target_path.exists():
-        existing_text = target_path.read_text(encoding="utf-8", errors="replace")
+    if existing_text is not None:
         existing_fm = _parse_frontmatter(existing_text)
         created = str(existing_fm.get("created") or TODAY)
         merged_sources = _merge_sources(existing_fm, record.sources)
@@ -306,6 +340,7 @@ def add_harness(
     proposed_text = generate_harness_page(final_record, created=created)
 
     if review_existing and not is_new_page and not update_existing:
+        assert existing_text is not None
         review = build_update_review(
             entity_type="harness",
             slug=record.slug,
@@ -326,7 +361,7 @@ def add_harness(
     queue_job = None
     if not dry_run:
         ensure_wiki(str(wiki_path))
-        safe_atomic_write_text(target_path, proposed_text, encoding="utf-8")
+        _write_entity_page(wiki_path, record.slug, proposed_text)
         queue_job = enqueue_entity_upsert(
             wiki_path=wiki_path,
             entity_type="harness",

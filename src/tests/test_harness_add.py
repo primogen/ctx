@@ -10,6 +10,7 @@ import yaml  # type: ignore[import-untyped]
 import pytest
 
 import harness_add
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack
 
 
 def _record(**overrides: Any) -> harness_add.HarnessRecord:
@@ -31,6 +32,10 @@ def _record(**overrides: Any) -> harness_add.HarnessRecord:
 
 def _frontmatter(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
+    return _frontmatter_from_text(text)
+
+
+def _frontmatter_from_text(text: str) -> dict[str, Any]:
     _, fm_block, _ = text.split("---", 2)
     parsed = yaml.safe_load(fm_block)
     assert isinstance(parsed, dict)
@@ -152,7 +157,18 @@ def test_existing_harness_update_existing_applies_reviewed_change(
     tmp_path: Path,
 ) -> None:
     wiki = tmp_path / "wiki"
-    harness_add.add_harness(record=_record(sources=["manual"]), wiki_path=wiki)
+    existing = _record(sources=["manual"])
+    packs_dir = wiki / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={
+            "entities/harnesses/text-to-cad.md": harness_add.generate_harness_page(
+                existing
+            )
+        },
+    )
 
     result = harness_add.add_harness(
         record=_record(
@@ -166,10 +182,12 @@ def test_existing_harness_update_existing_applies_reviewed_change(
     )
 
     page = wiki / "entities" / "harnesses" / "text-to-cad.md"
-    fm = _frontmatter(page)
+    merged = load_merged_wiki_pages(packs_dir)
+    fm = _frontmatter_from_text(merged["entities/harnesses/text-to-cad.md"])
     assert result["is_new_page"] is False
     assert result["skipped"] is False
     assert result["sources"] == ["external-review", "manual"]
+    assert not page.exists()
     assert fm["sources"] == ["external-review", "manual"]
     assert fm["verify_commands"] == ["pytest", "python smoke.py"]
 
