@@ -2059,6 +2059,59 @@ def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
     }
 
 
+def test_graph_neighborhood_uses_fresh_graph_store_without_full_graph_load(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import networkx as nx
+    from networkx.readwrite import node_link_data
+
+    from ctx.core.graph.graph_store import ensure_graph_store
+
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    graph = nx.Graph()
+    graph.add_node(
+        "skill:python-patterns",
+        label="python-patterns",
+        type="skill",
+        tags=["python"],
+    )
+    graph.add_node(
+        "skill:fastapi-pro",
+        label="fastapi-pro",
+        type="skill",
+        tags=["python", "api"],
+    )
+    graph.add_edge(
+        "skill:python-patterns",
+        "skill:fastapi-pro",
+        weight=0.8,
+        shared_tags=["python"],
+        reasons=["semantic"],
+    )
+    (graph_dir / "graph.json").write_text(
+        json.dumps(node_link_data(graph, edges="edges")),
+        encoding="utf-8",
+    )
+    ensure_graph_store(graph_dir, graph_dir / "graph-store.sqlite3")
+    monkeypatch.setattr(
+        cm,
+        "_load_dashboard_graph",
+        lambda: (_ for _ in ()).throw(AssertionError("full graph loaded")),
+    )
+
+    result = cm._graph_neighborhood("python-patterns", entity_type="skill")
+
+    assert result["center"] == "skill:python-patterns"
+    assert result["insights"]["source"] == "graph-store"
+    assert [node["data"]["id"] for node in result["nodes"]] == [
+        "skill:python-patterns",
+        "skill:fastapi-pro",
+    ]
+    assert result["edges"][0]["data"]["shared_tags"] == ["python"]
+
+
 def test_skillspector_payload_filters_by_tag_and_graph_family(
     fake_claude: Path,
 ) -> None:
