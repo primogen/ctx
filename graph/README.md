@@ -51,6 +51,30 @@ harness pages needed by `ctx-harness-install --dry-run`. Use
 `ctx-init --graph --graph-install-mode full` or manual full extraction when you
 want local wiki browsing, Obsidian, or the converted skill body tree.
 
+## Modular Pack Model
+
+The installed graph/wiki can be maintained as immutable base packs plus small
+overlay packs. The merged view is intended to behave like the old single graph:
+dashboard, search, recommendations, and harness setup still see one catalog,
+but local adds, updates, and deletes no longer need to rewrite the full graph
+and full wiki tarball.
+
+Active pack layout:
+
+```text
+~/.claude/skill-wiki/
+  graphify-out/packs/base-<export-id>/
+  graphify-out/packs/overlay-<id>/
+  wiki-packs/base-<export-id>/
+  wiki-packs/overlay-<id>/
+```
+
+Overlay packs carry changed nodes, edges, wiki page upserts, and tombstones.
+Periodic compaction merges the active base plus overlays into a new staged base
+pack set. The full release artifact is still rebuilt explicitly for published
+snapshots, but normal local updates should use overlays and the SQLite graph
+store refresh path.
+
 ## What Is Inside `wiki-graph.tar.gz`
 
 - `entities/skills/` - all skill entity pages
@@ -192,6 +216,42 @@ ctx-incremental-shadow \
 It reports precision/recall, top-k agreement, score deltas, and bad examples;
 the release gate fails when recall at the largest requested top-k is below the
 overlap floor.
+
+To compact local graph/wiki overlays into a new coordinated base pack set:
+
+```bash
+ctx-pack-compact compact \
+  --wiki-path ~/.claude/skill-wiki \
+  --base-export-id <new-export-id> \
+  --staging-dir /tmp/ctx-pack-stage \
+  --json
+```
+
+Then validate and promote the staged graph and wiki packs together:
+
+```bash
+ctx-pack-compact promote \
+  --wiki-path ~/.claude/skill-wiki \
+  --staged-graph-packs-dir /tmp/ctx-pack-stage/graph-packs \
+  --staged-wiki-packs-dir /tmp/ctx-pack-stage/wiki-packs \
+  --json
+```
+
+Promotion requires the top-level `pack-compaction-manifest.json`, matching graph
+and wiki export IDs, valid checksums, non-empty merged graph/wiki contents, and
+entity consistency between known graph nodes and wiki pages. It refreshes
+`graphify-out/graph-store.sqlite3` by default so dashboard graph APIs do not
+fall back to cold-parsing `graph.json`. If you disable that refresh, rebuild and
+validate the store explicitly:
+
+```bash
+ctx-graph-store build \
+  --graph-dir ~/.claude/skill-wiki/graphify-out \
+  --db ~/.claude/skill-wiki/graphify-out/graph-store.sqlite3
+
+ctx-graph-store validate \
+  --db ~/.claude/skill-wiki/graphify-out/graph-store.sqlite3
+```
 
 For release artifact rebuilds:
 

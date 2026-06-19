@@ -217,6 +217,89 @@ This split is intentional: execution surfaces need identical ranking and a
 small top-K, while harness choice changes the model runtime itself and belongs
 in an explicit onboarding/install flow.
 
+## Modular graph and wiki packs
+
+ctx is moving the graph and LLM-wiki from "one huge tarball is the mutable
+truth" to this operational model:
+
+```text
+immutable base graph pack
+  + small graph overlay packs
+  + tombstones for deletes
+  + immutable base wiki pack
+  + small wiki overlay packs
+  -> merged reader for dashboard, search, recommendations, and repair tools
+```
+
+The user-facing behavior is intended to stay the same: recommendations,
+dashboard graph views, wiki pages, and harness setup still read the merged
+graph/wiki as one catalog. The difference is how updates are stored. Adding or
+updating one skill, agent, MCP server, or harness can write a small overlay pack
+instead of forcing a full graph and wiki rebuild.
+
+This makes normal updates faster and safer:
+
+- **Faster adds/updates** - the worker writes a page overlay and, when the
+  vector index exists, attaches ANN-based graph edges for the changed entity.
+- **Efficient deletes** - deletes become tombstones in graph/wiki overlays, so
+  removed entities disappear from merged reads without rewriting the base pack.
+- **Crash isolation** - overlay packs and compaction manifests are written
+  atomically; a failed update does not corrupt the base snapshot.
+- **Same recommendation contract** - merged graph reads preserve edge metadata,
+  scores, provenance, and tombstones before resolver/dashboard code sees the
+  graph.
+
+Pack directories live inside the installed wiki:
+
+```text
+~/.claude/skill-wiki/
+  graphify-out/packs/base-<export-id>/
+  graphify-out/packs/overlay-<id>/
+  wiki-packs/base-<export-id>/
+  wiki-packs/overlay-<id>/
+```
+
+Overlay packs are the normal local-update path. Full rebuilds are still needed
+when you intentionally refresh the release artifact, change global scoring
+configuration, rebuild communities, or compact a long chain of overlays into a
+new base snapshot.
+
+To stage a coordinated graph+wiki compaction without mutating the active wiki:
+
+```bash
+ctx-pack-compact compact \
+  --wiki-path ~/.claude/skill-wiki \
+  --base-export-id <new-export-id> \
+  --staging-dir /tmp/ctx-pack-stage \
+  --json
+```
+
+The staging directory contains a top-level `pack-compaction-manifest.json` plus
+staged graph and wiki base packs. Promotion validates the top-level manifest,
+graph pack manifest, wiki pack manifest, checksums, matching export IDs, and
+graph/wiki entity consistency before replacing active packs:
+
+```bash
+ctx-pack-compact promote \
+  --wiki-path ~/.claude/skill-wiki \
+  --staged-graph-packs-dir /tmp/ctx-pack-stage/graph-packs \
+  --staged-wiki-packs-dir /tmp/ctx-pack-stage/wiki-packs \
+  --json
+```
+
+Promotion refreshes the SQLite dashboard/recommendation graph store by default.
+Use `--graph-store-db <path>` to refresh a non-default store, or
+`--no-graph-store-refresh` only when you plan to rebuild it separately:
+
+```bash
+ctx-graph-store build \
+  --graph-dir ~/.claude/skill-wiki/graphify-out \
+  --db ~/.claude/skill-wiki/graphify-out/graph-store.sqlite3
+
+ctx-graph-store validate \
+  --db ~/.claude/skill-wiki/graphify-out/graph-store.sqlite3
+```
+
 ### LLM-wiki design references
 
 ctx follows Karpathy's LLM-wiki pattern. We also reviewed
@@ -238,9 +321,10 @@ The `entity-upsert` worker path validates the queued page hash, updates the
 wiki index, and, when a persisted semantic vector index exists, runs a
 best-effort ANN attach into `graphify-out/entity-overlays.jsonl`. That overlay
 lets the runtime resolver connect a new or updated entity to existing graph
-neighbors without recomputing global all-pairs similarity. The worker still
-queues the normal incremental `graph-export` job, and the entity markdown page
-remains the source of truth.
+neighbors without recomputing global all-pairs similarity. When modular wiki
+packs exist, the same write is mirrored into a wiki overlay pack. The worker
+also queues a graph-store refresh so dashboard and resolver reads see the merged
+view. The entity markdown page or wiki page overlay remains the source of truth.
 
 For manual review or debugging:
 
