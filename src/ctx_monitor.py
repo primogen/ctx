@@ -1646,6 +1646,34 @@ def _pack_dir_status(packs_dir: Path, *, manifest_name: str) -> dict[str, Any]:
     return status
 
 
+def _graph_store_status(graph_dir: Path) -> dict[str, Any]:
+    """Return SQLite operational-store state for the active graph directory."""
+    db_path = graph_dir / "graph-store.sqlite3"
+    status = _file_status(db_path)
+    try:
+        from ctx.core.graph.graph_store import validate_graph_store  # noqa: PLC0415
+
+        validation = validate_graph_store(db_path, graph_dir)
+    except (OSError, ValueError) as exc:
+        validation = {
+            "ok": False,
+            "fresh": False,
+            "nodes": 0,
+            "edges": 0,
+            "errors": [str(exc)],
+        }
+    node_count = validation.get("nodes")
+    edge_count = validation.get("edges")
+    status.update({
+        "ok": bool(validation.get("ok")),
+        "fresh": bool(validation.get("fresh")),
+        "nodes": node_count if isinstance(node_count, int) else 0,
+        "edges": edge_count if isinstance(edge_count, int) else 0,
+        "errors": validation.get("errors") if isinstance(validation.get("errors"), list) else [],
+    })
+    return status
+
+
 def _repo_graph_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "graph"
 
@@ -1779,6 +1807,7 @@ def _artifact_status() -> dict[str, Any]:
         ),
         "graph_delta_json": _file_status(graph_dir / "graph-delta.json"),
         "communities_json": _file_status(graph_dir / "communities.json"),
+        "graph_store": _graph_store_status(graph_dir),
         "wiki_packs": _pack_dir_status(
             wiki / "wiki-packs",
             manifest_name="wiki-pack-manifest.json",
@@ -6664,6 +6693,7 @@ def _render_status() -> str:
         ("graph_packs", "graph packs"),
         ("graph_delta_json", "graph-delta.json"),
         ("communities_json", "communities.json"),
+        ("graph_store", "graph-store.sqlite3"),
         ("wiki_packs", "wiki packs"),
         ("wiki_graph_tar", "wiki-graph.tar.gz"),
         ("skills_sh_catalog", "skill-index.json.gz"),
@@ -6730,16 +6760,27 @@ def _render_status() -> str:
 
 
 def _artifact_detail(status: dict[str, Any]) -> str:
-    if "pack_count" not in status:
+    if "pack_count" in status:
+        detail = (
+            f"packs: {int(status.get('pack_count') or 0)} "
+            f"(base {int(status.get('base_count') or 0)}, "
+            f"overlay {int(status.get('overlay_count') or 0)})"
+        )
+    elif {"fresh", "nodes", "edges"} <= set(status):
+        freshness = "fresh" if status.get("fresh") else "stale or missing"
+        detail = (
+            f"store: {freshness}, "
+            f"{int(status.get('nodes') or 0)} nodes, "
+            f"{int(status.get('edges') or 0)} edges"
+        )
+    else:
         return ""
-    detail = (
-        f"packs: {int(status.get('pack_count') or 0)} "
-        f"(base {int(status.get('base_count') or 0)}, "
-        f"overlay {int(status.get('overlay_count') or 0)})"
-    )
     error = status.get("error")
     if error:
         detail += f" - {error}"
+    errors = status.get("errors")
+    if isinstance(errors, list) and errors:
+        detail += f" - {'; '.join(str(item) for item in errors[:3])}"
     return html.escape(detail)
 
 
