@@ -7,6 +7,7 @@ Every test builds its own minimal wiki structure via tmp_path so the real
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -14,11 +15,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ctx.core.wiki import wiki_lint as wl  # noqa: E402
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack  # noqa: E402
 
 from ._wiki_helpers import _FRESH_DATE, _STALE_DATE, make_entity_page, make_wiki  # noqa: E402
 
 
-def _collect(wiki: Path) -> dict[str, Path]:
+def _collect(wiki: Path) -> dict[str, wl.WikiPage]:
     """Thin wrapper around wiki_lint's internal page collector."""
     return wl._collect_pages(wiki)
 
@@ -225,3 +227,55 @@ class TestLintFixIndex:
         assert text.index("- [[entities/mcp-servers/g/github]]") > text.index("## MCP Servers")
         assert text.index("- [[entities/harnesses/openhands]]") > text.index("## Harnesses")
         assert text.index("- [[entities/agents/reviewer]]") < text.index("## MCP Servers")
+
+    def test_fix_index_writes_pack_overlay_when_wiki_is_pack_only(self, tmp_path: Path) -> None:
+        wiki = tmp_path / "wiki"
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={
+                "index.md": "# Index\n\n## Skills\n\n## Agents\n",
+                "entities/skills/pack-skill.md": """---
+title: pack-skill
+created: 2026-01-01
+updated: 2026-03-01
+type: skill
+tags: [python]
+---
+
+Body with [[entities/skills/pack-skill]].
+""",
+            },
+        )
+
+        pages = _collect(wiki)
+        assert "entities/skills/pack-skill" in pages
+        added = wl.fix_index(wiki, ["entities/skills/pack-skill"])
+
+        assert added == 1
+        assert not (wiki / "index.md").exists()
+        merged = load_merged_wiki_pages(wiki / "wiki-packs")
+        assert "- [[entities/skills/pack-skill]]" in merged["index.md"]
+
+
+class TestLintFixLogRotation:
+    def test_fix_log_rotation_writes_pack_overlay_when_wiki_is_pack_only(
+        self, tmp_path: Path
+    ) -> None:
+        wiki = tmp_path / "wiki"
+        entries = "".join(f"## [2026-01-{(i % 28) + 1:02d}] entry {i}\n\n" for i in range(505))
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"log.md": "# Log\n\n" + entries},
+        )
+
+        assert wl.fix_log_rotation(wiki) is True
+
+        merged = load_merged_wiki_pages(wiki / "wiki-packs")
+        assert len(re.findall(r"^##\s+\[", merged["log.md"], re.MULTILINE)) == 100
+        archive = f"log-archive-{wl.TODAY.isoformat()}.md"
+        assert archive in merged
+        assert "entry 0" in merged[archive]
