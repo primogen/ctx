@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -257,13 +258,32 @@ def test_promote_staged_pack_sets_rejects_graph_wiki_entity_mismatch(
         base_export_id="export-2",
         staging_dir=tmp_path / "staged-compaction",
     )
-    write_wiki_overlay_pack(
-        pack_dir=staged.staged_wiki_packs_dir / "overlay-delete-new-page",
-        pack_id="overlay-delete-new-page",
-        base_export_id="export-2",
-        parent_export_id="export-2",
-        pages={},
-        tombstones=["entities/skills/new.md"],
+    staged_wiki_base = staged.staged_wiki_packs_dir / "base-export-2"
+    pages_path = staged_wiki_base / "pages.jsonl"
+    page_rows = [
+        json.loads(line)
+        for line in pages_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    page_rows = [
+        row
+        for row in page_rows
+        if row["path"] != "entities/skills/new.md"
+    ]
+    pages_path.write_text(
+        "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in page_rows),
+        encoding="utf-8",
+    )
+    wiki_manifest_path = staged_wiki_base / "wiki-pack-manifest.json"
+    wiki_manifest = json.loads(wiki_manifest_path.read_text(encoding="utf-8"))
+    wiki_manifest["page_count"] = len(page_rows)
+    wiki_manifest["checksums"]["pages.jsonl"] = _sha256_file(pages_path)
+    wiki_manifest_path.write_text(json.dumps(wiki_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    compaction_manifest = json.loads(staged.manifest_path.read_text(encoding="utf-8"))
+    compaction_manifest["wiki"] = wiki_manifest
+    staged.manifest_path.write_text(
+        json.dumps(compaction_manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
     with pytest.raises(PackCompactionError, match="missing wiki pages"):
@@ -326,6 +346,55 @@ def test_promote_staged_pack_sets_rejects_manifest_dir_mismatch(
         )
 
 
+def test_promote_staged_pack_sets_rejects_manifest_graph_section_drift(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+    staged = compact_active_pack_sets(
+        wiki_path=wiki,
+        base_export_id="export-2",
+        staging_dir=tmp_path / "staged-compaction",
+    )
+    manifest = json.loads(staged.manifest_path.read_text(encoding="utf-8"))
+    manifest["graph"]["edge_count"] = 999
+    staged.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(PackCompactionError, match="graph manifest"):
+        promote_staged_pack_sets(
+            wiki_path=wiki,
+            staged_graph_packs_dir=staged.staged_graph_packs_dir,
+            staged_wiki_packs_dir=staged.staged_wiki_packs_dir,
+        )
+
+
+def test_promote_staged_pack_sets_rejects_unrecorded_staged_wiki_overlay(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+    staged = compact_active_pack_sets(
+        wiki_path=wiki,
+        base_export_id="export-2",
+        staging_dir=tmp_path / "staged-compaction",
+    )
+    write_wiki_overlay_pack(
+        pack_dir=staged.staged_wiki_packs_dir / "overlay-extra",
+        pack_id="overlay-extra",
+        base_export_id="export-2",
+        parent_export_id="export-2",
+        pages={"entities/skills/extra.md": "# Extra\n"},
+        tombstones=[],
+    )
+
+    with pytest.raises(PackCompactionError, match="exactly one base pack"):
+        promote_staged_pack_sets(
+            wiki_path=wiki,
+            staged_graph_packs_dir=staged.staged_graph_packs_dir,
+            staged_wiki_packs_dir=staged.staged_wiki_packs_dir,
+        )
+
+
 def _write_active_pack_sets(wiki: Path) -> tuple[Path, Path]:
     graph_packs = wiki / "graphify-out" / "packs"
     wiki_packs = wiki / "wiki-packs"
@@ -370,3 +439,7 @@ def _write_active_pack_sets(wiki: Path) -> tuple[Path, Path]:
         tombstones=["entities/skills/old.md"],
     )
     return graph_packs, wiki_packs
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()

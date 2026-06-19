@@ -10,6 +10,8 @@ from typing import Any
 import networkx as nx
 
 from ctx.core.entity_types import RECOMMENDABLE_ENTITY_TYPES, entity_relpath
+from ctx.core.graph.graph_packs import GraphPackManifestError, discover_pack_manifests
+from ctx.core.wiki.wiki_packs import WikiPackManifestError, discover_wiki_pack_manifests
 
 PACK_COMPACTION_MANIFEST = "pack-compaction-manifest.json"
 PACK_COMPACTION_SCHEMA_VERSION = 1
@@ -98,7 +100,31 @@ def validate_pack_compaction_manifest(
         raise ValueError("graph base_export_id does not match compaction manifest")
     if wiki_section.get("base_export_id") != base_export_id:
         raise ValueError("wiki base_export_id does not match compaction manifest")
+    if graph_section != _single_graph_manifest(graph_dir):
+        raise ValueError("graph manifest does not match staged graph base pack")
+    if wiki_section != _single_wiki_manifest(wiki_dir):
+        raise ValueError("wiki manifest does not match staged wiki base pack")
     return payload
+
+
+def _single_graph_manifest(graph_dir: Path) -> dict[str, object]:
+    try:
+        entries = discover_pack_manifests(graph_dir)
+    except GraphPackManifestError as exc:
+        raise ValueError(f"staged graph packs are invalid: {exc}") from exc
+    if len(entries) != 1 or entries[0].manifest.pack_type != "base":
+        raise ValueError("staged graph packs must contain exactly one base pack")
+    return entries[0].manifest.to_mapping()
+
+
+def _single_wiki_manifest(wiki_dir: Path) -> dict[str, object]:
+    try:
+        entries = discover_wiki_pack_manifests(wiki_dir)
+    except WikiPackManifestError as exc:
+        raise ValueError(f"staged wiki packs are invalid: {exc}") from exc
+    if len(entries) != 1 or entries[0].manifest.pack_type != "base":
+        raise ValueError("staged wiki packs must contain exactly one base pack")
+    return entries[0].manifest.to_mapping()
 
 
 def _graph_entity_nodes(graph: nx.Graph) -> list[tuple[str, str, str]]:
