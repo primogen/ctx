@@ -180,6 +180,43 @@ def test_pack_compaction_cli_promotes_staged_pack_sets(
     assert "entities/skills/old.md" not in load_merged_wiki_pages(wiki / "wiki-packs")
 
 
+def test_pack_compaction_cli_compact_promote_one_shot(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+    staging_dir = tmp_path / "staged-one-shot"
+    store_path = tmp_path / "graph-store.sqlite3"
+
+    rc = pack_compaction.main([
+        "compact-promote",
+        "--wiki-path",
+        str(wiki),
+        "--base-export-id",
+        "export-2",
+        "--staging-dir",
+        str(staging_dir),
+        "--graph-backup-packs-dir",
+        str(tmp_path / "graph-packs.backup"),
+        "--wiki-backup-packs-dir",
+        str(tmp_path / "wiki-packs.backup"),
+        "--graph-store-db",
+        str(store_path),
+        "--json",
+    ])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["compaction"]["base_export_id"] == "export-2"
+    assert payload["promotion"]["graph"]["promoted_pack_ids"] == ["base-export-2"]
+    assert payload["promotion"]["wiki"]["promoted_pack_ids"] == ["base-export-2"]
+    assert payload["promotion"]["graph_store"] == {"rebuilt": True, "nodes": 2, "edges": 1}
+    assert "skill:old" not in load_merged_pack_graph(wiki / "graphify-out" / "packs")
+    assert "entities/skills/old.md" not in load_merged_wiki_pages(wiki / "wiki-packs")
+    assert graph_store_is_fresh(store_path, wiki / "graphify-out") is True
+
+
 def test_promote_staged_pack_sets_rejects_invalid_staged_wiki_before_graph_swap(
     tmp_path: Path,
 ) -> None:

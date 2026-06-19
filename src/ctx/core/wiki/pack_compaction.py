@@ -235,6 +235,25 @@ def main(argv: list[str] | None = None) -> int:
     compact.add_argument("--graph-model-id", help="Override graph model id")
     compact.add_argument("--created-at", help="Optional created_at value for staged manifests")
     compact.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    compact_promote = sub.add_parser(
+        "compact-promote",
+        help="Stage, validate, promote, and refresh graph store in one operation.",
+    )
+    compact_promote.add_argument("--wiki-path", required=True, help="Path to the ctx wiki root")
+    compact_promote.add_argument("--base-export-id", required=True, help="New compacted export id")
+    compact_promote.add_argument("--staging-dir", help="Destination staging root")
+    compact_promote.add_argument("--graph-config-hash", help="Override graph config hash")
+    compact_promote.add_argument("--graph-model-id", help="Override graph model id")
+    compact_promote.add_argument("--created-at", help="Optional created_at value for staged manifests")
+    compact_promote.add_argument("--graph-backup-packs-dir", help="Optional graph backup directory")
+    compact_promote.add_argument("--wiki-backup-packs-dir", help="Optional wiki backup directory")
+    compact_promote.add_argument("--graph-store-db", help="Optional SQLite graph store path")
+    compact_promote.add_argument(
+        "--no-graph-store-refresh",
+        action="store_true",
+        help="Skip SQLite graph store refresh after pack promotion",
+    )
+    compact_promote.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     promote = sub.add_parser(
         "promote",
         help="Promote validated staged graph/wiki packs into the active wiki.",
@@ -283,6 +302,49 @@ def main(argv: list[str] | None = None) -> int:
                 f"{compact_result.graph_manifest.node_count} graph nodes, "
                 f"{compact_result.graph_manifest.edge_count} graph edges, "
                 f"{compact_result.wiki_manifest.page_count} wiki pages"
+            )
+        return 0
+    if args.command == "compact-promote":
+        try:
+            compact_result = compact_active_pack_sets(
+                wiki_path=Path(args.wiki_path),
+                base_export_id=args.base_export_id,
+                staging_dir=Path(args.staging_dir) if args.staging_dir else None,
+                graph_config_hash=args.graph_config_hash,
+                graph_model_id=args.graph_model_id,
+                created_at=args.created_at,
+            )
+            promotion_result = promote_staged_pack_sets(
+                wiki_path=Path(args.wiki_path),
+                staged_graph_packs_dir=compact_result.staged_graph_packs_dir,
+                staged_wiki_packs_dir=compact_result.staged_wiki_packs_dir,
+                graph_backup_packs_dir=(
+                    Path(args.graph_backup_packs_dir)
+                    if args.graph_backup_packs_dir
+                    else None
+                ),
+                wiki_backup_packs_dir=(
+                    Path(args.wiki_backup_packs_dir)
+                    if args.wiki_backup_packs_dir
+                    else None
+                ),
+                refresh_graph_store=not args.no_graph_store_refresh,
+                graph_store_db_path=Path(args.graph_store_db) if args.graph_store_db else None,
+            )
+        except PackCompactionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        payload = {
+            "compaction": compact_result.to_mapping(),
+            "promotion": promotion_result.to_mapping(),
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(
+                "compacted and promoted graph/wiki packs: "
+                f"{', '.join(promotion_result.graph.promoted_pack_ids)} / "
+                f"{', '.join(promotion_result.wiki.promoted_pack_ids)}"
             )
         return 0
     if args.command == "promote":
