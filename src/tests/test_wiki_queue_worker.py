@@ -19,6 +19,7 @@ from ctx.core.graph.entity_overlays import active_overlay_records, load_overlay_
 from ctx.core.graph.graph_packs import (
     build_pack_manifest,
     load_merged_pack_graph,
+    write_overlay_pack,
     write_pack_manifest,
 )
 from ctx.core.graph.graph_store import validate_graph_store
@@ -317,6 +318,22 @@ def test_process_next_entity_upsert_writes_node_pack_without_vector_index(
     wiki = tmp_path / "wiki"
     graph_path = _write_base_graph_for_overlay(wiki)
     packs_dir = _write_base_graph_pack_for_overlay(wiki, graph_path)
+    write_overlay_pack(
+        pack_dir=packs_dir / "overlay-old-docs-helper",
+        pack_id="overlay-old-docs-helper",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="test-model",
+        nodes=[{"id": "skill:docs-helper", "type": "skill"}],
+        edges=[{
+            "source": "skill:docs-helper",
+            "target": "skill:python-testing",
+            "weight": 0.5,
+        }],
+        tombstones=[],
+        created_at="2026-01-01T00:00:00+00:00",
+    )
     entity_text = "---\ntags:\n  - docs\n---\n# docs-helper\n"
     entity_path = _write_entity(wiki, "entities/skills/docs-helper.md", entity_text)
     wiki_queue.enqueue_entity_upsert(
@@ -348,6 +365,7 @@ def test_process_next_entity_upsert_writes_node_pack_without_vector_index(
         "source": "entity-upsert",
         "content_hash": sha256(entity_text.encode("utf-8")).hexdigest(),
     }
+    assert not graph.has_edge("skill:docs-helper", "skill:python-testing")
     jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
     assert [job.kind for job in jobs] == [
         wiki_queue.ENTITY_UPSERT_JOB,

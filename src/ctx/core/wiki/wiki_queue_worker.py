@@ -380,7 +380,7 @@ def _try_graph_pack_node_upsert(
             "content_hash": content_hash,
         }],
         edges=[],
-        tombstones=[],
+        tombstones=[{"node_id": node_id, "source": "entity-upsert"}],
     )
     return "inserted"
 
