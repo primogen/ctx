@@ -30,6 +30,10 @@ from ctx_config import cfg
 from intake_pipeline import IntakeRejected, check_intake, record_embedding
 from ctx.adapters.claude_code.install.install_utils import safe_copy_file
 from ctx.core.wiki.wiki_queue import enqueue_entity_upsert
+from ctx.core.wiki.wiki_packs import (
+    load_merged_wiki_pages,
+    write_active_wiki_overlay_pack,
+)
 from ctx.core.wiki.wiki_sync import append_log, ensure_wiki, update_index
 from ctx.core.wiki.wiki_utils import parse_frontmatter, validate_skill_name
 from ctx.utils._fs_utils import reject_symlink_path, safe_atomic_write_text
@@ -192,11 +196,59 @@ This is a ctx-run check, not NVIDIA endorsement or certification.
 
 def write_entity_page(wiki_path: Path, name: str, content: str) -> bool:
     """Write entity page. Returns True if newly created."""
-    page = wiki_path / "entities" / "skills" / f"{name}.md"
-    reject_symlink_path(page)
-    is_new = not page.exists()
-    safe_atomic_write_text(page, content, encoding="utf-8")
+    is_new = _read_entity_page_text(wiki_path, name) is None
+    _write_entity_page_text(wiki_path, name, content)
     return is_new
+
+
+def _skill_relpath(name: str) -> str:
+    return f"entities/skills/{name}.md"
+
+
+def _read_entity_page_text(wiki_path: Path, name: str) -> str | None:
+    relpath = _skill_relpath(name)
+    page = wiki_path / relpath
+    if page.exists():
+        reject_symlink_path(page)
+    packs_dir = wiki_path / "wiki-packs"
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+    if page.exists():
+        return page.read_text(encoding="utf-8", errors="replace")
+    return None
+
+
+def _write_entity_page_text(wiki_path: Path, name: str, content: str) -> None:
+    relpath = _skill_relpath(name)
+    page = wiki_path / relpath
+    packs_dir = wiki_path / "wiki-packs"
+    if page.exists() or not packs_dir.is_dir():
+        reject_symlink_path(page)
+        safe_atomic_write_text(page, content, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: content},
+            tombstones=[],
+        )
+
+
+def _load_skill_pages(wiki_path: Path) -> dict[str, str]:
+    packs_dir = wiki_path / "wiki-packs"
+    if packs_dir.is_dir():
+        return {
+            Path(relpath).stem: text
+            for relpath, text in load_merged_wiki_pages(packs_dir).items()
+            if relpath.startswith("entities/skills/") and relpath.endswith(".md")
+        }
+    skills_dir = wiki_path / "entities" / "skills"
+    pages: dict[str, str] = {}
+    for page in sorted(skills_dir.glob("*.md")):
+        reject_symlink_path(page)
+        pages[page.stem] = page.read_text(encoding="utf-8", errors="replace")
+    return pages
 
 
 # ── Wikilink backfill ─────────────────────────────────────────────────────────
@@ -215,9 +267,12 @@ def _tag_set_from_frontmatter(raw: object) -> set[str]:
 
 
 def _existing_skill_review_text(entity_page: Path, installed_path: Path) -> str:
+    wiki_path = entity_page.parents[2]
     if entity_page.exists():
         reject_symlink_path(entity_page)
-        existing = entity_page.read_text(encoding="utf-8", errors="replace")
+    existing_page = _read_entity_page_text(wiki_path, entity_page.stem)
+    if existing_page is not None:
+        existing = existing_page
         if installed_path.exists():
             reject_symlink_path(installed_path)
             installed = installed_path.read_text(encoding="utf-8", errors="replace")
@@ -250,28 +305,24 @@ def _proposed_skill_review_text(
 
 def find_related_skills(wiki_path: Path, name: str, tags: list[str]) -> list[str]:
     """Scan existing entity pages for skills that share at least one tag."""
-    skills_dir = wiki_path / "entities" / "skills"
     related: list[str] = []
     tag_set = set(tags) - {"uncategorized"}
 
-    for page in sorted(skills_dir.glob("*.md")):
-        if page.stem == name:
+    for slug, content in sorted(_load_skill_pages(wiki_path).items()):
+        if slug == name:
             continue
-        content = page.read_text(encoding="utf-8", errors="replace")
         page_tags = _tag_set_from_frontmatter(parse_frontmatter(content).get("tags"))
         if tag_set & page_tags:
-            related.append(page.stem)
+            related.append(slug)
 
     return related
 
 
 def _add_backlink(wiki_path: Path, target_name: str, source_name: str) -> None:
     """Add a [[wikilink]] from target page back to source if not already present."""
-    page = wiki_path / "entities" / "skills" / f"{target_name}.md"
-    reject_symlink_path(page)
-    if not page.exists():
+    content = _read_entity_page_text(wiki_path, target_name)
+    if content is None:
         return
-    content = page.read_text(encoding="utf-8", errors="replace")
     link = f"[[entities/skills/{source_name}]]"
     if link in content:
         return
@@ -284,7 +335,7 @@ def _add_backlink(wiki_path: Path, target_name: str, source_name: str) -> None:
         )
     else:
         content = content.rstrip() + f"\n\n- {link}\n"
-    safe_atomic_write_text(page, content, encoding="utf-8")
+    _write_entity_page_text(wiki_path, target_name, content)
 
 
 def wire_backlinks(wiki_path: Path, name: str, related: list[str]) -> None:
@@ -348,12 +399,10 @@ def add_skill(
 
     installed_path = skills_dir / name / "SKILL.md"
     entity_page = wiki_path / "entities" / "skills" / f"{name}.md"
-    existing_path = (
-        installed_path
-        if installed_path.exists()
-        else entity_page if entity_page.exists() else None
+    has_existing = (
+        installed_path.exists()
+        or _read_entity_page_text(wiki_path, name) is not None
     )
-    has_existing = existing_path is not None
     tags = infer_tags(name, content)
 
     if review_existing and has_existing and not update_existing:
@@ -430,7 +479,7 @@ def add_skill(
 
     # Ensure at least 2 wikilinks (pad with first two related even if no tag match)
     all_entity_pages = sorted(
-        (p.stem for p in (wiki_path / "entities" / "skills").glob("*.md") if p.stem != name)
+        slug for slug in _load_skill_pages(wiki_path) if slug != name
     )
     while len(related) < 2 and len(all_entity_pages) > len(related):
         candidate = all_entity_pages[len(related)]
@@ -606,7 +655,10 @@ def main() -> None:
     total = len(candidates)
     for i, (source_path, name) in enumerate(candidates, 1):
         # Skip if already installed and --skip-existing is set
-        if args.skip_existing and (skills_dir / name / "SKILL.md").exists():
+        if args.skip_existing and (
+            (skills_dir / name / "SKILL.md").exists()
+            or _read_entity_page_text(wiki_path, name) is not None
+        ):
             skipped += 1
             if skipped <= 5 or skipped % 100 == 0:
                 print(f"  [{i}/{total}] [skipped] {name}")
