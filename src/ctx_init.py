@@ -640,8 +640,41 @@ def _graph_install_complete(wiki_dir: Path) -> bool:
 def _graph_full_install_complete(wiki_dir: Path) -> bool:
     if not _graph_install_complete(wiki_dir):
         return False
+    return _expanded_full_wiki_has_entity_pages(wiki_dir) or _wiki_packs_have_full_entities(
+        wiki_dir / "wiki-packs",
+    )
+
+
+def _expanded_full_wiki_has_entity_pages(wiki_dir: Path) -> bool:
     entities = wiki_dir / "entities"
-    return entities.is_dir() and any(entities.iterdir())
+    if not entities.is_dir():
+        return False
+    roots = (
+        entities / "skills",
+        entities / "agents",
+        entities / "mcp-servers",
+    )
+    return any(root.is_dir() and any(root.rglob("*.md")) for root in roots)
+
+
+def _wiki_packs_have_full_entities(packs_dir: Path) -> bool:
+    if not packs_dir.is_dir():
+        return False
+    try:
+        from ctx.core.wiki.wiki_packs import (  # noqa: PLC0415
+            WikiPackManifestError,
+            load_merged_wiki_pages,
+        )
+
+        pages = load_merged_wiki_pages(packs_dir)
+    except WikiPackManifestError:
+        return False
+    full_prefixes = (
+        "entities/skills/",
+        "entities/agents/",
+        "entities/mcp-servers/",
+    )
+    return any(path.startswith(full_prefixes) and path.endswith(".md") for path in pages)
 
 
 def _validate_graph_install_tree(wiki_dir: Path) -> None:

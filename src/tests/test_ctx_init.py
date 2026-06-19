@@ -899,6 +899,7 @@ def test_runtime_graph_install_extracts_and_validates_wiki_packs(
     assert (wiki / "wiki-packs" / "base-test-export" / "wiki-pack-manifest.json").is_file()
     assert not (wiki / "entities" / "skills" / "current.md").exists()
     ci._validate_graph_install_tree(wiki)
+    assert ci._graph_full_install_complete(wiki) is True
 
 
 def test_graph_install_rejects_mismatched_wiki_pack_export_id(
@@ -912,6 +913,18 @@ def test_graph_install_rejects_mismatched_wiki_pack_export_id(
 
     with pytest.raises(ValueError, match="wiki-packs export_id mismatch"):
         ci._extract_graph_archive(archive, tmp_path / "installed-wiki", install_mode="runtime")
+
+
+def test_runtime_graph_install_without_full_entities_is_not_full_install(
+    tmp_path: Path,
+) -> None:
+    archive = _write_graph_archive(tmp_path)
+    wiki = tmp_path / "installed-wiki"
+
+    ci._extract_graph_archive(archive, wiki, install_mode="runtime")
+
+    assert ci._graph_install_complete(wiki) is True
+    assert ci._graph_full_install_complete(wiki) is False
 
 
 def test_graph_install_force_prunes_stale_generated_files(
