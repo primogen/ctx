@@ -48,6 +48,7 @@ _EXPECTED_CONSOLE_SCRIPTS: tuple[str, ...] = (
     "ctx-agent-unload",
     "ctx-bundle-suggest",
     "ctx-dedup-check",
+    "ctx-graph-store",
     "ctx-harness-add",
     "ctx-harness-install",
     "ctx-incremental-attach",
