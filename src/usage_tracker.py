@@ -343,10 +343,6 @@ def append_wiki_log(loaded_count: int, used_skills: set[str], stale_count: int,
     Honors ``wiki_dir`` if provided so Strix vuln-0004 (``--wiki`` flag
     silently ignored) is closed end-to-end.
     """
-    log_path = (wiki_dir / "log.md") if wiki_dir else LOG_PATH
-    if not log_path.exists():
-        return
-
     entry = (
         f"\n## [{_today()}] session-end | usage-sync\n"
         f"- Skills loaded: {loaded_count}\n"
@@ -356,6 +352,27 @@ def append_wiki_log(loaded_count: int, used_skills: set[str], stale_count: int,
     if used_skills:
         entry += f"- Used: {', '.join(sorted(used_skills))}\n"
 
+    wiki_root = _wiki_root(wiki_dir)
+    packs_dir = wiki_root / "wiki-packs"
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        existing = pages.get("log.md")
+        if existing is None:
+            return
+        content = existing + entry
+        log_path = wiki_root / "log.md"
+        if log_path.exists():
+            _atomic_write_text(log_path, content)
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={"log.md": content},
+            tombstones=[],
+        )
+        return
+
+    log_path = (wiki_dir / "log.md") if wiki_dir else LOG_PATH
+    if not log_path.exists():
+        return
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(entry)
 

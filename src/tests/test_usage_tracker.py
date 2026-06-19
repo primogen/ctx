@@ -392,6 +392,26 @@ class TestAppendWikiLog:
         append_wiki_log(3, {"react"}, 0)
         assert "react" in log.read_text()
 
+    def test_appends_to_pack_only_log(self, tmp_path, monkeypatch):
+        wiki = tmp_path / "wiki"
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="export-1",
+            pages={"log.md": "# Log\n"},
+        )
+        monkeypatch.setattr(_ut, "_today", lambda: TEST_TODAY)
+
+        append_wiki_log(3, {"react"}, 1, wiki_dir=wiki)
+
+        assert not (wiki / "log.md").exists()
+        merged = load_merged_wiki_pages(wiki / "wiki-packs")
+        content = merged["log.md"]
+        assert f"## [{TEST_TODAY}] session-end | usage-sync" in content
+        assert "Skills loaded: 3" in content
+        assert "Skills marked stale this session: 1" in content
+        assert "Used: react" in content
+
     def test_no_error_when_log_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_ut, "LOG_PATH", tmp_path / "no-log.md")
         # Should not raise even though file doesn't exist
