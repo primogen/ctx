@@ -52,6 +52,11 @@ from ctx.core.wiki.artifact_promotion import (
     promote_staged_artifact,
     validate_json_artifact,
 )
+from ctx.core.wiki.wiki_packs import (
+    WikiPackManifestError,
+    promote_wiki_pack_set,
+    write_wiki_base_pack,
+)
 from ctx.core.wiki.wiki_utils import parse_frontmatter as _parse_fm
 from ctx.utils._fs_utils import safe_atomic_write_text
 
@@ -85,6 +90,15 @@ DEFAULT_WIKI_DIR = Path(os.path.expanduser("~/.claude/skill-wiki")).resolve()
 DEFAULT_GRAPH_SEMANTIC_CACHE_DIR = (
     DEFAULT_WIKI_DIR / ".embedding-cache" / "graph"
 ).resolve()
+WIKI_PACK_EXCLUDED_DIRS = frozenset({
+    ".ctx",
+    ".embedding-cache",
+    ".obsidian",
+    "graphify-out",
+    "wiki-packs",
+    "wiki-packs.staged",
+    "wiki-packs.rollback",
+})
 
 
 def configure_wiki_dir(wiki_dir: Path) -> None:
@@ -995,6 +1009,56 @@ def _write_export_base_pack(G: nx.Graph, export_id: str) -> None:
         shutil.rmtree(staged_packs_dir, ignore_errors=True)
 
 
+def _write_export_wiki_base_pack(export_id: str) -> None:
+    """Write the current wiki markdown tree as the active immutable base pack."""
+    pack_id = f"base-{export_id}"
+    staged_packs_dir = WIKI_DIR / "wiki-packs.staged"
+    active_packs_dir = WIKI_DIR / "wiki-packs"
+    backup_packs_dir = WIKI_DIR / "wiki-packs.rollback"
+    shutil.rmtree(staged_packs_dir, ignore_errors=True)
+    shutil.rmtree(backup_packs_dir, ignore_errors=True)
+    try:
+        write_wiki_base_pack(
+            pack_dir=staged_packs_dir / pack_id,
+            pack_id=pack_id,
+            base_export_id=export_id,
+            pages=_collect_wiki_markdown_pages(),
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        promote_wiki_pack_set(
+            staged_packs_dir=staged_packs_dir,
+            active_packs_dir=active_packs_dir,
+            backup_packs_dir=backup_packs_dir if active_packs_dir.exists() else None,
+        )
+    except WikiPackManifestError as exc:
+        raise RuntimeError(f"wiki base pack export failed: {exc}") from exc
+    finally:
+        shutil.rmtree(staged_packs_dir, ignore_errors=True)
+
+
+def _collect_wiki_markdown_pages() -> dict[str, str]:
+    if not WIKI_DIR.is_dir():
+        return {}
+    pages: dict[str, str] = {}
+    for path in sorted(WIKI_DIR.rglob("*.md")):
+        if not path.is_file() or _is_excluded_wiki_pack_source(path):
+            continue
+        relpath = path.relative_to(WIKI_DIR).as_posix()
+        pages[relpath] = path.read_text(encoding="utf-8", errors="replace")
+    return pages
+
+
+def _is_excluded_wiki_pack_source(path: Path) -> bool:
+    try:
+        rel_parts = path.relative_to(WIKI_DIR).parts
+    except ValueError:
+        return True
+    return any(
+        part in WIKI_PACK_EXCLUDED_DIRS or part.startswith("wiki-packs.rollback-")
+        for part in rel_parts[:-1]
+    )
+
+
 def _graph_pack_config_hash(G: nx.Graph) -> str:
     signature = G.graph.get(GRAPH_SCORING_SIGNATURE_KEY, {})
     payload = json.dumps(signature, sort_keys=True, default=str, separators=(",", ":"))
@@ -1553,7 +1617,7 @@ def export_graph(
     communities: dict[int, list[str]],
     *,
     delta_nodes: set[str] | None = None,
-) -> None:
+) -> str:
     """Export graph as JSON and remove obsolete binary sidecars.
 
     ``delta_nodes``, when provided, is the set of node IDs that the
@@ -1679,6 +1743,7 @@ def export_graph(
         ),
     )
     print(f"Graph exported to {GRAPH_OUT}/")
+    return export_id
 
 
 def _stage_and_promote_graph_artifact(
@@ -1749,14 +1814,19 @@ def main() -> None:
     communities = detect_communities(G)
     if args.dry_run:
         print(f"  [DRY RUN] Would export graph artifacts to {GRAPH_OUT}/")
+        export_id = None
     else:
-        export_graph(G, communities, delta_nodes=affected)
+        export_id = export_graph(G, communities, delta_nodes=affected)
 
     if args.graph_only:
+        if export_id is not None:
+            _write_export_wiki_base_pack(export_id)
         return
 
     generate_concept_pages(G, communities, args.dry_run)
     inject_community_links(G, communities, args.dry_run)
+    if export_id is not None:
+        _write_export_wiki_base_pack(export_id)
 
     print("\nDone. Open wiki in Obsidian to see the graph visualization.")
 

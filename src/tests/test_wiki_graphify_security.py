@@ -507,6 +507,60 @@ def test_main_dry_run_does_not_write_graph_or_concepts(
     assert not (tmp_path / "wiki" / "concepts").exists()
 
 
+def test_main_writes_wiki_base_pack_after_page_updates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ctx.core.wiki import wiki_graphify
+    from ctx.core.wiki.wiki_packs import discover_wiki_pack_manifests, load_merged_wiki_pages
+
+    wiki = tmp_path / "wiki"
+    skill_pages = wiki / "entities" / "skills"
+    skill_pages.mkdir(parents=True)
+    (skill_pages / "a.md").write_text("# a\n", encoding="utf-8")
+    (skill_pages / "b.md").write_text("# b\n", encoding="utf-8")
+    original_wiki = wiki_graphify.WIKI_DIR
+    graph = _make_sample_graph()
+
+    monkeypatch.setattr(sys, "argv", [
+        "ctx-wiki-graphify",
+        "--wiki-dir",
+        str(wiki),
+    ])
+    monkeypatch.setattr(wiki_graphify, "build_graph", lambda **_kwargs: (graph, {}))
+    monkeypatch.setattr(wiki_graphify, "detect_communities", lambda _graph: {
+        0: ["skill:a", "skill:b", "mcp-server:c"],
+    })
+
+    try:
+        wiki_graphify.main()
+        graph_manifest = json.loads(
+            (wiki / "graphify-out" / "graph-export-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        entries = discover_wiki_pack_manifests(wiki / "wiki-packs")
+        assert [entry.manifest.pack_id for entry in entries] == [
+            f"base-{graph_manifest['export_id']}"
+        ]
+        assert entries[0].manifest.base_export_id == graph_manifest["export_id"]
+
+        pages = load_merged_wiki_pages(wiki / "wiki-packs")
+        assert "[[entities/skills/b]]" in pages["entities/skills/a.md"]
+        assert any(path.startswith("concepts/community-") for path in pages)
+
+        (skill_pages / "a.md").write_text("# a v2\n", encoding="utf-8")
+        wiki_graphify.main()
+        pages = load_merged_wiki_pages(wiki / "wiki-packs")
+    finally:
+        wiki_graphify.configure_wiki_dir(original_wiki)
+
+    entries = discover_wiki_pack_manifests(wiki / "wiki-packs")
+    assert len(entries) == 1
+    assert "# a v2" in pages["entities/skills/a.md"]
+    assert (wiki / "wiki-packs.rollback").is_dir()
+
+
 def test_generate_concept_pages_reconciles_generated_pages(
     tmp_path: Path,
 ) -> None:
