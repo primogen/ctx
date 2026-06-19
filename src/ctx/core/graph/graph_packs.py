@@ -210,6 +210,7 @@ def write_overlay_pack(
 ) -> GraphPackManifest:
     """Write a first-class overlay pack with JSONL payload artifacts."""
     _validate_relative_manifest_name(pack_id, "pack_id")
+    created_at = created_at or datetime.now(UTC).isoformat()
     artifact_paths: list[str] = []
     if nodes:
         artifact_paths.append("nodes.jsonl")
@@ -486,8 +487,9 @@ def discover_pack_manifests(packs_dir: Path) -> list[GraphPackEntry]:
     """Discover and validate graph pack manifests under ``packs_dir``.
 
     The returned order is always the active base pack first, followed by
-    overlay packs sorted by pack id. This makes later merged-reader phases
-    deterministic without changing runtime graph loading yet.
+    overlay packs sorted by creation time, then pack id. This keeps immutable
+    overlay application deterministic while preserving "latest pack wins"
+    semantics for repeated updates to the same node or edge.
     """
     if not packs_dir.is_dir():
         return []
@@ -523,7 +525,11 @@ def discover_pack_manifests(packs_dir: Path) -> list[GraphPackEntry]:
                 f"{overlay.manifest.base_export_id!r} does not match active base "
                 f"{base.manifest.base_export_id!r}"
             )
-    return [base, *sorted(overlay_entries, key=lambda entry: entry.manifest.pack_id)]
+    return [base, *sorted(overlay_entries, key=_overlay_sort_key)]
+
+
+def _overlay_sort_key(entry: GraphPackEntry) -> tuple[str, str]:
+    return entry.manifest.created_at or "", entry.manifest.pack_id
 
 
 def load_merged_pack_graph(packs_dir: Path) -> nx.Graph:

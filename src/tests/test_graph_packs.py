@@ -297,6 +297,53 @@ def test_load_merged_pack_graph_applies_overlay_nodes_and_edges(tmp_path: Path) 
     assert graph.graph["ctx_pack_ids"] == ["base-export-1", "overlay-review"]
 
 
+def test_load_merged_pack_graph_applies_overlays_by_created_at(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "packs"
+    base_graph = nx.Graph()
+    base_graph.add_node("skill:docs", title="base", type="skill")
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="model-a",
+        graph=base_graph,
+    )
+    write_overlay_pack(
+        pack_dir=packs_dir / "overlay-z-old",
+        pack_id="overlay-z-old",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="model-a",
+        nodes=[{"id": "skill:docs", "title": "old"}],
+        edges=[],
+        tombstones=[],
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    write_overlay_pack(
+        pack_dir=packs_dir / "overlay-a-new",
+        pack_id="overlay-a-new",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="model-a",
+        nodes=[{"id": "skill:docs", "title": "new"}],
+        edges=[],
+        tombstones=[],
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+
+    graph = load_merged_pack_graph(packs_dir)
+
+    assert graph.nodes["skill:docs"]["title"] == "new"
+    assert graph.graph["ctx_pack_ids"] == [
+        "base-export-1",
+        "overlay-z-old",
+        "overlay-a-new",
+    ]
+
+
 def test_load_merged_pack_graph_applies_tombstones(tmp_path: Path) -> None:
     packs_dir = tmp_path / "packs"
     base_dir = packs_dir / "base-export-1"
