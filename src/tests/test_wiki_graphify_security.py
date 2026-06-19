@@ -295,6 +295,38 @@ def test_export_graph_does_not_write_pickle(graphify_out: Path) -> None:
     )
 
 
+def test_export_graph_writes_active_base_pack(graphify_out: Path) -> None:
+    """export_graph writes a modular base pack beside graph.json."""
+    from ctx.core.graph.graph_packs import discover_pack_manifests, load_merged_pack_graph
+    from ctx.core.wiki import wiki_graphify
+
+    first = _make_sample_graph()
+    first.graph[wiki_graphify.GRAPH_SCORING_SIGNATURE_KEY] = {
+        "intake_backend": "local",
+        "intake_model": "test-model",
+    }
+    wiki_graphify.export_graph(first, communities={})
+
+    packs_dir = graphify_out / "packs"
+    entries = discover_pack_manifests(packs_dir)
+    graph_json = json.loads((graphify_out / "graph.json").read_text(encoding="utf-8"))
+    export_id = graph_json["graph"]["export_id"]
+    assert [entry.manifest.pack_id for entry in entries] == [f"base-{export_id}"]
+    assert entries[0].manifest.base_export_id == export_id
+    assert entries[0].manifest.model_id == "local:test-model"
+    assert load_merged_pack_graph(packs_dir).number_of_nodes() == first.number_of_nodes()
+
+    second = _make_sample_graph()
+    second.add_node("skill:new", label="new", type="skill", tags=["python"])
+    wiki_graphify.export_graph(second, communities={})
+
+    entries = discover_pack_manifests(packs_dir)
+    graph_json = json.loads((graphify_out / "graph.json").read_text(encoding="utf-8"))
+    export_id = graph_json["graph"]["export_id"]
+    assert [entry.manifest.pack_id for entry in entries] == [f"base-{export_id}"]
+    assert load_merged_pack_graph(packs_dir).number_of_nodes() == second.number_of_nodes()
+
+
 def test_export_graph_supports_networkx_without_edges_kwarg(
     graphify_out: Path,
     monkeypatch: pytest.MonkeyPatch,

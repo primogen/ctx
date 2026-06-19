@@ -13,9 +13,11 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import shutil
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +28,11 @@ from networkx.algorithms.community import (
     louvain_communities,
 )
 
+from ctx.core.graph.graph_packs import (
+    GraphPackManifestError,
+    promote_graph_pack_set,
+    write_base_pack,
+)
 from ctx.core.graph.edge_scoring import (
     SLUG_STOP as _EDGE_SLUG_STOP,
     adamic_adar_scores as _shared_adamic_adar_scores,
@@ -959,6 +966,50 @@ def _new_graph_export_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
 
 
+def _write_export_base_pack(G: nx.Graph, export_id: str) -> None:
+    """Write the exported graph as the active immutable base pack."""
+    pack_id = f"base-{export_id}"
+    staged_packs_dir = GRAPH_OUT / "packs.staged"
+    active_packs_dir = GRAPH_OUT / "packs"
+    backup_packs_dir = GRAPH_OUT / "packs.rollback"
+    shutil.rmtree(staged_packs_dir, ignore_errors=True)
+    shutil.rmtree(backup_packs_dir, ignore_errors=True)
+    try:
+        write_base_pack(
+            pack_dir=staged_packs_dir / pack_id,
+            pack_id=pack_id,
+            base_export_id=export_id,
+            config_hash=_graph_pack_config_hash(G),
+            model_id=_graph_pack_model_id(G),
+            graph=G,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        promote_graph_pack_set(
+            staged_packs_dir=staged_packs_dir,
+            active_packs_dir=active_packs_dir,
+            backup_packs_dir=backup_packs_dir if active_packs_dir.exists() else None,
+        )
+    except GraphPackManifestError as exc:
+        raise RuntimeError(f"graph base pack export failed: {exc}") from exc
+    finally:
+        shutil.rmtree(staged_packs_dir, ignore_errors=True)
+
+
+def _graph_pack_config_hash(G: nx.Graph) -> str:
+    signature = G.graph.get(GRAPH_SCORING_SIGNATURE_KEY, {})
+    payload = json.dumps(signature, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _graph_pack_model_id(G: nx.Graph) -> str:
+    signature = G.graph.get(GRAPH_SCORING_SIGNATURE_KEY)
+    if isinstance(signature, dict):
+        backend = str(signature.get("intake_backend") or "unknown")
+        model = str(signature.get("intake_model") or "unknown")
+        return f"{backend}:{model}"
+    return "unknown"
+
+
 def patch_graph(
     prior: nx.Graph,
     *,
@@ -1536,6 +1587,7 @@ def export_graph(
             required_keys=("nodes", "edges", "graph"),
         ),
     )
+    _write_export_base_pack(G, export_id)
 
     # No binary sidecar. An earlier revision wrote ``graph.pickle`` next
     # to this JSON for faster incremental loads, but pickle.loads is an
