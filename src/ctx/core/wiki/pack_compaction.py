@@ -17,12 +17,18 @@ from pathlib import Path
 from ctx.core.graph.graph_packs import (
     GraphPackManifest,
     GraphPackManifestError,
+    GraphPackPromotion,
     compact_graph_packs,
+    load_merged_pack_graph,
+    promote_graph_pack_set,
 )
 from ctx.core.wiki.wiki_packs import (
     WikiPackManifest,
     WikiPackManifestError,
+    WikiPackPromotion,
     compact_wiki_packs,
+    load_merged_wiki_pages,
+    promote_wiki_pack_set,
 )
 
 
@@ -54,6 +60,23 @@ class PackCompactionResult:
             "staged_wiki_packs_dir": str(self.staged_wiki_packs_dir),
             "graph": self.graph_manifest.to_mapping(),
             "wiki": self.wiki_manifest.to_mapping(),
+        }
+
+
+@dataclass(frozen=True)
+class PackPromotionResult:
+    """Coordinated graph/wiki pack promotion result."""
+
+    wiki_path: Path
+    graph: GraphPackPromotion
+    wiki: WikiPackPromotion
+
+    def to_mapping(self) -> dict[str, object]:
+        """Return deterministic JSON-serialisable promotion metadata."""
+        return {
+            "wiki_path": str(self.wiki_path),
+            "graph": self.graph.to_mapping(),
+            "wiki": self.wiki.to_mapping(),
         }
 
 
@@ -116,6 +139,51 @@ def compact_active_pack_sets(
     )
 
 
+def promote_staged_pack_sets(
+    *,
+    wiki_path: Path,
+    staged_graph_packs_dir: Path,
+    staged_wiki_packs_dir: Path,
+    graph_backup_packs_dir: Path | None = None,
+    wiki_backup_packs_dir: Path | None = None,
+) -> PackPromotionResult:
+    """Promote staged graph/wiki pack sets into the active wiki.
+
+    Both staged roots are validated before any active directory is touched. If
+    graph promotion succeeds but wiki promotion fails, the previous graph pack
+    directory is restored from the graph backup.
+    """
+    wiki_root = Path(wiki_path)
+    graph_stage = Path(staged_graph_packs_dir)
+    wiki_stage = Path(staged_wiki_packs_dir)
+    active_graph_packs = wiki_root / "graphify-out" / "packs"
+    active_wiki_packs = wiki_root / "wiki-packs"
+    _validate_staged_pack_roots(graph_stage, wiki_stage)
+
+    graph_result: GraphPackPromotion | None = None
+    try:
+        graph_result = promote_graph_pack_set(
+            staged_packs_dir=graph_stage,
+            active_packs_dir=active_graph_packs,
+            backup_packs_dir=Path(graph_backup_packs_dir) if graph_backup_packs_dir else None,
+        )
+        wiki_result = promote_wiki_pack_set(
+            staged_packs_dir=wiki_stage,
+            active_packs_dir=active_wiki_packs,
+            backup_packs_dir=Path(wiki_backup_packs_dir) if wiki_backup_packs_dir else None,
+        )
+    except (GraphPackManifestError, WikiPackManifestError, OSError) as exc:
+        if graph_result is not None:
+            _restore_graph_packs_after_partial_promotion(graph_result)
+        raise PackCompactionError(str(exc)) from exc
+
+    return PackPromotionResult(
+        wiki_path=wiki_root,
+        graph=graph_result,
+        wiki=wiki_result,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI for staging coordinated graph/wiki pack compaction."""
     parser = argparse.ArgumentParser(
@@ -134,11 +202,29 @@ def main(argv: list[str] | None = None) -> int:
     compact.add_argument("--graph-model-id", help="Override graph model id")
     compact.add_argument("--created-at", help="Optional created_at value for staged manifests")
     compact.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    promote = sub.add_parser(
+        "promote",
+        help="Promote validated staged graph/wiki packs into the active wiki.",
+    )
+    promote.add_argument("--wiki-path", required=True, help="Path to the ctx wiki root")
+    promote.add_argument(
+        "--staged-graph-packs-dir",
+        required=True,
+        help="Validated staged graph packs root",
+    )
+    promote.add_argument(
+        "--staged-wiki-packs-dir",
+        required=True,
+        help="Validated staged wiki packs root",
+    )
+    promote.add_argument("--graph-backup-packs-dir", help="Optional graph backup directory")
+    promote.add_argument("--wiki-backup-packs-dir", help="Optional wiki backup directory")
+    promote.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args(argv)
 
     if args.command == "compact":
         try:
-            result = compact_active_pack_sets(
+            compact_result = compact_active_pack_sets(
                 wiki_path=Path(args.wiki_path),
                 base_export_id=args.base_export_id,
                 staging_dir=Path(args.staging_dir) if args.staging_dir else None,
@@ -149,15 +235,45 @@ def main(argv: list[str] | None = None) -> int:
         except PackCompactionError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        payload = result.to_mapping()
+        payload = compact_result.to_mapping()
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             print(
                 "staged graph/wiki compaction: "
-                f"{result.graph_manifest.node_count} graph nodes, "
-                f"{result.graph_manifest.edge_count} graph edges, "
-                f"{result.wiki_manifest.page_count} wiki pages"
+                f"{compact_result.graph_manifest.node_count} graph nodes, "
+                f"{compact_result.graph_manifest.edge_count} graph edges, "
+                f"{compact_result.wiki_manifest.page_count} wiki pages"
+            )
+        return 0
+    if args.command == "promote":
+        try:
+            promotion_result = promote_staged_pack_sets(
+                wiki_path=Path(args.wiki_path),
+                staged_graph_packs_dir=Path(args.staged_graph_packs_dir),
+                staged_wiki_packs_dir=Path(args.staged_wiki_packs_dir),
+                graph_backup_packs_dir=(
+                    Path(args.graph_backup_packs_dir)
+                    if args.graph_backup_packs_dir
+                    else None
+                ),
+                wiki_backup_packs_dir=(
+                    Path(args.wiki_backup_packs_dir)
+                    if args.wiki_backup_packs_dir
+                    else None
+                ),
+            )
+        except PackCompactionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        payload = promotion_result.to_mapping()
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(
+                "promoted graph/wiki packs: "
+                f"{', '.join(promotion_result.graph.promoted_pack_ids)} / "
+                f"{', '.join(promotion_result.wiki.promoted_pack_ids)}"
             )
         return 0
     return 1
@@ -166,6 +282,36 @@ def main(argv: list[str] | None = None) -> int:
 def _pack_id(base_export_id: str) -> str:
     value = base_export_id.strip()
     return value if value.startswith("base-") else f"base-{value}"
+
+
+def _validate_staged_pack_roots(
+    staged_graph_packs_dir: Path,
+    staged_wiki_packs_dir: Path,
+) -> None:
+    try:
+        graph = load_merged_pack_graph(staged_graph_packs_dir)
+        pages = load_merged_wiki_pages(staged_wiki_packs_dir)
+    except (GraphPackManifestError, WikiPackManifestError) as exc:
+        raise PackCompactionError(str(exc)) from exc
+    if graph.number_of_nodes() == 0:
+        raise PackCompactionError("staged graph packs do not contain a graph")
+    if not pages:
+        raise PackCompactionError("staged wiki packs do not contain pages")
+
+
+def _restore_graph_packs_after_partial_promotion(result: GraphPackPromotion) -> None:
+    active = result.active_packs_dir
+    backup = result.backup_packs_dir
+    _remove_path(active)
+    if backup is not None and backup.exists():
+        backup.replace(active)
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
 
 
 if __name__ == "__main__":  # pragma: no cover
