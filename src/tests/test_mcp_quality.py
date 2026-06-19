@@ -18,6 +18,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import networkx as nx
 import pytest
 
 SRC_DIR = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import mcp_quality as mq  # noqa: E402
+from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack  # noqa: E402
 from ctx.core.quality.quality_signals import SignalResult  # noqa: E402
 
 
@@ -469,6 +471,60 @@ class TestLoadGraphIndex:
         assert node["degree"] == 3
         # Cross-type = 2 (skill + agent only)
         assert node["cross_type_degree"] == 2
+
+    def test_active_graph_packs_override_stale_graph_json(
+        self, tmp_path: Path
+    ) -> None:
+        wiki_dir = tmp_path / "wiki"
+        graph_dir = wiki_dir / "graphify-out"
+        packs_dir = graph_dir / "packs"
+        graph_dir.mkdir(parents=True)
+        (graph_dir / "graph.json").write_text(
+            json.dumps({
+                "directed": False,
+                "multigraph": False,
+                "graph": {},
+                "nodes": [
+                    {"id": "mcp-server:github", "type": "mcp-server"},
+                    {"id": "mcp-server:stale", "type": "mcp-server"},
+                ],
+                "edges": [
+                    {"source": "mcp-server:github", "target": "mcp-server:stale"},
+                ],
+            }),
+            encoding="utf-8",
+        )
+        graph = nx.Graph()
+        graph.add_node("mcp-server:github", type="mcp-server")
+        graph.add_node("skill:git", type="skill")
+        graph.add_edge("mcp-server:github", "skill:git")
+        write_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="export-1",
+            config_hash="config-sha",
+            model_id="test-model",
+            graph=graph,
+        )
+        write_overlay_pack(
+            pack_dir=packs_dir / "overlay-agent",
+            pack_id="overlay-agent",
+            base_export_id="export-1",
+            parent_export_id="export-1",
+            config_hash="config-sha",
+            model_id="test-model",
+            nodes=[{"id": "agent:coder", "type": "agent"}],
+            edges=[{"source": "mcp-server:github", "target": "agent:coder"}],
+            tombstones=[],
+        )
+
+        index = mq.load_graph_index(wiki_dir)
+
+        assert "mcp-server:stale" not in index
+        assert index["mcp-server:github"] == {
+            "degree": 2,
+            "cross_type_degree": 2,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -321,47 +321,31 @@ def _read_mcp_entity(
 
 
 def load_graph_index(wiki_dir: Path) -> dict[str, dict[str, Any]]:
-    """Load ``<wiki>/graphify-out/graph.json`` and build a degree index.
+    """Load the merged wiki graph and build a degree index.
 
     Returns a mapping of ``{node_id: {"degree": int, "cross_type_degree": int}}``.
     Cross-type degree counts neighbours whose ``node_id`` starts with a
     different type prefix (e.g. ``skill:`` or ``agent:`` vs ``mcp-server:``).
-    Returns an empty dict if the file is missing or malformed.
+    Returns an empty dict if graph packs and legacy ``graph.json`` are both
+    missing or malformed.
     """
     graph_path = wiki_dir / "graphify-out" / "graph.json"
-    if not graph_path.is_file():
+    packs_dir = graph_path.parent / "packs"
+    if not graph_path.is_file() and not packs_dir.is_dir():
         return {}
     try:
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        _logger.warning("load_graph_index: could not parse %s", graph_path)
+        from ctx.core.graph.resolve_graph import load_graph  # noqa: PLC0415
+
+        graph = load_graph(graph_path)
+    except Exception as exc:  # noqa: BLE001 - quality recompute must keep going.
+        _logger.warning("load_graph_index: could not load %s: %s", graph_path, exc)
         return {}
-
-    if not isinstance(data, dict) or "nodes" not in data:
-        return {}
-
-    # Build neighbour lists from links/edges.
-    edge_key = "links" if "links" in data else "edges"
-    raw_edges = data.get(edge_key) or []
-
-    # adjacency: node_id -> set of neighbour node_ids
-    adjacency: dict[str, set[str]] = {}
-    for node in data.get("nodes", []):
-        nid = node.get("id")
-        if isinstance(nid, str):
-            adjacency[nid] = set()
-
-    for edge in raw_edges:
-        if not isinstance(edge, dict):
-            continue
-        src = edge.get("source") or edge.get("from")
-        tgt = edge.get("target") or edge.get("to")
-        if isinstance(src, str) and isinstance(tgt, str):
-            adjacency.setdefault(src, set()).add(tgt)
-            adjacency.setdefault(tgt, set()).add(src)
 
     index: dict[str, dict[str, Any]] = {}
-    for node_id, neighbours in adjacency.items():
+    for node_id in graph.nodes:
+        if not isinstance(node_id, str):
+            continue
+        neighbours = {str(neighbour) for neighbour in graph.neighbors(node_id)}
         # Derive this node's type prefix (e.g. "skill", "mcp-server").
         node_prefix = node_id.split(":")[0] if ":" in node_id else ""
         cross_type = sum(
