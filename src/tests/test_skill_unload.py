@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -23,6 +24,8 @@ import networkx as nx
 import pytest
 
 from ctx.core.graph.graph_packs import load_merged_pack_graph, write_base_pack
+from ctx.core.graph.graph_store import graph_store_stats
+from ctx.core.wiki import wiki_queue, wiki_queue_worker
 
 
 @pytest.fixture()
@@ -301,3 +304,39 @@ def test_permanent_suppression_updates_graph_pack_node(fake_home):
     assert unload.restore_load(["real-skill"]) == ["real-skill"]
     merged = load_merged_pack_graph(packs_dir)
     assert merged.nodes["skill:real-skill"]["never_load"] is False
+
+
+def test_permanent_suppression_refreshes_graph_store_from_pack_overlay(fake_home):
+    unload, home = fake_home
+    wiki = home / ".claude" / "skill-wiki"
+    graph_dir = wiki / "graphify-out"
+    packs_dir = graph_dir / "packs"
+    graph = nx.Graph()
+    graph.add_node("skill:real-skill", label="real-skill", type="skill")
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="test-model",
+        graph=graph,
+    )
+
+    assert unload.set_never_load(["real-skill"]) == ["real-skill"]
+    jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
+    assert [job.kind for job in jobs] == [wiki_queue.GRAPH_STORE_REFRESH_JOB]
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="test-worker")
+
+    assert result is not None
+    assert result.kind == wiki_queue.GRAPH_STORE_REFRESH_JOB
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    store = graph_dir / "graph-store.sqlite3"
+    assert graph_store_stats(store) == {"nodes": 1, "edges": 0}
+    with sqlite3.connect(store) as conn:
+        row = conn.execute(
+            "SELECT attrs_json FROM nodes WHERE id = ?",
+            ("skill:real-skill",),
+        ).fetchone()
+    assert row is not None
+    assert json.loads(row[0])["never_load"] is True

@@ -27,6 +27,7 @@ from ctx.core.graph.graph_packs import (
     load_merged_pack_graph,
     write_overlay_pack,
 )
+from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import validate_skill_name
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
@@ -59,7 +60,27 @@ def _sync_graph_never_load(name: str, page: Path, value: bool) -> bool:
         return False
     legacy_changed = _sync_graph_json_never_load(node_id, value)
     pack_changed = _sync_graph_pack_never_load(node_id, value)
-    return legacy_changed or pack_changed
+    changed = legacy_changed or pack_changed
+    if changed:
+        _queue_graph_store_refresh(node_id, value)
+    return changed
+
+
+def _queue_graph_store_refresh(node_id: str, value: bool) -> None:
+    """Queue a hot graph-store rebuild after graph metadata changes."""
+    try:
+        wiki_queue.enqueue_maintenance_job(
+            WIKI_DIR,
+            kind=wiki_queue.GRAPH_STORE_REFRESH_JOB,
+            payload={
+                "reason": "never_load",
+                "node_id": node_id,
+                "never_load": value,
+            },
+            source="skill_unload",
+        )
+    except Exception as exc:  # noqa: BLE001 - refresh is best-effort for CLI UX.
+        print(f"Warning: failed to queue graph store refresh: {exc}", file=sys.stderr)
 
 
 def _sync_graph_json_never_load(node_id: str, value: bool) -> bool:
