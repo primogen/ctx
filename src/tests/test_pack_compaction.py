@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import networkx as nx
+import pytest
 
 from ctx.core.graph.graph_packs import (
     discover_pack_manifests,
@@ -10,6 +12,7 @@ from ctx.core.graph.graph_packs import (
     write_base_pack,
     write_overlay_pack,
 )
+from ctx.core.wiki import pack_compaction
 from ctx.core.wiki.pack_compaction import compact_active_pack_sets
 from ctx.core.wiki.wiki_packs import (
     discover_wiki_pack_manifests,
@@ -23,6 +26,64 @@ def test_compact_active_pack_sets_stages_graph_and_wiki_without_mutating_active(
     tmp_path: Path,
 ) -> None:
     wiki = tmp_path / "wiki"
+    graph_packs, wiki_packs = _write_active_pack_sets(wiki)
+    staging_dir = tmp_path / "staged-compaction"
+
+    result = compact_active_pack_sets(
+        wiki_path=wiki,
+        base_export_id="export-2",
+        staging_dir=staging_dir,
+    )
+
+    assert result.graph_manifest.pack_id == "base-export-2"
+    assert result.wiki_manifest.pack_id == "base-export-2"
+    assert [entry.manifest.pack_id for entry in discover_pack_manifests(graph_packs)] == [
+        "base-export-1",
+        "overlay-new",
+    ]
+    assert [entry.manifest.pack_id for entry in discover_wiki_pack_manifests(wiki_packs)] == [
+        "base-export-1",
+        "overlay-new",
+    ]
+    compacted_graph = load_merged_pack_graph(staging_dir / "graph-packs")
+    assert "skill:old" not in compacted_graph
+    assert compacted_graph.has_edge("skill:new", "skill:keep")
+    assert load_merged_wiki_pages(staging_dir / "wiki-packs") == {
+        "entities/skills/keep.md": "# Keep\n",
+        "entities/skills/new.md": "# New\n",
+    }
+
+
+def test_pack_compaction_cli_emits_json_for_staged_pack_sets(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+    staging_dir = tmp_path / "staged-compaction"
+
+    result = pack_compaction.main([
+        "compact",
+        "--wiki-path",
+        str(wiki),
+        "--base-export-id",
+        "export-2",
+        "--staging-dir",
+        str(staging_dir),
+        "--json",
+    ])
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["graph"]["pack_id"] == "base-export-2"
+    assert payload["wiki"]["pack_id"] == "base-export-2"
+    assert payload["staged_graph_packs_dir"] == str(staging_dir / "graph-packs")
+    assert payload["staged_wiki_packs_dir"] == str(staging_dir / "wiki-packs")
+    assert "skill:old" not in load_merged_pack_graph(staging_dir / "graph-packs")
+    assert "entities/skills/old.md" not in load_merged_wiki_pages(staging_dir / "wiki-packs")
+
+
+def _write_active_pack_sets(wiki: Path) -> tuple[Path, Path]:
     graph_packs = wiki / "graphify-out" / "packs"
     wiki_packs = wiki / "wiki-packs"
     graph = nx.Graph()
@@ -65,28 +126,4 @@ def test_compact_active_pack_sets_stages_graph_and_wiki_without_mutating_active(
         pages={"entities/skills/new.md": "# New\n"},
         tombstones=["entities/skills/old.md"],
     )
-    staging_dir = tmp_path / "staged-compaction"
-
-    result = compact_active_pack_sets(
-        wiki_path=wiki,
-        base_export_id="export-2",
-        staging_dir=staging_dir,
-    )
-
-    assert result.graph_manifest.pack_id == "base-export-2"
-    assert result.wiki_manifest.pack_id == "base-export-2"
-    assert [entry.manifest.pack_id for entry in discover_pack_manifests(graph_packs)] == [
-        "base-export-1",
-        "overlay-new",
-    ]
-    assert [entry.manifest.pack_id for entry in discover_wiki_pack_manifests(wiki_packs)] == [
-        "base-export-1",
-        "overlay-new",
-    ]
-    compacted_graph = load_merged_pack_graph(staging_dir / "graph-packs")
-    assert "skill:old" not in compacted_graph
-    assert compacted_graph.has_edge("skill:new", "skill:keep")
-    assert load_merged_wiki_pages(staging_dir / "wiki-packs") == {
-        "entities/skills/keep.md": "# Keep\n",
-        "entities/skills/new.md": "# New\n",
-    }
+    return graph_packs, wiki_packs

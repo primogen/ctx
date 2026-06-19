@@ -7,7 +7,10 @@ can validate both staged artifacts before replacing the active packs.
 
 from __future__ import annotations
 
+import argparse
+import json
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +42,19 @@ class PackCompactionResult:
     staged_wiki_packs_dir: Path
     graph_manifest: GraphPackManifest
     wiki_manifest: WikiPackManifest
+
+    def to_mapping(self) -> dict[str, object]:
+        """Return deterministic JSON-serialisable compaction metadata."""
+        return {
+            "wiki_path": str(self.wiki_path),
+            "staging_dir": str(self.staging_dir),
+            "graph_packs_dir": str(self.graph_packs_dir),
+            "wiki_packs_dir": str(self.wiki_packs_dir),
+            "staged_graph_packs_dir": str(self.staged_graph_packs_dir),
+            "staged_wiki_packs_dir": str(self.staged_wiki_packs_dir),
+            "graph": self.graph_manifest.to_mapping(),
+            "wiki": self.wiki_manifest.to_mapping(),
+        }
 
 
 def compact_active_pack_sets(
@@ -100,6 +116,57 @@ def compact_active_pack_sets(
     )
 
 
+def main(argv: list[str] | None = None) -> int:
+    """CLI for staging coordinated graph/wiki pack compaction."""
+    parser = argparse.ArgumentParser(
+        prog="python -m ctx.core.wiki.pack_compaction",
+        description="Stage compacted ctx graph and LLM-wiki base packs.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    compact = sub.add_parser(
+        "compact",
+        help="Stage compacted graph/wiki base packs without mutating active packs.",
+    )
+    compact.add_argument("--wiki-path", required=True, help="Path to the ctx wiki root")
+    compact.add_argument("--base-export-id", required=True, help="New compacted export id")
+    compact.add_argument("--staging-dir", help="Destination staging root")
+    compact.add_argument("--graph-config-hash", help="Override graph config hash")
+    compact.add_argument("--graph-model-id", help="Override graph model id")
+    compact.add_argument("--created-at", help="Optional created_at value for staged manifests")
+    compact.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    args = parser.parse_args(argv)
+
+    if args.command == "compact":
+        try:
+            result = compact_active_pack_sets(
+                wiki_path=Path(args.wiki_path),
+                base_export_id=args.base_export_id,
+                staging_dir=Path(args.staging_dir) if args.staging_dir else None,
+                graph_config_hash=args.graph_config_hash,
+                graph_model_id=args.graph_model_id,
+                created_at=args.created_at,
+            )
+        except PackCompactionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        payload = result.to_mapping()
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(
+                "staged graph/wiki compaction: "
+                f"{result.graph_manifest.node_count} graph nodes, "
+                f"{result.graph_manifest.edge_count} graph edges, "
+                f"{result.wiki_manifest.page_count} wiki pages"
+            )
+        return 0
+    return 1
+
+
 def _pack_id(base_export_id: str) -> str:
     value = base_export_id.strip()
     return value if value.startswith("base-") else f"base-{value}"
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
