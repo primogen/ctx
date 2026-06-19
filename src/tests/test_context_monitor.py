@@ -18,6 +18,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import networkx as nx
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -32,6 +33,7 @@ from ctx.adapters.claude_code.hooks.context_monitor import (
     load_recent_unmatched_count,
     write_pending_skills,
 )
+from ctx.core.graph.graph_packs import write_base_pack
 
 TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -244,6 +246,41 @@ class TestWritePendingSkills:
 
         assert _cm.graph_suggest(["fastapi"]) == [{"name": "fastapi-pro", "type": "skill"}]
         assert calls["entity_types"] == ("skill", "agent", "mcp-server")
+
+    def test_graph_suggest_reads_active_packs_without_legacy_graph_json(self, tmp_path, monkeypatch):
+        graph_out = tmp_path / "skill-wiki" / "graphify-out"
+        graph = nx.Graph()
+        graph.add_node("skill:fastapi-pro", type="skill", label="fastapi-pro", tags=["fastapi"])
+        write_base_pack(
+            pack_dir=graph_out / "packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="export-1",
+            config_hash="config-1",
+            model_id="model-1",
+            graph=graph,
+        )
+        assert not (graph_out / "graph.json").exists()
+        monkeypatch.setattr(_cm, "CLAUDE_DIR", tmp_path)
+        calls = {}
+
+        def fake_recommend_by_tags(graph, tags, **kwargs):
+            calls["nodes"] = sorted(graph.nodes)
+            calls["tags"] = tags
+            return [{"name": "fastapi-pro", "type": "skill"}]
+
+        fake_recommend_module = type(
+            "FakeRecommendModule",
+            (),
+            {"recommend_by_tags": staticmethod(fake_recommend_by_tags)},
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "ctx.core.resolve.recommendations",
+            fake_recommend_module,
+        )
+
+        assert _cm.graph_suggest(["fastapi"]) == [{"name": "fastapi-pro", "type": "skill"}]
+        assert calls == {"nodes": ["skill:fastapi-pro"], "tags": ["fastapi"]}
 
 
 # ---------------------------------------------------------------------------

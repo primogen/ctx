@@ -235,7 +235,7 @@ def graph_suggest(
         top_k = 1
     top_k = min(top_k, configured_top_k, 5)
     graph_path = CLAUDE_DIR / "skill-wiki" / "graphify-out" / "graph.json"
-    if not graph_path.exists():
+    if not _graph_source_available(graph_path):
         return []
     try:
         from ctx.core.graph.resolve_graph import load_graph  # noqa: PLC0415
@@ -255,6 +255,11 @@ def graph_suggest(
     except Exception as exc:
         print(f"Warning: graph suggest error: {exc}", file=sys.stderr)
         return []
+
+
+def _graph_source_available(graph_path: Path) -> bool:
+    """Return whether the graph resolver has a legacy file or active packs."""
+    return graph_path.is_file() or (graph_path.parent / "packs").is_dir()
 
 
 def write_pending_skills(unmatched: list[str]) -> None:
