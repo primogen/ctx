@@ -24,6 +24,7 @@ import scan_repo
 from ctx.adapters.claude_code.hooks import context_monitor
 from ctx.adapters.generic.ctx_core_tools import CtxCoreToolbox
 from ctx.adapters.generic.providers import ToolCall
+from ctx.core.graph.graph_packs import write_base_pack
 from ctx.core.graph.resolve_graph import load_graph
 from ctx.core.resolve.recommendations import query_to_tags, recommend_by_tags
 from ctx.core.resolve.resolve_skills import resolve
@@ -380,6 +381,57 @@ def test_scan_repo_recommendations_use_shared_graph_bundle(
     wiki = tmp_path / "skill-wiki"
     graph_path = wiki / "graphify-out" / "graph.json"
     _write_golden_graph(graph_path)
+    import ctx_config
+    monkeypatch.setattr(
+        ctx_config,
+        "cfg",
+        SimpleNamespace(
+            wiki_dir=wiki,
+            recommendation_top_k=5,
+            recommendation_min_normalized_score=0.30,
+        ),
+    )
+    profile = {
+        "repo_path": str(tmp_path),
+        "project_type": "api-service",
+        "languages": [{"name": "python", "confidence": 0.9}],
+        "frameworks": [{"name": "fastapi", "confidence": 0.9}],
+        "infrastructure": [],
+        "data_stores": [],
+        "testing": [],
+        "ai_tooling": [],
+        "build_system": [],
+        "docs": [],
+    }
+
+    scan_repo._print_recommendations(str(tmp_path), profile)
+    out = capsys.readouterr().out
+
+    assert "-- Skills (1) --" in out
+    assert "-- Agents (1) --" in out
+    assert "-- MCP Servers (1) --" in out
+    assert "fastapi-python-async" in out
+    assert "fastapi-code-reviewer" in out
+    assert "fastapi-docs" in out
+
+
+def test_scan_repo_recommendations_use_graph_packs_without_legacy_graph_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    wiki = tmp_path / "skill-wiki"
+    graph_path = wiki / "graphify-out" / "graph.json"
+    graph = _write_golden_graph(graph_path)
+    graph_path.unlink()
+    write_base_pack(
+        pack_dir=wiki / "graphify-out" / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=graph,
+    )
     import ctx_config
     monkeypatch.setattr(
         ctx_config,
