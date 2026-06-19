@@ -41,6 +41,12 @@ class ProcessResult:
     message: str
 
 
+@dataclass(frozen=True)
+class _AttachOutcome:
+    message: str
+    graph_pack_attached: bool = False
+
+
 def process_next(
     wiki_path: Path,
     *,
@@ -161,20 +167,28 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
     page_relpath = _wiki_relative_path(wiki_path, entity_path)
     update_index(str(wiki_path), [slug], subject_type=subject_type)
     _emit_wiki_page_upsert(wiki_path, page_relpath, text)
-    attach_message = _try_incremental_attach(
+    attach_outcome = _try_incremental_attach(
         wiki_path=wiki_path,
         entity_type=entity_type,
         slug=slug,
         entity_path=entity_path,
         text=text,
     )
-    wiki_queue.enqueue_maintenance_job(
-        wiki_path,
-        kind=wiki_queue.GRAPH_EXPORT_JOB,
-        payload={"graph_only": True, "incremental": True},
-        source="entity-upsert",
-    )
-    return f"refreshed {subject_type} index for {slug}; {attach_message}"
+    if attach_outcome.graph_pack_attached:
+        wiki_queue.enqueue_maintenance_job(
+            wiki_path,
+            kind=wiki_queue.GRAPH_STORE_REFRESH_JOB,
+            payload={},
+            source="entity-upsert",
+        )
+    else:
+        wiki_queue.enqueue_maintenance_job(
+            wiki_path,
+            kind=wiki_queue.GRAPH_EXPORT_JOB,
+            payload={"graph_only": True, "incremental": True},
+            source="entity-upsert",
+        )
+    return f"refreshed {subject_type} index for {slug}; {attach_outcome.message}"
 
 
 def _emit_wiki_page_upsert(wiki_path: Path, relpath: str, text: str) -> None:
@@ -216,10 +230,10 @@ def _try_incremental_attach(
     slug: str,
     entity_path: Path,
     text: str,
-) -> str:
+) -> _AttachOutcome:
     index_dir = _semantic_vector_index_dir(wiki_path)
     if not (index_dir / "vector-index.meta.json").is_file():
-        return "incremental attach skipped (no vector index)"
+        return _AttachOutcome("incremental attach skipped (no vector index)")
     try:
         result = attach_entity(
             index_dir=index_dir,
@@ -237,13 +251,16 @@ def _try_incremental_attach(
             **_graph_pack_attach_kwargs(wiki_path),
         )
     except Exception as exc:  # noqa: BLE001 - attach is derived, not source of truth.
-        return f"incremental attach skipped ({exc})"
+        return _AttachOutcome(f"incremental attach skipped ({exc})")
     status = result.get("status", "unknown")
     overlay_pack = result.get("overlay_pack")
     if isinstance(overlay_pack, dict):
         pack_status = overlay_pack.get("status", "unknown")
-        return f"incremental attach {status}; overlay pack {pack_status}"
-    return f"incremental attach {status}"
+        return _AttachOutcome(
+            f"incremental attach {status}; overlay pack {pack_status}",
+            graph_pack_attached=True,
+        )
+    return _AttachOutcome(f"incremental attach {status}")
 
 
 def _graph_pack_attach_kwargs(wiki_path: Path) -> dict[str, Any]:

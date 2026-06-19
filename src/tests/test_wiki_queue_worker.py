@@ -301,6 +301,12 @@ def test_process_next_entity_upsert_writes_overlay_pack_when_base_pack_exists(
     assert len(overlay_packs) == 1
     graph = load_merged_pack_graph(packs_dir)
     assert graph.has_edge("skill:worker-python", "skill:python-testing")
+    jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
+    assert [job.kind for job in jobs] == [
+        wiki_queue.ENTITY_UPSERT_JOB,
+        wiki_queue.GRAPH_STORE_REFRESH_JOB,
+    ]
+    assert jobs[1].payload == {"source": "entity-upsert"}
 
 
 def test_process_next_entity_upsert_writes_wiki_page_overlay_when_base_pack_exists(
