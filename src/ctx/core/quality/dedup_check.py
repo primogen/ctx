@@ -47,6 +47,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
+from ctx.core.entity_types import ENTITY_TYPE_FOR_SUBJECT_TYPE, mcp_shard
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages
+
 if TYPE_CHECKING:
     import numpy as np
 
@@ -206,6 +209,11 @@ def _read_frontmatter(path: Path) -> dict:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return {}
+    return _frontmatter_from_text(text)
+
+
+def _frontmatter_from_text(text: str) -> dict:
+    """Tiny YAML-ish frontmatter parser (matches graphify's tolerance)."""
     if not text.startswith("---"):
         return {}
     try:
@@ -246,6 +254,10 @@ def discover_entities(wiki_dir: Path) -> list[EntityRef]:
     the report. The returned list is sorted by ``node_id`` for
     deterministic output.
     """
+    packed = _discover_pack_entities(wiki_dir)
+    if packed is not None:
+        return packed
+
     entities: list[EntityRef] = []
     type_dirs = {
         "skill": wiki_dir / "entities" / "skills",
@@ -276,6 +288,69 @@ def discover_entities(wiki_dir: Path) -> list[EntityRef]:
             ))
     entities.sort(key=lambda e: e.node_id)
     return entities
+
+
+def _discover_pack_entities(wiki_dir: Path) -> list[EntityRef] | None:
+    packs_dir = wiki_dir / "wiki-packs"
+    if not packs_dir.is_dir():
+        return None
+    entities: list[EntityRef] = []
+    for relpath, text in sorted(load_merged_wiki_pages(packs_dir).items()):
+        parsed = _pack_entity_type_and_slug(relpath)
+        if parsed is None:
+            continue
+        entity_type, slug = parsed
+        fm = _frontmatter_from_text(text)
+        entities.append(_entity_ref_from_frontmatter(
+            entity_type=entity_type,
+            slug=slug,
+            path=wiki_dir / relpath,
+            fm=fm,
+        ))
+    entities.sort(key=lambda e: e.node_id)
+    return entities
+
+
+def _pack_entity_type_and_slug(relpath: str) -> tuple[str, str] | None:
+    path = Path(relpath)
+    parts = path.parts
+    if len(parts) < 3 or parts[0] != "entities" or path.suffix != ".md":
+        return None
+    entity_type = ENTITY_TYPE_FOR_SUBJECT_TYPE.get(parts[1])
+    if entity_type not in {"skill", "agent", "mcp-server"}:
+        return None
+    slug = path.stem
+    if entity_type == "mcp-server":
+        if len(parts) != 4 or parts[2] != mcp_shard(slug):
+            return None
+    elif len(parts) != 3:
+        return None
+    return entity_type, slug
+
+
+def _entity_ref_from_frontmatter(
+    *,
+    entity_type: str,
+    slug: str,
+    path: Path,
+    fm: dict,
+) -> EntityRef:
+    desc = fm.get("description", "")
+    if isinstance(desc, list):
+        desc = " ".join(str(x) for x in desc)
+    desc = str(desc).strip()[:250]
+    tags = fm.get("tags", [])
+    if not isinstance(tags, list):
+        tags = []
+    tags_t = tuple(str(t) for t in tags if t)
+    return EntityRef(
+        node_id=f"{entity_type}:{slug}",
+        type=entity_type,
+        slug=slug,
+        path=path,
+        description=desc,
+        tags=tags_t,
+    )
 
 
 # ── Embedding alignment ───────────────────────────────────────────────
