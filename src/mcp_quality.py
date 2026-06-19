@@ -46,7 +46,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_active_wiki_overlay_pack
 from ctx.utils._fs_utils import atomic_write_text as _atomic_write
+from ctx.utils._fs_utils import reject_symlink_path, safe_atomic_write_text
 from mcp_entity import MCP_SLUG_RE, McpRecord
 from ctx.core.quality.quality_signals import SignalResult
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
@@ -286,8 +288,65 @@ def _resolve_mcp_entity_path(slug: str, wiki_dir: Path) -> Path:
     return wiki_dir / "entities" / "mcp-servers" / shard / f"{slug}.md"
 
 
+def _mcp_entity_relpath(slug: str) -> str:
+    path = _resolve_mcp_entity_path(slug, Path("."))
+    return path.as_posix()
+
+
+def _load_active_wiki_pack_pages(wiki_dir: Path) -> dict[str, str] | None:
+    packs_dir = wiki_dir / "wiki-packs"
+    if not packs_dir.is_dir():
+        return None
+    return load_merged_wiki_pages(packs_dir)
+
+
+def _read_mcp_entity_text(
+    slug: str,
+    wiki_dir: Path,
+    *,
+    pages: dict[str, str] | None = None,
+) -> str | None:
+    relpath = _mcp_entity_relpath(slug)
+    packs_dir = wiki_dir / "wiki-packs"
+    if packs_dir.is_dir():
+        page_map = pages if pages is not None else load_merged_wiki_pages(packs_dir)
+        if relpath in page_map:
+            return page_map[relpath]
+    path = _resolve_mcp_entity_path(slug, wiki_dir)
+    if path.is_file():
+        reject_symlink_path(path)
+        return path.read_text(encoding="utf-8", errors="replace")
+    return None
+
+
+def _write_mcp_entity_text(
+    slug: str,
+    wiki_dir: Path,
+    text: str,
+    *,
+    pages: dict[str, str] | None = None,
+) -> Path:
+    relpath = _mcp_entity_relpath(slug)
+    path = _resolve_mcp_entity_path(slug, wiki_dir)
+    packs_dir = wiki_dir / "wiki-packs"
+    if path.exists() or not packs_dir.is_dir():
+        safe_atomic_write_text(path, text, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: text},
+            tombstones=[],
+        )
+        if pages is not None:
+            pages[relpath] = text
+    return path
+
+
 def _read_mcp_entity(
-    slug: str, wiki_dir: Path
+    slug: str,
+    wiki_dir: Path,
+    *,
+    pages: dict[str, str] | None = None,
 ) -> tuple[McpRecord, dict[str, Any]]:
     """Read entity .md, parse frontmatter, reconstruct McpRecord.
 
@@ -304,11 +363,11 @@ def _read_mcp_entity(
         ValueError: If the frontmatter cannot produce a valid McpRecord.
     """
     path = _resolve_mcp_entity_path(slug, wiki_dir)
-    if not path.is_file():
+    raw = _read_mcp_entity_text(slug, wiki_dir, pages=pages)
+    if raw is None:
         raise FileNotFoundError(
             f"MCP entity not found: {path}"
         )
-    raw = path.read_text(encoding="utf-8", errors="replace")
     fm, _body = parse_frontmatter_and_body(raw)
     # McpRecord.from_dict is tolerant of missing optional fields.
     record = McpRecord.from_dict({**fm, "slug": slug})
@@ -393,6 +452,7 @@ def extract_signals_for_slug(
     wiki_dir: Path,
     config: McpQualityConfig | None = None,
     graph_index: Mapping[str, dict[str, Any]] | None = None,
+    pages: dict[str, str] | None = None,
 ) -> Mapping[str, SignalResult]:
     """Read entity, compute graph degrees, call all six signal functions.
 
@@ -425,7 +485,7 @@ def extract_signals_for_slug(
     _ensure_safe_slug(slug)
     cfg = config or McpQualityConfig()
 
-    record, fm = _read_mcp_entity(slug, wiki_dir)
+    record, fm = _read_mcp_entity(slug, wiki_dir, pages=pages)
 
     # Graph degrees.
     node_id = f"{_MCP_NODE_PREFIX}{slug}"
@@ -607,6 +667,7 @@ def persist_quality(
     wiki_dir: Path,
     sidecar_dir: Path | None = None,
     update_frontmatter: bool = True,
+    pages: dict[str, str] | None = None,
 ) -> dict[str, Path]:
     """Write the quality result to the three on-disk sinks atomically.
 
@@ -633,14 +694,13 @@ def persist_quality(
 
     # Sinks 2 + 3 — entity .md (frontmatter + body).
     entity_path = _resolve_mcp_entity_path(score.slug, wiki_dir)
-    if not entity_path.is_file():
+    raw = _read_mcp_entity_text(score.slug, wiki_dir, pages=pages)
+    if raw is None:
         _logger.info(
             "mcp_quality: no entity page at %s; frontmatter/body sinks skipped",
             entity_path,
         )
         return written
-
-    raw = entity_path.read_text(encoding="utf-8", errors="replace")
 
     # Sink 2 — frontmatter.
     updated = _update_frontmatter_quality(raw, score)
@@ -655,7 +715,7 @@ def persist_quality(
             new_body = _inject_quality_section(body, _render_quality_section(score))
             updated = header + new_body
 
-    _atomic_write(entity_path, updated)
+    entity_path = _write_mcp_entity_text(score.slug, wiki_dir, updated, pages=pages)
     written["frontmatter"] = entity_path
     written["wiki_body"] = entity_path
 
@@ -710,6 +770,7 @@ def recompute_slug(
     graph_index: Mapping[str, dict[str, Any]] | None = None,
     sidecar_dir: Path | None = None,
     update_frontmatter: bool = True,
+    pages: dict[str, str] | None = None,
 ) -> McpQualityScore:
     """End-to-end recompute: extract signals → compute → persist."""
     signals = extract_signals_for_slug(
@@ -717,6 +778,7 @@ def recompute_slug(
         wiki_dir=wiki_dir,
         config=config,
         graph_index=graph_index,
+        pages=pages,
     )
     score = compute_quality(
         slug=slug,
@@ -729,16 +791,32 @@ def recompute_slug(
         wiki_dir=wiki_dir,
         sidecar_dir=sidecar_dir,
         update_frontmatter=update_frontmatter,
+        pages=pages,
     )
     return score
 
 
-def discover_mcp_slugs(wiki_dir: Path) -> list[str]:
+def discover_mcp_slugs(
+    wiki_dir: Path,
+    *,
+    pages: dict[str, str] | None = None,
+) -> list[str]:
     """Enumerate every MCP server slug in the wiki entity tree.
 
     Walks ``<wiki>/entities/mcp-servers/`` shards, collecting ``*.md``
     stems that pass ``MCP_SLUG_RE``. Returns sorted list.
     """
+    page_map = pages if pages is not None else _load_active_wiki_pack_pages(wiki_dir)
+    if page_map is not None:
+        prefix = "entities/mcp-servers/"
+        return sorted(
+            Path(relpath).stem
+            for relpath in page_map
+            if relpath.startswith(prefix)
+            and relpath.endswith(".md")
+            and MCP_SLUG_RE.match(Path(relpath).stem)
+        )
+
     mcp_root = wiki_dir / "entities" / "mcp-servers"
     if not mcp_root.is_dir():
         return []
@@ -766,7 +844,8 @@ def recompute_all(
         ``(successes, failures)`` where failures is a list of
         ``(slug, exception)`` pairs.
     """
-    slugs = discover_mcp_slugs(wiki_dir)
+    pages = _load_active_wiki_pack_pages(wiki_dir)
+    slugs = discover_mcp_slugs(wiki_dir, pages=pages)
     graph_index = load_graph_index(wiki_dir)
 
     successes: list[McpQualityScore] = []
@@ -780,6 +859,7 @@ def recompute_all(
                 graph_index=graph_index,
                 sidecar_dir=sidecar_dir,
                 update_frontmatter=update_frontmatter,
+                pages=pages,
             )
             successes.append(score)
         except (FileNotFoundError, ValueError, OSError, ImportError) as exc:

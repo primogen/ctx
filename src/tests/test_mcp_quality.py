@@ -28,6 +28,7 @@ if str(SRC_DIR) not in sys.path:
 import mcp_quality as mq  # noqa: E402
 from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack  # noqa: E402
 from ctx.core.quality.quality_signals import SignalResult  # noqa: E402
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +391,30 @@ class TestPersistQuality:
         assert "quality_updated_at: 2026-04-21T00:00:00+00:00" in content
         assert "- **Grade:** B" in content
         assert "- **Computed:** 2026-04-21T00:00:00+00:00" in content
+
+    def test_recompute_all_updates_pack_only_mcp_page(self, tmp_path: Path) -> None:
+        wiki_dir = tmp_path / "wiki"
+        relpath = "entities/mcp-servers/g/github.md"
+        write_wiki_base_pack(
+            pack_dir=wiki_dir / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={relpath: _entity_frontmatter(name="github")},
+        )
+
+        assert mq.discover_mcp_slugs(wiki_dir) == ["github"]
+
+        scores, failures = mq.recompute_all(
+            wiki_dir=wiki_dir,
+            sidecar_dir=tmp_path / "quality",
+        )
+
+        assert failures == []
+        assert [score.slug for score in scores] == ["github"]
+        merged = load_merged_wiki_pages(wiki_dir / "wiki-packs")
+        assert "quality_score:" in merged[relpath]
+        assert "<!-- quality:begin -->" in merged[relpath]
+        assert not (wiki_dir / relpath).exists()
 
 
 # ---------------------------------------------------------------------------
