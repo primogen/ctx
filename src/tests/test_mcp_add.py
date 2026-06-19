@@ -591,6 +591,59 @@ class TestCrossSourceCanonicalKeyDedup:
         assert sorted(merged_pages) == [first_path.relative_to(wiki_dir).as_posix()]
         assert not first_path.exists()
 
+    def test_second_source_uses_pack_canonical_index_without_physical_scan(
+        self,
+        patched_mcp_add: Any,
+        wiki_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        record_awesome = _make_record(
+            name="modelcontextprotocol/servers",
+            github_url="https://github.com/modelcontextprotocol/servers",
+            sources=["awesome-mcp"],
+        )
+        mcp_dir = wiki_dir / "entities" / "mcp-servers"
+        first_path = mcp_dir / record_awesome.entity_relpath()
+        packs_dir = wiki_dir / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={
+                first_path.relative_to(wiki_dir).as_posix(): (
+                    patched_mcp_add.generate_mcp_page(record_awesome)
+                )
+            },
+        )
+        target = patched_mcp_add._normalize_github_url(record_awesome.github_url)
+        assert target is not None
+        patched_mcp_add.mcp_canonical_index.upsert(
+            mcp_dir,
+            target,
+            slug=first_path.stem,
+            relpath=first_path.relative_to(mcp_dir).as_posix(),
+        )
+
+        def fail_physical_scan(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError("physical MCP scan should not run on indexed pack hit")
+
+        monkeypatch.setattr(
+            patched_mcp_add,
+            "_scan_for_github_url",
+            fail_physical_scan,
+        )
+
+        record_pulsemcp = _make_record(
+            name="modelcontextprotocol-servers-mcp",
+            github_url="https://github.com/modelcontextprotocol/servers",
+            sources=["pulsemcp"],
+        )
+        result = patched_mcp_add.add_mcp(record=record_pulsemcp, wiki_path=wiki_dir)
+
+        assert result["is_new_page"] is False
+        assert result["path"] == str(first_path)
+        assert result["merged_sources"] == ["awesome-mcp", "pulsemcp"]
+
     def test_records_without_github_url_still_use_slug_dedup(
         self, patched_mcp_add: Any, wiki_dir: Path
     ) -> None:

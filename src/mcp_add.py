@@ -306,18 +306,52 @@ def _read_entity_page(wiki_path: Path, relpath: str) -> str | None:
     return None
 
 
+def _find_indexed_entity_page_by_github_url(
+    *,
+    wiki_path: Path,
+    target: str,
+    index: mcp_canonical_index.CanonicalIndex,
+) -> Path | None:
+    """Return a canonical-index hit after confirming it in the merged wiki view."""
+    mcp_dir = wiki_path / _MCP_ENTITY_SUBDIR
+    entry = index["by_github_url"].get(target)
+    if entry is None:
+        return None
+
+    relpath = entry["relpath"]
+    text = _read_entity_page(wiki_path, _entity_relpath(relpath))
+    if text is None:
+        return None
+    fm = _parse_frontmatter(text)
+    if _normalize_github_url(fm.get("github_url")) != target:
+        return None
+    return mcp_dir / relpath
+
+
 def _find_existing_by_github_url_in_wiki(
     wiki_path: Path,
     target_github_url: str | None,
 ) -> Path | None:
+    target = _normalize_github_url(target_github_url)
+    if target is None:
+        return None
+
     mcp_dir = wiki_path / _MCP_ENTITY_SUBDIR
-    physical_hit = _find_existing_by_github_url(mcp_dir, target_github_url)
+    index = mcp_canonical_index.load_index(mcp_dir)
+    indexed_hit = _find_indexed_entity_page_by_github_url(
+        wiki_path=wiki_path,
+        target=target,
+        index=index,
+    )
+    if indexed_hit is not None:
+        return indexed_hit
+
+    physical_hit = _find_existing_by_github_url(mcp_dir, target)
     if physical_hit is not None:
         return physical_hit
 
-    target = _normalize_github_url(target_github_url)
     packs_dir = wiki_path / "wiki-packs"
-    if target is None or not packs_dir.is_dir():
+    if not packs_dir.is_dir():
         return None
     prefix = f"{_MCP_ENTITY_SUBDIR}/"
     for relpath, text in sorted(load_merged_wiki_pages(packs_dir).items()):
@@ -327,6 +361,18 @@ def _find_existing_by_github_url_in_wiki(
             continue
         fm = _parse_frontmatter(text)
         if _normalize_github_url(fm.get("github_url")) == target:
+            if mcp_dir.is_dir():
+                try:
+                    entity_relpath = relpath[len(prefix) :]
+                    mcp_canonical_index.upsert(
+                        mcp_dir,
+                        target,
+                        slug=Path(entity_relpath).stem,
+                        relpath=entity_relpath,
+                        index=index,
+                    )
+                except (OSError, ValueError):
+                    pass
             return wiki_path / relpath
     return None
 
