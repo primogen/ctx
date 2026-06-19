@@ -14,7 +14,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ctx.core.wiki import wiki_query as wq  # noqa: E402
-from ctx.core.wiki.wiki_packs import write_wiki_base_pack, write_wiki_overlay_pack  # noqa: E402
+from ctx.core.wiki.wiki_packs import (  # noqa: E402
+    load_merged_wiki_pages,
+    write_wiki_base_pack,
+    write_wiki_overlay_pack,
+)
 
 from ._wiki_helpers import make_entity_page, make_wiki  # noqa: E402
 
@@ -334,3 +338,29 @@ class TestQueryNoResults:
         results = wq.search_by_query(pages, "xyznonexistent")
 
         assert results == [], f"Expected no results, got {[p.name for p in results]}"
+
+
+class TestQuerySave:
+    def test_save_query_page_writes_pack_only_query_index_and_log(self, tmp_path: Path) -> None:
+        wiki = make_wiki(tmp_path)
+        # Pack mode is the source of truth; disk index/log should not be required.
+        (wiki / "index.md").unlink()
+        (wiki / "log.md").unlink()
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={
+                "index.md": "# Index\n\n## Queries\n",
+                "log.md": "# Log\n",
+            },
+        )
+
+        path = wq.save_query_page(wiki, "Docker skills?", "## Results\ncontent")
+
+        assert path == wiki / "queries" / "docker-skills.md"
+        assert not path.exists()
+        merged = load_merged_wiki_pages(wiki / "wiki-packs")
+        assert "## Results" in merged["queries/docker-skills.md"]
+        assert "[[queries/docker-skills]] - Docker skills?" in merged["index.md"]
+        assert "Saved to queries/docker-skills.md" in merged["log.md"]

@@ -28,7 +28,7 @@ from ctx.core.entity_types import (
     entity_wikilink,
     mcp_shard,
 )
-from ctx.core.wiki.wiki_packs import load_merged_wiki_pages
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_active_wiki_overlay_pack
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body as _extract_frontmatter
 from ctx.utils._safe_name import is_safe_source_name
 
@@ -379,17 +379,45 @@ def render_stats_markdown(stats: dict) -> str:
 
 # --- Wiki persistence ---
 
+def _read_wiki_page(wiki: Path, relpath: str) -> str | None:
+    packs_dir = wiki / "wiki-packs"
+    path = wiki / relpath
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+        if path.exists():
+            return path.read_text(encoding="utf-8", errors="replace")
+        return None
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _write_wiki_page(wiki: Path, relpath: str, content: str) -> None:
+    packs_dir = wiki / "wiki-packs"
+    path = wiki / relpath
+    if path.exists() or not packs_dir.is_dir():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: content},
+            tombstones=[],
+        )
+
+
 def _append_log(wiki: Path, action: str, subject: str, details: list[str]) -> None:
     entry = f"\n## [{TODAY}] {action} | {subject}\n" + "".join(f"- {d}\n" for d in details)
-    with open(wiki / "log.md", "a", encoding="utf-8") as fh:
-        fh.write(entry)
+    content = _read_wiki_page(wiki, "log.md") or ""
+    _write_wiki_page(wiki, "log.md", content + entry)
 
 
 def _update_index_queries(wiki: Path, slug: str, query: str) -> None:
-    index_path = wiki / "index.md"
-    if not index_path.exists():
+    content = _read_wiki_page(wiki, "index.md")
+    if content is None:
         return
-    content = index_path.read_text(encoding="utf-8", errors="replace")
     entry = f"- [[queries/{slug}]] - {query}"
     if entry in content:
         return
@@ -402,17 +430,16 @@ def _update_index_queries(wiki: Path, slug: str, query: str) -> None:
             insert_idx = i
             break
     lines.insert(insert_idx, entry)
-    index_path.write_text("\n".join(lines), encoding="utf-8")
+    _write_wiki_page(wiki, "index.md", "\n".join(lines))
 
 
 def save_query_page(wiki: Path, query: str, content: str) -> Path:
     """Write synthesis result to queries/, register in index, and log the action."""
     slug = re.sub(r"-{2,}", "-", re.sub(r"[^\w-]", "-", query.lower().strip()))[:60].strip("-")
-    queries_dir = wiki / "queries"
-    queries_dir.mkdir(parents=True, exist_ok=True)
-    page_path = queries_dir / f"{slug}.md"
+    relpath = f"queries/{slug}.md"
+    page_path = wiki / relpath
     fm = f'---\ntitle: "{query}"\ncreated: {TODAY}\nupdated: {TODAY}\ntype: query\n---\n\n'
-    page_path.write_text(fm + content, encoding="utf-8")
+    _write_wiki_page(wiki, relpath, fm + content)
     _update_index_queries(wiki, slug, query)
     _append_log(wiki, "query", query, [f"Saved to queries/{slug}.md"])
     return page_path
