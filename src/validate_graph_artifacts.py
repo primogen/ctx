@@ -21,6 +21,11 @@ from ctx.core.graph.graph_packs import (
     discover_pack_manifests,
     load_merged_pack_graph,
 )
+from ctx.core.wiki.wiki_packs import (
+    WikiPackManifestError,
+    discover_wiki_pack_manifests,
+    load_merged_wiki_pages,
+)
 
 GIT_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 DEFAULT_HARNESSES = {
@@ -110,6 +115,7 @@ _GRAPH_RUNTIME_REQUIRED_NAMES = {
 }
 _GRAPH_PAYLOAD_NAME = "graphify-out/graph.json"
 _GRAPH_PACK_PREFIX = "graphify-out/packs/"
+_WIKI_PACK_PREFIX = "wiki-packs/"
 _DASHBOARD_INDEX_REQUIRED_TABLES = {"meta", "nodes", "slug_index", "neighbors"}
 _DASHBOARD_INDEX_REQUIRED_META = {
     "export_id",
@@ -279,6 +285,47 @@ def _copy_graph_pack_tar_member(
     target = packs_dir / relative_name
     target.parent.mkdir(parents=True, exist_ok=True)
     _copy_tar_member_to_path(tf, member, target)
+
+
+def _copy_wiki_pack_tar_member(
+    tf: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    name: str,
+    packs_dir: Path,
+) -> None:
+    if not member.isfile() or not name.startswith(_WIKI_PACK_PREFIX):
+        return
+    relative_name = name.removeprefix(_WIKI_PACK_PREFIX)
+    if not relative_name:
+        return
+    target = packs_dir / relative_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _copy_tar_member_to_path(tf, member, target)
+
+
+def _validate_wiki_pack_payload(
+    names: set[str],
+    packs_dir: Path,
+    *,
+    expected_export_id: str,
+) -> None:
+    if not any(name.startswith(_WIKI_PACK_PREFIX) for name in names):
+        raise GraphArtifactError("wiki graph archive is missing wiki-packs/")
+    try:
+        entries = discover_wiki_pack_manifests(packs_dir)
+        pages = load_merged_wiki_pages(packs_dir)
+    except WikiPackManifestError as exc:
+        raise GraphArtifactError(f"wiki pack validation failed: {exc}") from exc
+    if not entries:
+        raise GraphArtifactError("wiki graph archive is missing wiki-packs/")
+    base_export_id = entries[0].manifest.base_export_id
+    if base_export_id != expected_export_id:
+        raise GraphArtifactError(
+            "wiki pack export_id mismatch: expected "
+            f"{expected_export_id}, got {base_export_id}",
+        )
+    if "index.md" not in pages:
+        raise GraphArtifactError("wiki pack payload is missing index.md")
 
 
 def _record_graph_pack_export_id(
@@ -795,6 +842,8 @@ def validate_graph_artifacts(
     skill_bundle_refs: list[tuple[str, str, str]] = []
     graph_pack_tmp = tempfile.TemporaryDirectory(prefix="ctx-full-graph-packs-")
     graph_packs_dir = Path(graph_pack_tmp.name)
+    wiki_pack_tmp = tempfile.TemporaryDirectory(prefix="ctx-full-wiki-packs-")
+    wiki_packs_dir = Path(wiki_pack_tmp.name)
 
     with tarfile.open(tarball, "r:gz") as tf:
         for member in tf:
@@ -880,6 +929,8 @@ def validate_graph_artifacts(
                 _copy_tar_member_to_path(tf, member, dashboard_index_path)
             elif name.startswith(_GRAPH_PACK_PREFIX):
                 _copy_graph_pack_tar_member(tf, member, name, graph_packs_dir)
+            elif name.startswith(_WIKI_PACK_PREFIX):
+                _copy_wiki_pack_tar_member(tf, member, name, wiki_packs_dir)
             elif member.isfile() and deep and name.startswith("converted/skills-sh-"):
                 if name.endswith("/SKILL.md") or "/references/" in name:
                     f = tf.extractfile(member)
@@ -937,6 +988,14 @@ def validate_graph_artifacts(
             _record_export_id(export_ids, "graphify-out/packs", graph_export_id)
     finally:
         graph_pack_tmp.cleanup()
+    try:
+        _validate_wiki_pack_payload(
+            names,
+            wiki_packs_dir,
+            expected_export_id=manifest_export_id,
+        )
+    finally:
+        wiki_pack_tmp.cleanup()
     if dashboard_index_path is None:
         raise GraphArtifactError("graphify-out/dashboard-neighborhoods.sqlite3 is missing")
     try:

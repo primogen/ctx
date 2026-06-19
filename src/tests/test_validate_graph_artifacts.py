@@ -14,6 +14,7 @@ import yaml  # type: ignore[import-untyped]
 import networkx as nx
 
 from ctx.core.graph.graph_packs import build_pack_manifest, write_base_pack, write_pack_manifest
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack
 from scripts.ci_preflight import GRAPH_VALIDATE_ARGS
 from validate_graph_artifacts import (
     DEFAULT_HARNESSES,
@@ -46,6 +47,21 @@ def _add_bytes(tf: tarfile.TarFile, name: str, payload: bytes) -> None:
     info.size = len(payload)
     info.mode = 0o644
     tf.addfile(info, BytesIO(payload))
+
+
+def _write_test_wiki_pack(graph_dir: Path, *, export_id: str) -> Path:
+    pack_root = graph_dir / f"wiki-pack-source-{export_id}"
+    write_wiki_base_pack(
+        pack_dir=pack_root / f"base-{export_id}",
+        pack_id=f"base-{export_id}",
+        base_export_id=export_id,
+        pages={
+            "index.md": "# Wiki\n",
+            "entities/skills/skills-sh-example-skill.md": "# Example\n",
+            "entities/harnesses/langgraph.md": "# LangGraph\n",
+        },
+    )
+    return pack_root
 
 
 def _dashboard_index_bytes(graph_dir: Path, *, export_id: str) -> bytes:
@@ -227,6 +243,8 @@ def _write_archive(
     include_graph: bool = True,
     graph_artifact: str = "graph.json",
     graph_pack_dir: Path | None = None,
+    include_wiki_pack: bool = True,
+    wiki_pack_dir: Path | None = None,
     include_original: bool = False,
     include_lock: bool = False,
     include_queue: bool = False,
@@ -261,8 +279,17 @@ def _write_archive(
             },
         ],
     }
+    if include_wiki_pack and wiki_pack_dir is None:
+        wiki_pack_dir = _write_test_wiki_pack(graph_dir, export_id=manifest_export_id)
     with tarfile.open(graph_dir / "wiki-graph.tar.gz", "w:gz") as tf:
         _add_text(tf, "./index.md", "# Wiki\n")
+        if include_wiki_pack and wiki_pack_dir is not None:
+            for path in sorted(wiki_pack_dir.rglob("*")):
+                if path.is_file():
+                    tf.add(
+                        path,
+                        arcname=f"./wiki-packs/{path.relative_to(wiki_pack_dir).as_posix()}",
+                    )
         if include_graph:
             _add_text(tf, "./graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
         if graph_pack_dir is not None:
@@ -416,6 +443,27 @@ def test_validate_graph_artifacts_checks_catalog_paths_and_deep_graph_stats(
             tmp_path,
             expected_harnesses={"langgraph"},
             expected_nodes=2,
+        )
+
+
+def test_validate_graph_artifacts_rejects_missing_wiki_packs(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path, include_wiki_pack=False)
+
+    with pytest.raises(GraphArtifactError, match="missing wiki-packs"):
+        validate_graph_artifacts(
+            tmp_path,
+            deep=True,
+            min_nodes=2,
+            min_edges=1,
+            min_skills_sh_nodes=1,
+            min_semantic_edges=1,
+            expected_harnesses={"langgraph"},
         )
 
 
