@@ -25,7 +25,7 @@ from ctx.core.entity_types import (
     SUBJECT_TYPE_FOR_ENTITY_TYPE,
     entity_index_link,
 )
-from ctx.core.wiki.wiki_packs import write_active_wiki_overlay_pack
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_active_wiki_overlay_pack
 from ctx.core.wiki.wiki_utils import SAFE_NAME_RE, get_field as _find_field
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_json, atomic_write_text
@@ -204,6 +204,36 @@ def _emit_wiki_page_overlay(wiki_path: str, relpath: str, content: str) -> None:
     )
 
 
+def _read_wiki_page(wiki_path: str, relpath: str) -> str | None:
+    """Read a wiki page from active packs when installed, else from disk."""
+    wiki = Path(wiki_path)
+    packs_dir = wiki / "wiki-packs"
+    path = wiki / relpath
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+        if path.exists():
+            return path.read_text(encoding="utf-8", errors="replace")
+        return None
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _write_wiki_page(wiki_path: str, relpath: str, content: str) -> None:
+    """Write a wiki page, mirroring into overlay packs when installed."""
+    wiki = Path(wiki_path)
+    packs_dir = wiki / "wiki-packs"
+    path = wiki / relpath
+    if path.exists() or not packs_dir.is_dir():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _reject_symlink(path.parent)
+        atomic_write_text(path, content, encoding="utf-8")
+    if packs_dir.is_dir():
+        _emit_wiki_page_overlay(wiki_path, relpath, content)
+
+
 def upsert_skill_page(
     wiki_path: str,
     skill_name: str,
@@ -369,7 +399,9 @@ def update_index(
     index_path = Path(wiki_path) / "index.md"
     with file_lock(index_path):
         _reject_symlink(index_path)
-        content = index_path.read_text(encoding="utf-8")
+        content = _read_wiki_page(wiki_path, "index.md")
+        if content is None:
+            return
         lines = content.split("\n")
 
         section_header = _INDEX_SECTION_FOR_SUBJECT[subject_type]
@@ -413,9 +445,7 @@ def update_index(
                 break
 
         updated_content = "\n".join(lines)
-        atomic_write_text(index_path, updated_content, encoding="utf-8")
-
-    _emit_wiki_page_overlay(wiki_path, "index.md", updated_content)
+        _write_wiki_page(wiki_path, "index.md", updated_content)
 
 
 def append_log(wiki_path: str, action: str, subject: str, details: list[str]) -> None:
@@ -427,11 +457,9 @@ def append_log(wiki_path: str, action: str, subject: str, details: list[str]) ->
 
     with file_lock(log_path):
         _reject_symlink(log_path)
-        existing = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+        existing = _read_wiki_page(wiki_path, "log.md") or ""
         content = existing + entry
-        atomic_write_text(log_path, content, encoding="utf-8")
-
-    _emit_wiki_page_overlay(wiki_path, "log.md", content)
+        _write_wiki_page(wiki_path, "log.md", content)
 
 
 def upsert_usage(wiki_path: str, skill_name: str, session_date: str, used: bool) -> None:

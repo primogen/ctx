@@ -849,6 +849,26 @@ class TestUpdateIndex:
         merged = load_merged_wiki_pages(packs_dir)
         assert "[[entities/skills/my-skill]]" in merged["index.md"]
 
+    def test_update_index_uses_pack_only_index(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _pin_today(monkeypatch)
+        wiki = tmp_path / "wiki"
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"index.md": _minimal_index()},
+        )
+
+        wiki_sync.update_index(str(wiki), ["my-skill"])
+
+        assert not (wiki / "index.md").exists()
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "[[entities/skills/my-skill]]" in merged["index.md"]
+        assert "Total pages: 1" in merged["index.md"]
+
 
 # ---------------------------------------------------------------------------
 # TestAppendLog
@@ -964,6 +984,26 @@ class TestAppendLog:
 
         wiki_sync.append_log(str(wiki), "scan", "repo", ["detail"])
 
+        merged = load_merged_wiki_pages(packs_dir)
+        assert f"## [{_FIXED_DATE}] scan | repo" in merged["log.md"]
+        assert "- detail" in merged["log.md"]
+
+    def test_append_log_uses_pack_only_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _pin_today(monkeypatch)
+        wiki = tmp_path / "wiki"
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"log.md": "# Log\n"},
+        )
+
+        wiki_sync.append_log(str(wiki), "scan", "repo", ["detail"])
+
+        assert not (wiki / "log.md").exists()
         merged = load_merged_wiki_pages(packs_dir)
         assert f"## [{_FIXED_DATE}] scan | repo" in merged["log.md"]
         assert "- detail" in merged["log.md"]
