@@ -12,6 +12,7 @@ from ctx.core.graph.graph_packs import (
     write_base_pack,
     write_overlay_pack,
 )
+from ctx.core.graph.graph_store import graph_store_is_fresh, search_nodes
 from ctx.core.wiki import pack_compaction
 from ctx.core.wiki.pack_compaction import (
     PackCompactionError,
@@ -138,6 +139,10 @@ def test_promote_staged_pack_sets_replaces_graph_and_wiki_with_backups(
     ]
     assert result.graph.promoted_pack_ids == ["base-export-2"]
     assert result.wiki.promoted_pack_ids == ["base-export-2"]
+    store_path = wiki / "graphify-out" / "graph-store.sqlite3"
+    assert result.graph_store == {"rebuilt": True, "nodes": 2, "edges": 1}
+    assert graph_store_is_fresh(store_path, wiki / "graphify-out") is True
+    assert [row["id"] for row in search_nodes(store_path, "new")] == ["skill:new"]
 
 
 def test_pack_compaction_cli_promotes_staged_pack_sets(

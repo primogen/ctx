@@ -23,6 +23,7 @@ from ctx.core.graph.graph_packs import (
     load_merged_pack_graph,
     promote_graph_pack_set,
 )
+from ctx.core.graph.graph_store import ensure_graph_store
 from ctx.core.wiki.wiki_packs import (
     WikiPackManifest,
     WikiPackManifestError,
@@ -83,6 +84,7 @@ class PackPromotionResult:
     wiki_path: Path
     graph: GraphPackPromotion
     wiki: WikiPackPromotion
+    graph_store: dict[str, bool | int] | None = None
 
     def to_mapping(self) -> dict[str, object]:
         """Return deterministic JSON-serialisable promotion metadata."""
@@ -90,6 +92,7 @@ class PackPromotionResult:
             "wiki_path": str(self.wiki_path),
             "graph": self.graph.to_mapping(),
             "wiki": self.wiki.to_mapping(),
+            "graph_store": self.graph_store,
         }
 
 
@@ -163,6 +166,8 @@ def promote_staged_pack_sets(
     staged_wiki_packs_dir: Path,
     graph_backup_packs_dir: Path | None = None,
     wiki_backup_packs_dir: Path | None = None,
+    refresh_graph_store: bool = True,
+    graph_store_db_path: Path | None = None,
 ) -> PackPromotionResult:
     """Promote staged graph/wiki pack sets into the active wiki.
 
@@ -194,10 +199,21 @@ def promote_staged_pack_sets(
             _restore_graph_packs_after_partial_promotion(graph_result)
         raise PackCompactionError(str(exc)) from exc
 
+    graph_store = None
+    if refresh_graph_store:
+        try:
+            graph_store = ensure_graph_store(
+                wiki_root / "graphify-out",
+                Path(graph_store_db_path) if graph_store_db_path else _default_graph_store_db(wiki_root),
+            )
+        except (OSError, ValueError) as exc:
+            raise PackCompactionError(f"graph store refresh failed: {exc}") from exc
+
     return PackPromotionResult(
         wiki_path=wiki_root,
         graph=graph_result,
         wiki=wiki_result,
+        graph_store=graph_store,
     )
 
 
@@ -236,6 +252,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     promote.add_argument("--graph-backup-packs-dir", help="Optional graph backup directory")
     promote.add_argument("--wiki-backup-packs-dir", help="Optional wiki backup directory")
+    promote.add_argument("--graph-store-db", help="Optional SQLite graph store path")
+    promote.add_argument(
+        "--no-graph-store-refresh",
+        action="store_true",
+        help="Skip SQLite graph store refresh after pack promotion",
+    )
     promote.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args(argv)
 
@@ -279,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
                     if args.wiki_backup_packs_dir
                     else None
                 ),
+                refresh_graph_store=not args.no_graph_store_refresh,
+                graph_store_db_path=Path(args.graph_store_db) if args.graph_store_db else None,
             )
         except PackCompactionError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -299,6 +323,10 @@ def main(argv: list[str] | None = None) -> int:
 def _pack_id(base_export_id: str) -> str:
     value = base_export_id.strip()
     return value if value.startswith("base-") else f"base-{value}"
+
+
+def _default_graph_store_db(wiki_path: Path) -> Path:
+    return wiki_path / "graphify-out" / "graph-store.sqlite3"
 
 
 def _write_compaction_manifest(
