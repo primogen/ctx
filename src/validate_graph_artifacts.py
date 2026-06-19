@@ -104,6 +104,8 @@ _GRAPH_RUNTIME_REQUIRED_NAMES = {
     "graphify-out/dashboard-neighborhoods.sqlite3",
     "external-catalogs/skills-sh/catalog.json",
 }
+_GRAPH_PAYLOAD_NAME = "graphify-out/graph.json"
+_GRAPH_PACK_PREFIX = "graphify-out/packs/"
 _DASHBOARD_INDEX_REQUIRED_TABLES = {"meta", "nodes", "slug_index", "neighbors"}
 _DASHBOARD_INDEX_REQUIRED_META = {
     "export_id",
@@ -257,6 +259,50 @@ def _copy_tar_member_to_path(
                 out.write(chunk)
     finally:
         source.close()
+
+
+def _copy_graph_pack_tar_member(
+    tf: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    name: str,
+    packs_dir: Path,
+) -> None:
+    if not member.isfile() or not name.startswith(_GRAPH_PACK_PREFIX):
+        return
+    relative_name = name.removeprefix(_GRAPH_PACK_PREFIX)
+    if not relative_name:
+        return
+    target = packs_dir / relative_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _copy_tar_member_to_path(tf, member, target)
+
+
+def _record_graph_pack_export_id(
+    export_ids: dict[str, str],
+    names: set[str],
+    packs_dir: Path,
+    *,
+    context: str,
+) -> None:
+    if _GRAPH_PAYLOAD_NAME in export_ids:
+        return
+    if not any(name.startswith(_GRAPH_PACK_PREFIX) for name in names):
+        raise GraphArtifactError(
+            f"{context} is missing graph payload: graphify-out/graph.json or graphify-out/packs",
+        )
+    try:
+        entries = discover_pack_manifests(packs_dir)
+    except GraphPackManifestError as exc:
+        raise GraphArtifactError(f"{context} graph pack validation failed: {exc}") from exc
+    if not entries:
+        raise GraphArtifactError(
+            f"{context} is missing graph payload: graphify-out/graph.json or graphify-out/packs",
+        )
+    base_graph = entries[0].path / "graph.json"
+    if not base_graph.is_file():
+        raise GraphArtifactError(f"{context} graph base pack is missing graph.json")
+    with base_graph.open("rb") as stream:
+        _record_export_id(export_ids, "graphify-out/packs", _scan_graph_export_id(stream))
 
 
 def _validate_dashboard_index(
@@ -901,6 +947,8 @@ def _validate_runtime_graph_archive(
     export_ids: dict[str, str] = {}
     manifest: dict[str, Any] | None = None
     dashboard_index_path: Path | None = None
+    graph_pack_tmp = tempfile.TemporaryDirectory(prefix="ctx-runtime-graph-packs-")
+    graph_packs_dir = Path(graph_pack_tmp.name)
     with tarfile.open(tarball, "r:gz") as tf:
         for member in tf:
             name = _safe_tar_name(member.name)
@@ -947,8 +995,10 @@ def _validate_runtime_graph_archive(
                 tmp.close()
                 dashboard_index_path = Path(tmp.name)
                 _copy_tar_member_to_path(tf, member, dashboard_index_path)
+            elif name.startswith(_GRAPH_PACK_PREFIX):
+                _copy_graph_pack_tar_member(tf, member, name, graph_packs_dir)
 
-    missing_required = sorted(_GRAPH_RUNTIME_REQUIRED_NAMES - names)
+    missing_required = sorted((_GRAPH_RUNTIME_REQUIRED_NAMES - {_GRAPH_PAYLOAD_NAME}) - names)
     if missing_required:
         raise GraphArtifactError(
             f"runtime graph archive is missing: {missing_required}",
@@ -968,6 +1018,15 @@ def _validate_runtime_graph_archive(
         "graphify-out/graph-export-manifest.json",
         manifest_export_id,
     )
+    try:
+        _record_graph_pack_export_id(
+            export_ids,
+            names,
+            graph_packs_dir,
+            context="runtime graph archive",
+        )
+    finally:
+        graph_pack_tmp.cleanup()
     if dashboard_index_path is None:
         raise GraphArtifactError(
             "runtime graph archive is missing dashboard-neighborhoods.sqlite3",
@@ -980,8 +1039,6 @@ def _validate_runtime_graph_archive(
         )
     finally:
         dashboard_index_path.unlink(missing_ok=True)
-    if "graphify-out/graph.json" not in export_ids:
-        raise GraphArtifactError("runtime graph.json is missing export_id")
     _validate_export_ids(export_ids, expected=manifest_export_id)
     if expected_export_id is not None and manifest_export_id != expected_export_id:
         raise GraphArtifactError(
@@ -1090,15 +1147,31 @@ def _validate_graph_export_manifest(
     if not isinstance(artifacts, dict):
         raise GraphArtifactError("graph export manifest missing artifacts map")
     expected = {
-        "graph": "graph.json",
         "delta": "graph-delta.json",
         "communities": "communities.json",
         "report": "graph-report.md",
     }
-    if set(artifacts) != set(expected):
+    expected_keys = {"graph", *expected}
+    if set(artifacts) != expected_keys:
         raise GraphArtifactError(
             "graph export manifest artifacts map must contain exactly "
-            f"{sorted(expected)}",
+            f"{sorted(expected_keys)}",
+        )
+    graph_artifact = artifacts.get("graph")
+    if graph_artifact == "graph.json":
+        if _GRAPH_PAYLOAD_NAME not in names:
+            raise GraphArtifactError(
+                f"graph export manifest references missing {_GRAPH_PAYLOAD_NAME}",
+            )
+    elif graph_artifact == "packs":
+        if not any(name.startswith(_GRAPH_PACK_PREFIX) for name in names):
+            raise GraphArtifactError(
+                "graph export manifest references missing graphify-out/packs",
+            )
+    else:
+        raise GraphArtifactError(
+            "graph export manifest artifact 'graph' expected 'graph.json' or "
+            f"'packs', got {graph_artifact!r}",
         )
     for key, filename in expected.items():
         actual = artifacts.get(key)

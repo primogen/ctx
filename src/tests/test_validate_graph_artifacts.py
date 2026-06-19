@@ -11,8 +11,9 @@ from typing import Any
 
 import pytest
 import yaml  # type: ignore[import-untyped]
+import networkx as nx
 
-from ctx.core.graph.graph_packs import build_pack_manifest, write_pack_manifest
+from ctx.core.graph.graph_packs import build_pack_manifest, write_base_pack, write_pack_manifest
 from scripts.ci_preflight import GRAPH_VALIDATE_ARGS
 from validate_graph_artifacts import (
     DEFAULT_HARNESSES,
@@ -150,6 +151,9 @@ def _write_runtime_archive(
     graph_dir: Path,
     *,
     graph: dict[str, Any],
+    include_graph: bool = True,
+    graph_artifact: str = "graph.json",
+    graph_pack_dir: Path | None = None,
     include_queue: bool = False,
     include_delta: bool = True,
     include_report: bool = True,
@@ -161,7 +165,15 @@ def _write_runtime_archive(
 ) -> None:
     with tarfile.open(graph_dir / "wiki-graph-runtime.tar.gz", "w:gz") as tf:
         _add_text(tf, "index.md", "# Wiki\n")
-        _add_text(tf, "graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
+        if include_graph:
+            _add_text(tf, "graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
+        if graph_pack_dir is not None:
+            for path in sorted(graph_pack_dir.rglob("*")):
+                if path.is_file():
+                    tf.add(
+                        path,
+                        arcname=f"graphify-out/packs/{path.relative_to(graph_pack_dir).as_posix()}",
+                    )
         if include_delta:
             _add_text(
                 tf,
@@ -187,7 +199,7 @@ def _write_runtime_archive(
                     "version": 1,
                     "export_id": manifest_export_id,
                     "artifacts": {
-                        "graph": "graph.json",
+                        "graph": graph_artifact,
                         "delta": "graph-delta.json",
                         "communities": "communities.json",
                         "report": "graph-report.md",
@@ -394,6 +406,57 @@ def test_validate_graph_artifacts_checks_catalog_paths_and_deep_graph_stats(
             expected_harnesses={"langgraph"},
             expected_nodes=2,
         )
+
+
+def test_validate_graph_artifacts_accepts_runtime_graph_pack_payload(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    graph = nx.Graph()
+    graph.add_node(
+        "skill:skills-sh-example-skill",
+        type="skill",
+        source_catalog="skills.sh",
+    )
+    graph.add_node("harness:langgraph", type="harness")
+    graph.add_edge(
+        "skill:skills-sh-example-skill",
+        "harness:langgraph",
+        semantic_sim=0.91,
+    )
+    pack_root = tmp_path / "runtime-pack-source"
+    write_base_pack(
+        pack_dir=pack_root / "base-export-test",
+        pack_id="base-export-test",
+        base_export_id="export-test",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=graph,
+    )
+    _write_runtime_archive(
+        tmp_path,
+        graph={"graph": {"export_id": "unused"}, "nodes": [], "edges": []},
+        include_graph=False,
+        graph_artifact="packs",
+        graph_pack_dir=pack_root,
+    )
+
+    stats = validate_graph_artifacts(
+        tmp_path,
+        deep=True,
+        min_nodes=2,
+        min_edges=1,
+        min_skills_sh_nodes=1,
+        min_semantic_edges=1,
+        expected_harnesses={"langgraph"},
+    )
+
+    assert stats.graph_nodes == 2
+    assert stats.graph_edges == 1
 
 
 def test_validate_graph_artifacts_rejects_mixed_export_generation(
