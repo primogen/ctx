@@ -238,6 +238,34 @@ def test_graph_cache_reloads_when_graph_pack_overlay_changes(tmp_path: Path) -> 
     assert "new-target" in second_names
 
 
+def test_graph_cache_uses_wiki_packs_when_explicit_graph_path_is_missing(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph = nx.Graph()
+    graph.add_node("skill:seed", label="seed", type="skill", tags=[])
+    graph.add_node("skill:pack-target", label="pack-target", type="skill", tags=[])
+    graph.add_edge("skill:seed", "skill:pack-target", weight=1.0)
+    write_base_pack(
+        pack_dir=wiki / "graphify-out" / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=graph,
+    )
+    assert not (wiki / "graphify-out" / "graph.json").exists()
+
+    toolbox = CtxCoreToolbox(wiki_dir=wiki, graph_path=tmp_path / "missing.json")
+    result = json.loads(toolbox.dispatch(ToolCall(
+        id="c1",
+        name="ctx__graph_query",
+        arguments={"seeds": ["seed"], "max_hops": 1},
+    )))
+
+    assert [row["name"] for row in result["results"]] == ["pack-target"]
+
+
 def test_graph_file_signature_detects_same_size_rewrite(
     tmp_path: Path,
 ) -> None:

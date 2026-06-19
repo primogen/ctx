@@ -713,6 +713,13 @@ class CtxCoreToolbox:
 
     def _graph_file_path(self) -> Path | None:
         if self._graph_path is not None:
+            if _graph_source_available(self._graph_path):
+                return self._graph_path
+            wiki = self._wiki_dir_resolved()
+            if wiki is not None:
+                wiki_graph_path = wiki / "graphify-out" / "graph.json"
+                if _graph_source_available(wiki_graph_path):
+                    return wiki_graph_path
             return self._graph_path
         wiki = self._wiki_dir_resolved()
         if wiki is not None:
@@ -804,6 +811,10 @@ def _graph_file_signature(path: Path) -> GraphSignature:
         _file_signature(path.with_name("entity-overlays.jsonl")),
         _graph_pack_signature(path),
     )
+
+
+def _graph_source_available(path: Path) -> bool:
+    return path.is_file() or (path.parent / "packs").is_dir()
 
 
 def _graph_pack_signature(graph_path: Path) -> PackSignature:
