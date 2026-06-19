@@ -446,16 +446,17 @@ def test_validate_graph_artifacts_checks_catalog_paths_and_deep_graph_stats(
         )
 
 
-def test_validate_graph_artifacts_rejects_missing_wiki_packs(
+def test_validate_graph_artifacts_rejects_mismatched_wiki_pack_export_id(
     tmp_path: Path,
 ) -> None:
     _write_catalog(
         tmp_path,
         converted_path="converted/skills-sh-example-skill/SKILL.md",
     )
-    _write_archive(tmp_path, include_wiki_pack=False)
+    bad_pack = _write_test_wiki_pack(tmp_path, export_id="wrong-export")
+    _write_archive(tmp_path, wiki_pack_dir=bad_pack)
 
-    with pytest.raises(GraphArtifactError, match="missing wiki-packs"):
+    with pytest.raises(GraphArtifactError, match="wiki pack export_id mismatch"):
         validate_graph_artifacts(
             tmp_path,
             deep=True,

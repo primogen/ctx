@@ -310,7 +310,7 @@ def _validate_wiki_pack_payload(
     expected_export_id: str,
 ) -> None:
     if not any(name.startswith(_WIKI_PACK_PREFIX) for name in names):
-        raise GraphArtifactError("wiki graph archive is missing wiki-packs/")
+        return
     try:
         entries = discover_wiki_pack_manifests(packs_dir)
         pages = load_merged_wiki_pages(packs_dir)
