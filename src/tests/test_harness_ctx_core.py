@@ -32,6 +32,7 @@ from ctx.adapters.generic.ctx_core_tools import (
     make_tool_executor,
 )
 from ctx.adapters.generic.providers import ToolCall, ToolDefinition
+from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack
 from ctx.core.wiki.wiki_packs import write_wiki_base_pack
 
 
@@ -188,6 +189,53 @@ def test_graph_cache_reloads_when_graph_json_changes(tmp_path: Path) -> None:
 
     assert first["results"][0]["name"] == "old-target"
     assert second["results"][0]["name"] == "new-target"
+
+
+def test_graph_cache_reloads_when_graph_pack_overlay_changes(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_path = graph_dir / "graph.json"
+    packs_dir = graph_dir / "packs"
+    base = nx.Graph()
+    base.add_node("skill:seed", label="seed", type="skill", tags=[])
+    base.add_node("skill:old-target", label="old-target", type="skill", tags=[])
+    base.add_edge("skill:seed", "skill:old-target", weight=1.0)
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=base,
+    )
+    toolbox = CtxCoreToolbox(wiki_dir=tmp_path / "wiki", graph_path=graph_path)
+
+    first = json.loads(toolbox.dispatch(ToolCall(
+        id="c1",
+        name="ctx__graph_query",
+        arguments={"seeds": ["seed"], "max_hops": 1},
+    )))
+    write_overlay_pack(
+        pack_dir=packs_dir / "overlay-new-target",
+        pack_id="overlay-new-target",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        nodes=[{"id": "skill:new-target", "label": "new-target", "type": "skill", "tags": []}],
+        edges=[{"source": "skill:seed", "target": "skill:new-target", "weight": 1.0}],
+        tombstones=[],
+    )
+    second = json.loads(toolbox.dispatch(ToolCall(
+        id="c2",
+        name="ctx__graph_query",
+        arguments={"seeds": ["seed"], "max_hops": 1},
+    )))
+
+    first_names = {item["name"] for item in first["results"]}
+    second_names = {item["name"] for item in second["results"]}
+    assert "old-target" in first_names
+    assert "new-target" not in first_names
+    assert "new-target" in second_names
 
 
 def test_graph_file_signature_detects_same_size_rewrite(

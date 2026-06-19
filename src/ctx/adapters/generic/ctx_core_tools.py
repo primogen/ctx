@@ -75,7 +75,8 @@ _RESPONSE_FORMAT_PROPERTY = {
 }
 
 FileSignature = tuple[int, int, str]
-GraphSignature = tuple[FileSignature | None, FileSignature | None]
+PackSignature = tuple[tuple[str, FileSignature | None], ...]
+GraphSignature = tuple[FileSignature | None, FileSignature | None, PackSignature]
 
 
 def _response_format_from_args(args: Mapping[str, Any]) -> str:
@@ -800,7 +801,27 @@ def _graph_file_signature(path: Path) -> GraphSignature:
     return (
         _file_signature(path),
         _file_signature(path.with_name("entity-overlays.jsonl")),
+        _graph_pack_signature(path),
     )
+
+
+def _graph_pack_signature(graph_path: Path) -> PackSignature:
+    packs_dir = graph_path.parent / "packs"
+    if not packs_dir.is_dir():
+        return ()
+
+    rows: list[tuple[str, FileSignature | None]] = []
+    try:
+        paths = sorted(path for path in packs_dir.rglob("*") if path.is_file())
+    except OSError:
+        return (("<unreadable>", None),)
+    for path in paths:
+        try:
+            relpath = path.relative_to(packs_dir).as_posix()
+        except ValueError:
+            relpath = path.name
+        rows.append((relpath, _file_signature(path)))
+    return tuple(rows)
 
 
 def _file_content_fingerprint(path: Path, size: int) -> str:
