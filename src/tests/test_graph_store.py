@@ -218,6 +218,36 @@ def test_cli_builds_graph_store_from_graph_dir(tmp_path: Path) -> None:
     assert graph_store_stats(db_path) == {"nodes": 3, "edges": 2}
 
 
+def test_cli_validates_fresh_graph_store(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_dir.mkdir()
+    payload = nx.node_link_data(_sample_graph(), edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+    db_path = tmp_path / "graph.sqlite3"
+    ensure_graph_store(graph_dir, db_path)
+
+    result = main(["validate", "--graph-dir", str(graph_dir), "--db", str(db_path)])
+
+    assert result == 0
+
+
+def test_cli_validate_returns_1_for_stale_graph_store(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_dir.mkdir()
+    graph = _sample_graph()
+    payload = nx.node_link_data(graph, edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+    db_path = tmp_path / "graph.sqlite3"
+    ensure_graph_store(graph_dir, db_path)
+    graph.add_node("skill:docs", label="docs", type="skill", tags=["docs"])
+    payload = nx.node_link_data(graph, edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    result = main(["validate", "--graph-dir", str(graph_dir), "--db", str(db_path)])
+
+    assert result == 1
+
+
 def test_ensure_graph_store_reuses_fresh_store_and_rebuilds_stale_store(
     tmp_path: Path,
 ) -> None:

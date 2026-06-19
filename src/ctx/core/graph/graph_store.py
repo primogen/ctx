@@ -275,6 +275,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Preserve all stored edges instead of applying runtime graph filters.",
     )
+    validate = sub.add_parser(
+        "validate",
+        help="Validate a SQLite store against graphify-out sources.",
+    )
+    validate.add_argument("--graph-dir", required=True, help="Path to graphify-out")
+    validate.add_argument("--db", required=True, help="SQLite database to validate")
 
     args = parser.parse_args(argv)
     if args.command == "build":
@@ -285,6 +291,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(stats, sort_keys=True))
         return 0
+    if args.command == "validate":
+        report = validate_graph_store(Path(args.db), Path(args.graph_dir))
+        print(json.dumps(report, sort_keys=True))
+        return 0 if report["ok"] else 1
     parser.error(f"unknown command: {args.command}")
     return 2
 
