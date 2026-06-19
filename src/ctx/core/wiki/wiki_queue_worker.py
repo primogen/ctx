@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from ctx.core.graph.entity_overlays import append_overlay_tombstone
 from ctx.core.graph.graph_packs import GraphPackManifestError, discover_pack_manifests
+from ctx.core.graph.graph_store import ensure_graph_store
 from ctx.core.graph.incremental_attach import attach_entity
 from ctx.core.wiki.artifact_promotion import promote_staged_artifact
 from ctx.core.wiki import wiki_queue
@@ -325,6 +326,17 @@ def _handle_graph_export(wiki_path: Path, payload: dict[str, Any]) -> str:
     return "graph export completed"
 
 
+def _handle_graph_store_refresh(wiki_path: Path, payload: dict[str, Any]) -> str:
+    graph_dir = wiki_path / "graphify-out"
+    db_path = graph_dir / "graph-store.sqlite3"
+    ensure_graph_store(
+        graph_dir,
+        db_path,
+        apply_runtime_filter=not payload.get("no_runtime_filter", False),
+    )
+    return "graph store refreshed"
+
+
 def _handle_catalog_refresh(_wiki_path: Path, payload: dict[str, Any]) -> str:
     args = _catalog_refresh_args(payload, update_wiki_tar=False)
     _run_checked(args, label="catalog refresh")
@@ -404,6 +416,7 @@ def _optional_payload_string(payload: dict[str, Any], key: str) -> str | None:
 
 MAINTENANCE_HANDLERS: dict[str, MaintenanceHandler] = {
     wiki_queue.GRAPH_EXPORT_JOB: _handle_graph_export,
+    wiki_queue.GRAPH_STORE_REFRESH_JOB: _handle_graph_store_refresh,
     wiki_queue.CATALOG_REFRESH_JOB: _handle_catalog_refresh,
     wiki_queue.TAR_REFRESH_JOB: _handle_tar_refresh,
     wiki_queue.ARTIFACT_PROMOTION_JOB: _handle_artifact_promotion,
