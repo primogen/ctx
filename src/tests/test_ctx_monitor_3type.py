@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 import ctx_monitor as _cm
 from ctx.core import entity_types as _entity_types
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -172,6 +173,74 @@ class TestWikiIndexEntries:
     def test_wiki_entity_path_resolves_harness_pages(self, wiki_3type):
         path = _cm._wiki_entity_path("langgraph", entity_type="harness")
         assert path == wiki_3type / "entities" / "harnesses" / "langgraph.md"
+
+    def test_wiki_pack_pages_override_physical_entity_pages(
+        self,
+        wiki_3type: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(_cm, "_WIKI_PACK_CACHE_KEY", None)
+        monkeypatch.setattr(_cm, "_WIKI_PACK_CACHE_VALUE", None)
+        monkeypatch.setattr(_cm, "_render_entity_subgraph", lambda *_, **__: "")
+        (wiki_3type / "entities" / "skills" / "python-patterns.md").write_text(
+            "---\n"
+            "title: Stale Physical Page\n"
+            "type: skill\n"
+            "tags: [stale]\n"
+            "description: stale physical description\n"
+            "---\n"
+            "# Stale Physical Page\n",
+            encoding="utf-8",
+        )
+        write_wiki_base_pack(
+            pack_dir=wiki_3type / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="export-1",
+            pages={
+                "entities/skills/python-patterns.md": (
+                    "---\n"
+                    "title: Fresh Pack Page\n"
+                    "type: skill\n"
+                    "tags: [pack, merged]\n"
+                    "description: fresh pack description\n"
+                    "---\n"
+                    "# Fresh Pack Page\n\n"
+                    "Merged wiki pack body.\n"
+                ),
+                "entities/mcp-servers/g/github.md": (
+                    "---\n"
+                    "title: GitHub MCP\n"
+                    "type: mcp-server\n"
+                    "tags: [github, merged]\n"
+                    "description: pack-only mcp\n"
+                    "---\n"
+                    "# GitHub MCP\n"
+                ),
+            },
+        )
+
+        entries = _cm._wiki_index_entries(limit_per_type=None)
+        slugs = {entry["slug"] for entry in entries}
+        detail = _cm._wiki_entity_detail("python-patterns", entity_type="skill")
+        search = _cm._search_wiki_entities("merged body", entity_type="skill")
+        html = _cm._render_wiki_entity("python-patterns", entity_type="skill")
+        stats = _cm._wiki_stats()
+
+        assert slugs == {"python-patterns", "github"}
+        assert detail is not None
+        assert detail["frontmatter"]["title"] == "Fresh Pack Page"
+        assert "Merged wiki pack body" in detail["body"]
+        assert [row["slug"] for row in search] == ["python-patterns"]
+        assert "Fresh Pack Page" in html
+        assert "Stale Physical Page" not in html
+        assert stats == {
+            "skills": 1,
+            "agents": 0,
+            "mcps": 1,
+            "harnesses": 0,
+            "total": 2,
+            "split_known": True,
+        }
 
     def test_wiki_search_indexes_tags_beyond_preview_limit(self, wiki_3type):
         page = wiki_3type / "entities" / "skills" / "many-tags.md"
