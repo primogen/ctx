@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
-from ctx.core.graph.graph_packs import GraphPackManifestError, discover_pack_manifests
+from ctx.core.graph.graph_packs import (
+    GraphPackManifestError,
+    discover_pack_manifests,
+    load_merged_pack_graph,
+)
 
 GIT_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 DEFAULT_HARNESSES = {
@@ -286,23 +290,99 @@ def _record_graph_pack_export_id(
 ) -> None:
     if _GRAPH_PAYLOAD_NAME in export_ids:
         return
+    *_, export_id = _scan_graph_pack_payload(
+        names,
+        packs_dir,
+        deep=False,
+        context=context,
+    )
+    _record_export_id(export_ids, "graphify-out/packs", export_id)
+
+
+def _scan_graph_pack_payload(
+    names: set[str],
+    packs_dir: Path,
+    *,
+    deep: bool,
+    context: str,
+) -> tuple[int, int, int, int, int, str | None]:
     if not any(name.startswith(_GRAPH_PACK_PREFIX) for name in names):
         raise GraphArtifactError(
             f"{context} is missing graph payload: graphify-out/graph.json or graphify-out/packs",
         )
     try:
-        entries = discover_pack_manifests(packs_dir)
+        graph = load_merged_pack_graph(packs_dir)
     except GraphPackManifestError as exc:
         raise GraphArtifactError(f"{context} graph pack validation failed: {exc}") from exc
-    if not entries:
+    if graph.number_of_nodes() == 0:
         raise GraphArtifactError(
             f"{context} is missing graph payload: graphify-out/graph.json or graphify-out/packs",
         )
-    base_graph = entries[0].path / "graph.json"
-    if not base_graph.is_file():
-        raise GraphArtifactError(f"{context} graph base pack is missing graph.json")
-    with base_graph.open("rb") as stream:
-        _record_export_id(export_ids, "graphify-out/packs", _scan_graph_export_id(stream))
+    export_id = graph.graph.get("export_id") or graph.graph.get("ctx_pack_base_export_id")
+    if not isinstance(export_id, str) or not export_id.strip():
+        export_id = None
+    if not deep:
+        return 0, 0, 0, 0, 0, export_id
+    return _scan_graph_object(graph, export_id=export_id)
+
+
+def _scan_graph_object(
+    graph: Any,
+    *,
+    export_id: str | None,
+) -> tuple[int, int, int, int, int, str | None]:
+    semantic_edges = skills_sh_nodes = harness_nodes = 0
+    for _, attrs in graph.nodes(data=True):
+        if not isinstance(attrs, dict):
+            continue
+        if attrs.get("source_catalog") == "skills.sh":
+            skills_sh_nodes += 1
+        if attrs.get("type") == "harness":
+            harness_nodes += 1
+    for source, target, attrs in graph.edges(data=True):
+        if not isinstance(attrs, dict):
+            continue
+        context = f"graph pack edge {source!r}->{target!r}"
+        _validate_graph_edge_score_mapping(attrs, context=context)
+        semantic = attrs.get("semantic_sim")
+        if isinstance(semantic, int | float) and float(semantic) != 0.0:
+            semantic_edges += 1
+    return (
+        int(graph.number_of_nodes()),
+        int(graph.number_of_edges()),
+        semantic_edges,
+        skills_sh_nodes,
+        harness_nodes,
+        export_id,
+    )
+
+
+def _validate_graph_edge_score_mapping(edge: dict[str, Any], *, context: str) -> None:
+    numeric_scores: dict[str, float] = {}
+    for field in _EDGE_SCORE_FIELDS:
+        if field not in edge:
+            continue
+        value = edge[field]
+        if not isinstance(value, int | float):
+            raise GraphArtifactError(f"{context} {field} must be numeric")
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise GraphArtifactError(f"{context} {field} must be finite")
+        if not 0 <= numeric <= 1:
+            raise GraphArtifactError(f"{context} {field} must be 0..1")
+        numeric_scores[field] = numeric
+    if (
+        "weight" in numeric_scores
+        and "final_weight" in numeric_scores
+        and abs(numeric_scores["weight"] - numeric_scores["final_weight"]) > 1e-9
+    ):
+        raise GraphArtifactError(f"{context} weight must equal final_weight")
+    if "final_weight" in edge:
+        _validate_score_component_mapping(
+            edge.get("final_weight"),
+            edge.get("score_components"),
+            context=context,
+        )
 
 
 def _validate_dashboard_index(
@@ -713,6 +793,8 @@ def validate_graph_artifacts(
     archive_communities: dict[str, Any] | None = None
     dashboard_index_path: Path | None = None
     skill_bundle_refs: list[tuple[str, str, str]] = []
+    graph_pack_tmp = tempfile.TemporaryDirectory(prefix="ctx-full-graph-packs-")
+    graph_packs_dir = Path(graph_pack_tmp.name)
 
     with tarfile.open(tarball, "r:gz") as tf:
         for member in tf:
@@ -796,6 +878,8 @@ def validate_graph_artifacts(
                 tmp.close()
                 dashboard_index_path = Path(tmp.name)
                 _copy_tar_member_to_path(tf, member, dashboard_index_path)
+            elif name.startswith(_GRAPH_PACK_PREFIX):
+                _copy_graph_pack_tar_member(tf, member, name, graph_packs_dir)
             elif member.isfile() and deep and name.startswith("converted/skills-sh-"):
                 if name.endswith("/SKILL.md") or "/references/" in name:
                     f = tf.extractfile(member)
@@ -820,7 +904,7 @@ def validate_graph_artifacts(
         )
         raise GraphArtifactError(f"missing bundled skill file: {sample}")
 
-    required_names = _GRAPH_RUNTIME_REQUIRED_NAMES
+    required_names = _GRAPH_RUNTIME_REQUIRED_NAMES - {_GRAPH_PAYLOAD_NAME}
     missing_required = sorted(required_names - names)
     if missing_required:
         raise GraphArtifactError(f"wiki graph archive is missing: {missing_required}")
@@ -835,6 +919,24 @@ def validate_graph_artifacts(
         "graphify-out/graph-export-manifest.json",
         manifest_export_id,
     )
+    try:
+        if _GRAPH_PAYLOAD_NAME not in export_ids:
+            (
+                graph_nodes,
+                graph_edges,
+                graph_semantic_edges,
+                skills_sh_nodes,
+                harness_nodes,
+                graph_export_id,
+            ) = _scan_graph_pack_payload(
+                names,
+                graph_packs_dir,
+                deep=deep,
+                context="wiki graph archive",
+            )
+            _record_export_id(export_ids, "graphify-out/packs", graph_export_id)
+    finally:
+        graph_pack_tmp.cleanup()
     if dashboard_index_path is None:
         raise GraphArtifactError("graphify-out/dashboard-neighborhoods.sqlite3 is missing")
     try:
@@ -845,8 +947,6 @@ def validate_graph_artifacts(
         )
     finally:
         dashboard_index_path.unlink(missing_ok=True)
-    if "graphify-out/graph.json" not in export_ids:
-        raise GraphArtifactError("graphify-out/graph.json is missing export_id")
     _validate_export_ids(export_ids, expected=manifest_export_id)
     _validate_root_communities(root_communities, archive_communities)
     _validate_graph_previews(graph_dir, export_id=manifest_export_id, manifest=manifest)
