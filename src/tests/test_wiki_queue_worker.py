@@ -315,13 +315,16 @@ def test_process_next_entity_upsert_writes_wiki_page_overlay_when_base_pack_exis
 ) -> None:
     wiki = tmp_path / "wiki"
     entity_text = "---\ntags:\n  - review\n---\n# custom-reviewer\n"
-    entity_path = _write_entity(wiki, "entities/agents/custom-reviewer.md", entity_text)
+    entity_path = wiki / "entities" / "agents" / "custom-reviewer.md"
     packs_dir = wiki / "wiki-packs"
     write_wiki_base_pack(
         pack_dir=packs_dir / "base-export-1",
         pack_id="base-export-1",
         base_export_id="wiki-export-1",
-        pages={"index.md": "# index\n"},
+        pages={
+            "entities/agents/custom-reviewer.md": entity_text,
+            "index.md": "# index\n",
+        },
     )
     wiki_queue.enqueue_entity_upsert(
         wiki,
@@ -339,6 +342,7 @@ def test_process_next_entity_upsert_writes_wiki_page_overlay_when_base_pack_exis
 
     assert result is not None
     assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert not entity_path.exists()
     merged = load_merged_wiki_pages(packs_dir)
     assert merged["entities/agents/custom-reviewer.md"] == entity_text
 

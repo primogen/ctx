@@ -23,7 +23,7 @@ from ctx.core.graph.graph_store import ensure_graph_store
 from ctx.core.graph.incremental_attach import attach_entity
 from ctx.core.wiki.artifact_promotion import promote_staged_artifact
 from ctx.core.wiki import wiki_queue
-from ctx.core.wiki.wiki_packs import write_active_wiki_overlay_pack
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_active_wiki_overlay_pack
 from ctx.core.wiki.wiki_sync import update_index
 from ctx.utils._fs_utils import reject_symlink_path
 from ctx_config import cfg
@@ -171,7 +171,8 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
             )
             return f"queued full graph refresh for deleted {subject_type} entity {slug}"
 
-    text = entity_path.read_text(encoding="utf-8")
+    page_relpath = _wiki_relative_path(wiki_path, entity_path)
+    text = _read_entity_text(wiki_path, entity_path, page_relpath)
     actual_hash = sha256(text.encode("utf-8")).hexdigest()
     if actual_hash != expected_hash:
         raise ValueError(
@@ -179,7 +180,6 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
             f"{entity_type}:{slug}: expected {expected_hash}, got {actual_hash}"
         )
 
-    page_relpath = _wiki_relative_path(wiki_path, entity_path)
     update_index(str(wiki_path), [slug], subject_type=subject_type)
     _emit_wiki_page_upsert(wiki_path, page_relpath, text)
     attach_outcome = _try_incremental_attach(
@@ -220,6 +220,15 @@ def _emit_wiki_page_tombstone(wiki_path: Path, relpath: str) -> None:
         pages={},
         tombstones=[relpath],
     )
+
+
+def _read_entity_text(wiki_path: Path, entity_path: Path, relpath: str) -> str:
+    packs_dir = wiki_path / "wiki-packs"
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+    return entity_path.read_text(encoding="utf-8")
 
 
 def _try_graph_pack_tombstone(wiki_path: Path, node_id: str) -> bool:

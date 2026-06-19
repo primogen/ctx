@@ -32,6 +32,10 @@ from ctx.adapters.claude_code.install.install_utils import safe_copy_file
 from intake_pipeline import IntakeRejected, check_intake, record_embedding
 from wiki_batch_entities import generate_agent_page
 from ctx.core.wiki.wiki_queue import enqueue_entity_upsert
+from ctx.core.wiki.wiki_packs import (
+    load_merged_wiki_pages,
+    write_active_wiki_overlay_pack,
+)
 from ctx.core.wiki.wiki_sync import append_log, ensure_wiki, update_index
 from ctx.core.wiki.wiki_utils import validate_skill_name
 from ctx.utils._fs_utils import reject_symlink_path, safe_atomic_write_text
@@ -63,16 +67,39 @@ def mirror_agent_body(installed_path: Path, wiki_path: Path, name: str) -> Path:
 
 def write_entity_page(wiki_path: Path, name: str, content: str) -> bool:
     """Write agent entity page. Returns True if newly created."""
-    page = wiki_path / "entities" / "agents" / f"{name}.md"
-    reject_symlink_path(page)
-    is_new = not page.exists()
-    safe_atomic_write_text(page, content, encoding="utf-8")
+    relpath = f"entities/agents/{name}.md"
+    page = wiki_path / relpath
+    packs_dir = wiki_path / "wiki-packs"
+    is_new = _read_entity_page_text(wiki_path, name) is None
+    if page.exists() or not packs_dir.is_dir():
+        reject_symlink_path(page)
+        safe_atomic_write_text(page, content, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: content},
+            tombstones=[],
+        )
     return is_new
 
 
-def _existing_agent_review_text(entity_page: Path, installed_path: Path) -> str:
+def _read_entity_page_text(wiki_path: Path, name: str) -> str | None:
+    relpath = f"entities/agents/{name}.md"
+    packs_dir = wiki_path / "wiki-packs"
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+    entity_page = wiki_path / relpath
     if entity_page.exists():
-        existing = entity_page.read_text(encoding="utf-8", errors="replace")
+        return entity_page.read_text(encoding="utf-8", errors="replace")
+    return None
+
+
+def _existing_agent_review_text(wiki_path: Path, name: str, installed_path: Path) -> str:
+    existing_page = _read_entity_page_text(wiki_path, name)
+    if existing_page is not None:
+        existing = existing_page
         if installed_path.exists():
             installed = installed_path.read_text(encoding="utf-8", errors="replace")
             existing += f"\n\n## Installed agent definition\n\n{installed}"
@@ -117,19 +144,16 @@ def add_agent(
     line_count = len(content.splitlines())
 
     installed_path = agents_dir / f"{name}.md"
-    entity_page = wiki_path / "entities" / "agents" / f"{name}.md"
-    existing_path = (
-        installed_path
-        if installed_path.exists()
-        else entity_page if entity_page.exists() else None
+    has_existing = (
+        installed_path.exists()
+        or _read_entity_page_text(wiki_path, name) is not None
     )
-    has_existing = existing_path is not None
 
     if review_existing and has_existing and not update_existing:
         review = build_update_review(
             entity_type="agent",
             slug=name,
-            existing_text=_existing_agent_review_text(entity_page, installed_path),
+            existing_text=_existing_agent_review_text(wiki_path, name, installed_path),
             proposed_text=_proposed_agent_review_text(
                 name=name,
                 source_path=source_path,
