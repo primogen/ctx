@@ -48,6 +48,7 @@ from ctx.adapters.generic.runtime_lifecycle import RuntimeLifecycleStore
 from ctx.adapters.generic.tools import TOOL_SEPARATOR
 from ctx.core.entity_types import (
     RECOMMENDABLE_ENTITY_TYPES,
+    entity_relpath,
     entity_page_path,
     entity_wikilink,
 )
@@ -528,8 +529,24 @@ class CtxCoreToolbox:
             return json.dumps({"error": "wiki_dir not configured"})
 
         candidates = _wiki_get_candidates(wiki, slug, entity_type or None)
+        try:
+            pack_pages = _wiki_pack_pages(wiki)
+        except Exception as exc:  # noqa: BLE001 - surface corrupt pack state to callers.
+            return json.dumps({"error": f"could not read wiki-packs: {exc}"})
 
         for candidate_type, path, wikilink in candidates:
+            if pack_pages is not None:
+                relpath = _wiki_entity_relpath(candidate_type, slug)
+                text = pack_pages.get(relpath)
+                if text is not None:
+                    return self._serialise_page_text(
+                        path,
+                        text,
+                        candidate_type,
+                        wikilink,
+                        _response_format_from_args(args),
+                    )
+                continue
             if path.is_file():
                 return self._serialise_page(
                     path,
@@ -638,12 +655,22 @@ class CtxCoreToolbox:
         wikilink: str,
         response_format: str,
     ) -> str:
-        from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body  # noqa: PLC0415
-
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             return json.dumps({"error": f"could not read {path}: {exc}"})
+        return self._serialise_page_text(path, text, entity_type, wikilink, response_format)
+
+    def _serialise_page_text(
+        self,
+        path: Path,
+        text: str,
+        entity_type: str,
+        wikilink: str,
+        response_format: str,
+    ) -> str:
+        from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body  # noqa: PLC0415
+
         fm, body = parse_frontmatter_and_body(text)
         return _encode_response({
             "slug": path.stem,
@@ -722,6 +749,13 @@ def _wiki_entity_path(wiki: Path, slug: str, entity_type: str) -> Path:
     return path
 
 
+def _wiki_entity_relpath(entity_type: str, slug: str) -> str:
+    relpath = entity_relpath(entity_type, slug)
+    if relpath is None:
+        raise ValueError(f"unknown entity type {entity_type!r}")
+    return relpath.as_posix()
+
+
 def _wiki_entity_link(slug: str, entity_type: str) -> str:
     link = entity_wikilink(entity_type, slug)
     if link is None:
@@ -739,6 +773,15 @@ def _wiki_get_candidates(
         (typ, _wiki_entity_path(wiki, slug, typ), _wiki_entity_link(slug, typ))
         for typ in entity_types
     ]
+
+
+def _wiki_pack_pages(wiki: Path) -> dict[str, str] | None:
+    packs_dir = wiki / "wiki-packs"
+    if not packs_dir.is_dir():
+        return None
+    from ctx.core.wiki.wiki_packs import load_merged_wiki_pages  # noqa: PLC0415
+
+    return load_merged_wiki_pages(packs_dir)
 
 
 def _file_signature(path: Path) -> FileSignature | None:

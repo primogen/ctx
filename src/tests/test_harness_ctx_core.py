@@ -32,6 +32,7 @@ from ctx.adapters.generic.ctx_core_tools import (
     make_tool_executor,
 )
 from ctx.adapters.generic.providers import ToolCall, ToolDefinition
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack
 
 
 # ── Helpers: build a synthetic wiki + graph for the toolbox ────────────────
@@ -1216,6 +1217,51 @@ class TestWikiGet:
         assert result["entity_type"] == "mcp-server"
         assert result["wikilink"] == "[[entities/mcp-servers/f/filesystem]]"
         assert "Filesystem MCP" in result["body"]
+
+    def test_reads_entity_page_from_wiki_pack_before_stale_file(
+        self, tmp_path: Path
+    ) -> None:
+        wiki = _build_synthetic_wiki(tmp_path)
+        (wiki / "entities" / "skills" / "python-patterns.md").write_text(
+            "---\n"
+            "name: python-patterns\n"
+            "title: Stale Physical Page\n"
+            "tags: [stale]\n"
+            "---\n"
+            "# Stale Physical Page\n",
+            encoding="utf-8",
+        )
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="export-1",
+            pages={
+                "entities/skills/python-patterns.md": (
+                    "---\n"
+                    "name: python-patterns\n"
+                    "title: Fresh Pack Page\n"
+                    "tags: [pack]\n"
+                    "---\n"
+                    "# Fresh Pack Page\n\n"
+                    "This content came from the merged wiki pack.\n"
+                )
+            },
+        )
+        toolbox = CtxCoreToolbox(wiki_dir=wiki, graph_path=tmp_path / "missing.json")
+
+        result = json.loads(
+            toolbox.dispatch(
+                ToolCall(
+                    id="c1",
+                    name="ctx__wiki_get",
+                    arguments={"slug": "python-patterns", "entity_type": "skill"},
+                )
+            )
+        )
+
+        assert "error" not in result
+        assert result["frontmatter"]["title"] == "Fresh Pack Page"
+        assert "merged wiki pack" in result["body"]
 
 
 # ── _query_to_tags ────────────────────────────────────────────────────────
