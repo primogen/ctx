@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ctx.core.graph.entity_overlays import append_overlay_tombstone
-from ctx.core.graph.graph_packs import GraphPackManifestError, discover_pack_manifests
+from ctx.core.graph.graph_packs import (
+    GRAPH_PACK_MANIFEST,
+    GraphPackManifestError,
+    discover_pack_manifests,
+    write_overlay_pack,
+)
 from ctx.core.graph.graph_store import ensure_graph_store
 from ctx.core.graph.incremental_attach import attach_entity
 from ctx.core.wiki.artifact_promotion import promote_staged_artifact
@@ -142,19 +147,29 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
 
     entity_path = _resolve_entity_path(wiki_path, _required_string(payload, "entity_path"))
     if action == "delete":
+        node_id = f"{entity_type}:{slug}"
         append_overlay_tombstone(
             wiki_path / "graphify-out" / "entity-overlays.jsonl",
-            node_id=f"{entity_type}:{slug}",
+            node_id=node_id,
             source="entity-delete",
         )
         _emit_wiki_page_tombstone(wiki_path, _wiki_relative_path(wiki_path, entity_path))
-        wiki_queue.enqueue_maintenance_job(
-            wiki_path,
-            kind=wiki_queue.GRAPH_EXPORT_JOB,
-            payload={"graph_only": True, "incremental": False},
-            source="entity-delete",
-        )
-        return f"queued full graph refresh for deleted {subject_type} entity {slug}"
+        if _try_graph_pack_tombstone(wiki_path, node_id):
+            wiki_queue.enqueue_maintenance_job(
+                wiki_path,
+                kind=wiki_queue.GRAPH_STORE_REFRESH_JOB,
+                payload={},
+                source="entity-delete",
+            )
+            return f"queued graph store refresh for deleted {subject_type} entity {slug}"
+        else:
+            wiki_queue.enqueue_maintenance_job(
+                wiki_path,
+                kind=wiki_queue.GRAPH_EXPORT_JOB,
+                payload={"graph_only": True, "incremental": False},
+                source="entity-delete",
+            )
+            return f"queued full graph refresh for deleted {subject_type} entity {slug}"
 
     text = entity_path.read_text(encoding="utf-8")
     actual_hash = sha256(text.encode("utf-8")).hexdigest()
@@ -205,6 +220,34 @@ def _emit_wiki_page_tombstone(wiki_path: Path, relpath: str) -> None:
         pages={},
         tombstones=[relpath],
     )
+
+
+def _try_graph_pack_tombstone(wiki_path: Path, node_id: str) -> bool:
+    packs_dir = wiki_path / "graphify-out" / "packs"
+    try:
+        entries = discover_pack_manifests(packs_dir)
+    except GraphPackManifestError:
+        return False
+    if not entries:
+        return False
+    base = entries[0].manifest
+    node_hash = sha256(node_id.encode("utf-8")).hexdigest()[:16]
+    pack_id = f"overlay-delete-{node_hash}"
+    pack_dir = packs_dir / pack_id
+    if (pack_dir / GRAPH_PACK_MANIFEST).is_file():
+        return True
+    write_overlay_pack(
+        pack_dir=pack_dir,
+        pack_id=pack_id,
+        base_export_id=base.base_export_id,
+        parent_export_id=base.base_export_id,
+        config_hash=base.config_hash,
+        model_id=base.model_id,
+        nodes=[],
+        edges=[],
+        tombstones=[{"node_id": node_id, "source": "entity-delete"}],
+    )
+    return True
 
 
 def _wiki_relative_path(wiki_path: Path, entity_path: Path) -> str:

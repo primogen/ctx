@@ -458,6 +458,40 @@ def test_process_next_entity_delete_tombstones_wiki_pack_page(
     assert "entities/skills/deleted.md" not in load_merged_wiki_pages(packs_dir)
 
 
+def test_process_next_entity_delete_writes_graph_pack_tombstone_when_base_pack_exists(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_path = _write_base_graph_for_overlay(wiki)
+    packs_dir = _write_base_graph_pack_for_overlay(wiki, graph_path)
+    entity_path = wiki / "entities" / "skills" / "python-testing.md"
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="python-testing",
+        entity_path=entity_path,
+        content="",
+        action="delete",
+        source="test",
+        now=10.0,
+    )
+    monkeypatch.setattr(wiki_queue_worker, "update_index", MagicMock())
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert result.message == "queued graph store refresh for deleted skills entity python-testing"
+    assert "skill:python-testing" not in load_merged_pack_graph(packs_dir)
+    jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
+    assert [job.kind for job in jobs] == [
+        wiki_queue.ENTITY_UPSERT_JOB,
+        wiki_queue.GRAPH_STORE_REFRESH_JOB,
+    ]
+    assert jobs[1].payload == {"source": "entity-delete"}
+
+
 def test_process_next_retries_hash_mismatch(
     tmp_path: Path,
     monkeypatch: Any,
