@@ -401,7 +401,7 @@ def _write_attach_pack(
         model_id=str(record["model_id"]),
         nodes=list(record.get("nodes") or []),
         edges=list(record.get("edges") or []),
-        tombstones=[],
+        tombstones=[{"node_id": str(record["node_id"]), "source": "incremental-attach"}],
         created_at=str(created_at) if created_at else None,
     )
     return {"status": "inserted", "pack_id": pack_id, "path": str(pack_dir)}

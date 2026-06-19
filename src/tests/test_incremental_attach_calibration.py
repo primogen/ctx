@@ -303,6 +303,53 @@ def test_main_attach_writes_idempotent_overlay_pack(tmp_path, capsys) -> None:
     assert graph.has_edge("skill:new-python", "skill:python-testing")
 
 
+def test_main_attach_overlay_pack_replaces_stale_incident_edges(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:old-target", "skill:new-target"],
+        content_hashes=["ha", "hb"],
+        vectors=np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype="float32"),
+    ).save(index_dir)
+    packs_dir = tmp_path / "packs"
+    base_graph = nx.Graph()
+    base_graph.add_node("skill:old-target", type="skill")
+    base_graph.add_node("skill:new-target", type="skill")
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="model-a",
+        graph=base_graph,
+    )
+    overlay = tmp_path / "entity-overlays.jsonl"
+    common = [
+        "attach",
+        "--index-dir", str(index_dir),
+        "--overlay", str(overlay),
+        "--pack-root", str(packs_dir),
+        "--base-export-id", "export-1",
+        "--config-hash", "config-sha",
+        "--node-id", "skill:changing",
+        "--label", "changing",
+        "--type", "skill",
+        "--model-id", "model-a",
+        "--top-k", "1",
+        "--min-score", "0.5",
+        "--json",
+    ]
+
+    assert main([*common, "--text", "old body", "--vector-json", "[1.0, 0.0]"]) == 0
+    capsys.readouterr()
+    assert main([*common, "--text", "new body", "--vector-json", "[0.0, 1.0]"]) == 0
+
+    graph = load_merged_pack_graph(packs_dir)
+    assert not graph.has_edge("skill:changing", "skill:old-target")
+    assert graph.has_edge("skill:changing", "skill:new-target")
+
+
 def test_main_attach_default_min_score_matches_build_floor(tmp_path) -> None:
     index_dir = tmp_path / "vector-index"
     build_vector_index(
