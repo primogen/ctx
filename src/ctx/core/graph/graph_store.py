@@ -105,6 +105,23 @@ def build_graph_store_from_graph_dir(
     return graph_store_stats(db_path)
 
 
+def ensure_graph_store(
+    graph_dir: Path,
+    db_path: Path,
+    *,
+    apply_runtime_filter: bool = True,
+) -> dict[str, bool | int]:
+    """Reuse a fresh SQLite store or rebuild it from the graph directory."""
+    if graph_store_is_fresh(db_path, graph_dir):
+        return {"rebuilt": False, **graph_store_stats(db_path)}
+    stats = build_graph_store_from_graph_dir(
+        graph_dir,
+        db_path,
+        apply_runtime_filter=apply_runtime_filter,
+    )
+    return {"rebuilt": True, **stats}
+
+
 def graph_store_stats(db_path: Path) -> dict[str, int]:
     """Return node/edge counts for an existing graph store."""
     with _connect(db_path) as conn:

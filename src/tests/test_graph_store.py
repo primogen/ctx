@@ -8,6 +8,7 @@ import networkx as nx
 from ctx.core.graph.graph_store import (
     build_graph_store,
     build_graph_store_from_graph_dir,
+    ensure_graph_store,
     graph_store_metadata,
     graph_store_is_fresh,
     graph_store_stats,
@@ -213,3 +214,29 @@ def test_cli_builds_graph_store_from_graph_dir(tmp_path: Path) -> None:
     assert main(["build", "--graph-dir", str(graph_dir), "--db", str(db_path)]) == 0
 
     assert graph_store_stats(db_path) == {"nodes": 3, "edges": 2}
+
+
+def test_ensure_graph_store_reuses_fresh_store_and_rebuilds_stale_store(
+    tmp_path: Path,
+) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_dir.mkdir()
+    graph = _sample_graph()
+    payload = nx.node_link_data(graph, edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+    db_path = tmp_path / "graph.sqlite3"
+
+    first = ensure_graph_store(graph_dir, db_path)
+    second = ensure_graph_store(graph_dir, db_path)
+
+    assert first == {"rebuilt": True, "nodes": 3, "edges": 2}
+    assert second == {"rebuilt": False, "nodes": 3, "edges": 2}
+
+    graph.add_node("skill:docs", label="docs", type="skill", tags=["docs"])
+    payload = nx.node_link_data(graph, edges="edges")
+    (graph_dir / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    third = ensure_graph_store(graph_dir, db_path)
+
+    assert third == {"rebuilt": True, "nodes": 4, "edges": 2}
+    assert search_nodes(db_path, "docs")[0]["id"] == "skill:docs"
