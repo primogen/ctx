@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
 
 from ctx.core.entity_types import RECOMMENDABLE_ENTITY_TYPES, entity_relpath
+
+PACK_COMPACTION_MANIFEST = "pack-compaction-manifest.json"
+PACK_COMPACTION_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -59,6 +64,41 @@ def validate_graph_wiki_consistency(
         missing_wiki_pages=missing,
         orphan_wiki_pages=orphan_pages,
     )
+
+
+def validate_pack_compaction_manifest(
+    *,
+    staged_graph_packs_dir: Path,
+    staged_wiki_packs_dir: Path,
+) -> dict[str, object]:
+    """Validate the top-level manifest tying staged graph/wiki packs together."""
+    graph_dir = Path(staged_graph_packs_dir)
+    wiki_dir = Path(staged_wiki_packs_dir)
+    if graph_dir.parent != wiki_dir.parent:
+        raise ValueError("staged graph/wiki pack dirs must share one staging root")
+    manifest_path = graph_dir.parent / PACK_COMPACTION_MANIFEST
+    if not manifest_path.is_file():
+        raise ValueError(f"{PACK_COMPACTION_MANIFEST} is missing")
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{PACK_COMPACTION_MANIFEST} is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{PACK_COMPACTION_MANIFEST} must contain an object")
+    if payload.get("schema_version") != PACK_COMPACTION_SCHEMA_VERSION:
+        raise ValueError("pack compaction manifest schema_version is not supported")
+    if payload.get("operation") != "pack-compaction-stage":
+        raise ValueError("pack compaction manifest operation is not pack-compaction-stage")
+    _require_path(payload, "staged_graph_packs_dir", graph_dir)
+    _require_path(payload, "staged_wiki_packs_dir", wiki_dir)
+    base_export_id = _require_str(payload, "base_export_id")
+    graph_section = _require_mapping(payload, "graph")
+    wiki_section = _require_mapping(payload, "wiki")
+    if graph_section.get("base_export_id") != base_export_id:
+        raise ValueError("graph base_export_id does not match compaction manifest")
+    if wiki_section.get("base_export_id") != base_export_id:
+        raise ValueError("wiki base_export_id does not match compaction manifest")
+    return payload
 
 
 def _graph_entity_nodes(graph: nx.Graph) -> list[tuple[str, str, str]]:
@@ -119,3 +159,30 @@ def _normalise_relpath(path: str) -> str:
 def _pure_parts(path: str) -> tuple[str, ...]:
     """Return POSIX parts without touching the local filesystem."""
     return tuple(part for part in path.replace("\\", "/").split("/") if part)
+
+
+def _require_str(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"pack compaction manifest {key} must be a non-empty string")
+    return value
+
+
+def _require_mapping(payload: dict[str, object], key: str) -> dict[str, object]:
+    value = payload.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"pack compaction manifest {key} must be an object")
+    return value
+
+
+def _require_path(payload: dict[str, object], key: str, expected: Path) -> None:
+    raw_value = _require_str(payload, key)
+    if not _same_path(Path(raw_value), expected):
+        raise ValueError(f"pack compaction manifest {key} does not match staged path")
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left.absolute() == right.absolute()

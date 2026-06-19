@@ -31,11 +31,13 @@ from ctx.core.wiki.wiki_packs import (
     load_merged_wiki_pages,
     promote_wiki_pack_set,
 )
-from ctx.core.wiki.pack_validation import validate_graph_wiki_consistency
+from ctx.core.wiki.pack_validation import (
+    PACK_COMPACTION_MANIFEST,
+    PACK_COMPACTION_SCHEMA_VERSION,
+    validate_graph_wiki_consistency,
+    validate_pack_compaction_manifest,
+)
 from ctx.utils._fs_utils import atomic_write_text
-
-PACK_COMPACTION_MANIFEST = "pack-compaction-manifest.json"
-PACK_COMPACTION_SCHEMA_VERSION = 1
 
 
 class PackCompactionError(ValueError):
@@ -318,9 +320,13 @@ def _validate_staged_pack_roots(
     staged_wiki_packs_dir: Path,
 ) -> None:
     try:
+        validate_pack_compaction_manifest(
+            staged_graph_packs_dir=staged_graph_packs_dir,
+            staged_wiki_packs_dir=staged_wiki_packs_dir,
+        )
         graph = load_merged_pack_graph(staged_graph_packs_dir)
         pages = load_merged_wiki_pages(staged_wiki_packs_dir)
-    except (GraphPackManifestError, WikiPackManifestError) as exc:
+    except (GraphPackManifestError, WikiPackManifestError, ValueError) as exc:
         raise PackCompactionError(str(exc)) from exc
     if graph.number_of_nodes() == 0:
         raise PackCompactionError("staged graph packs do not contain a graph")

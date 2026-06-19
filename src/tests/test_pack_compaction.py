@@ -237,6 +237,53 @@ def test_promote_staged_pack_sets_rejects_graph_wiki_entity_mismatch(
     ]
 
 
+def test_promote_staged_pack_sets_rejects_missing_compaction_manifest(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+    staged = compact_active_pack_sets(
+        wiki_path=wiki,
+        base_export_id="export-2",
+        staging_dir=tmp_path / "staged-compaction",
+    )
+    staged.manifest_path.unlink()
+
+    with pytest.raises(PackCompactionError, match="pack-compaction-manifest.json"):
+        promote_staged_pack_sets(
+            wiki_path=wiki,
+            staged_graph_packs_dir=staged.staged_graph_packs_dir,
+            staged_wiki_packs_dir=staged.staged_wiki_packs_dir,
+        )
+
+    assert [entry.manifest.pack_id for entry in discover_pack_manifests(wiki / "graphify-out" / "packs")] == [
+        "base-export-1",
+        "overlay-new",
+    ]
+
+
+def test_promote_staged_pack_sets_rejects_manifest_dir_mismatch(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+    staged = compact_active_pack_sets(
+        wiki_path=wiki,
+        base_export_id="export-2",
+        staging_dir=tmp_path / "staged-compaction",
+    )
+    manifest = json.loads(staged.manifest_path.read_text(encoding="utf-8"))
+    manifest["staged_wiki_packs_dir"] = str(tmp_path / "other-wiki-packs")
+    staged.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(PackCompactionError, match="staged_wiki_packs_dir"):
+        promote_staged_pack_sets(
+            wiki_path=wiki,
+            staged_graph_packs_dir=staged.staged_graph_packs_dir,
+            staged_wiki_packs_dir=staged.staged_wiki_packs_dir,
+        )
+
+
 def _write_active_pack_sets(wiki: Path) -> tuple[Path, Path]:
     graph_packs = wiki / "graphify-out" / "packs"
     wiki_packs = wiki / "wiki-packs"
