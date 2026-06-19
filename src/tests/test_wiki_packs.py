@@ -72,6 +72,46 @@ def test_load_merged_wiki_pages_applies_overlay_and_tombstones(tmp_path: Path) -
     }
 
 
+def test_load_merged_wiki_pages_applies_overlays_by_created_at(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"entities/skills/python.md": "# Python\nbase\n"},
+    )
+    write_wiki_overlay_pack(
+        pack_dir=packs_dir / "overlay-z-old",
+        pack_id="overlay-z-old",
+        base_export_id="wiki-export-1",
+        parent_export_id="wiki-export-1",
+        pages={"entities/skills/python.md": "# Python\nold overlay\n"},
+        tombstones=[],
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    write_wiki_overlay_pack(
+        pack_dir=packs_dir / "overlay-a-new",
+        pack_id="overlay-a-new",
+        base_export_id="wiki-export-1",
+        parent_export_id="wiki-export-1",
+        pages={"entities/skills/python.md": "# Python\nnew overlay\n"},
+        tombstones=[],
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+
+    entries = discover_wiki_pack_manifests(packs_dir)
+    pages = load_merged_wiki_pages(packs_dir)
+
+    assert [entry.manifest.pack_id for entry in entries] == [
+        "base-export-1",
+        "overlay-z-old",
+        "overlay-a-new",
+    ]
+    assert pages["entities/skills/python.md"] == "# Python\nnew overlay\n"
+
+
 def test_write_active_wiki_overlay_pack_uses_current_base_export(tmp_path: Path) -> None:
     packs_dir = tmp_path / "wiki-packs"
     write_wiki_base_pack(

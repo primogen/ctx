@@ -252,7 +252,11 @@ def discover_wiki_pack_manifests(packs_dir: Path) -> list[WikiPackEntry]:
                 f"{overlay.manifest.base_export_id!r} does not match active base "
                 f"{base.manifest.base_export_id!r}"
             )
-    return [base, *sorted(overlay_entries, key=lambda entry: entry.manifest.pack_id)]
+    return [base, *sorted(overlay_entries, key=_overlay_sort_key)]
+
+
+def _overlay_sort_key(entry: WikiPackEntry) -> tuple[str, str]:
+    return entry.manifest.created_at or "", entry.manifest.pack_id
 
 
 def load_merged_wiki_pages(packs_dir: Path) -> dict[str, str]:
