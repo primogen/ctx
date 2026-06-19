@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 import usage_tracker as _ut
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack
 from usage_tracker import (
     _set_frontmatter_field,
     append_wiki_log,
@@ -268,6 +269,40 @@ class TestUpdateSkillPage:
         update_skill_page("react", used=True)
         content = (entities / "react.md").read_text()
         assert f"last_used: {TEST_TODAY}" in content
+
+    def test_used_true_updates_pack_only_wiki_page(self, tmp_path, monkeypatch):
+        wiki = tmp_path / "wiki"
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="export-1",
+            pages={
+                "entities/skills/react.md": (
+                    "---\n"
+                    "title: react\n"
+                    "use_count: 0\n"
+                    "session_count: 0\n"
+                    "last_used: 2024-01-01\n"
+                    "updated: 2024-01-01\n"
+                    "status: stale\n"
+                    "---\n"
+                    "# react\n"
+                ),
+            },
+        )
+        monkeypatch.setattr(_ut, "_today", lambda: TEST_TODAY)
+
+        updated, queued = update_skill_page("react", used=True, wiki_dir=wiki)
+
+        assert updated is True
+        assert queued is False
+        assert not (wiki / "entities" / "skills" / "react.md").exists()
+        merged = load_merged_wiki_pages(wiki / "wiki-packs")
+        content = merged["entities/skills/react.md"]
+        assert "use_count: 1" in content
+        assert "session_count: 1" in content
+        assert f"last_used: {TEST_TODAY}" in content
+        assert "status: installed" in content
 
     def test_used_false_increments_session_count(self, tmp_path, monkeypatch):
         entities = tmp_path / "entities" / "skills"
