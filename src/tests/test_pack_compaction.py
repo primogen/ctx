@@ -56,6 +56,14 @@ def test_compact_active_pack_sets_stages_graph_and_wiki_without_mutating_active(
         "entities/skills/keep.md": "# Keep\n",
         "entities/skills/new.md": "# New\n",
     }
+    manifest = json.loads((staging_dir / "pack-compaction-manifest.json").read_text())
+    assert manifest["schema_version"] == 1
+    assert manifest["operation"] == "pack-compaction-stage"
+    assert manifest["base_export_id"] == "export-2"
+    assert manifest["staged_graph_packs_dir"] == str(staging_dir / "graph-packs")
+    assert manifest["staged_wiki_packs_dir"] == str(staging_dir / "wiki-packs")
+    assert manifest["graph"]["pack_id"] == "base-export-2"
+    assert manifest["wiki"]["pack_id"] == "base-export-2"
 
 
 def test_pack_compaction_cli_emits_json_for_staged_pack_sets(

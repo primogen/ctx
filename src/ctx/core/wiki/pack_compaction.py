@@ -12,6 +12,7 @@ import json
 import shutil
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ctx.core.graph.graph_packs import (
@@ -30,6 +31,10 @@ from ctx.core.wiki.wiki_packs import (
     load_merged_wiki_pages,
     promote_wiki_pack_set,
 )
+from ctx.utils._fs_utils import atomic_write_text
+
+PACK_COMPACTION_MANIFEST = "pack-compaction-manifest.json"
+PACK_COMPACTION_SCHEMA_VERSION = 1
 
 
 class PackCompactionError(ValueError):
@@ -46,18 +51,23 @@ class PackCompactionResult:
     wiki_packs_dir: Path
     staged_graph_packs_dir: Path
     staged_wiki_packs_dir: Path
+    manifest_path: Path
     graph_manifest: GraphPackManifest
     wiki_manifest: WikiPackManifest
 
     def to_mapping(self) -> dict[str, object]:
         """Return deterministic JSON-serialisable compaction metadata."""
         return {
+            "schema_version": PACK_COMPACTION_SCHEMA_VERSION,
+            "operation": "pack-compaction-stage",
             "wiki_path": str(self.wiki_path),
             "staging_dir": str(self.staging_dir),
             "graph_packs_dir": str(self.graph_packs_dir),
             "wiki_packs_dir": str(self.wiki_packs_dir),
             "staged_graph_packs_dir": str(self.staged_graph_packs_dir),
             "staged_wiki_packs_dir": str(self.staged_wiki_packs_dir),
+            "manifest_path": str(self.manifest_path),
+            "base_export_id": self.graph_manifest.base_export_id,
             "graph": self.graph_manifest.to_mapping(),
             "wiki": self.wiki_manifest.to_mapping(),
         }
@@ -107,6 +117,7 @@ def compact_active_pack_sets(
 
     staged_graph_packs_dir = stage_root / "graph-packs"
     staged_wiki_packs_dir = stage_root / "wiki-packs"
+    manifest_path = stage_root / PACK_COMPACTION_MANIFEST
     pack_id = _pack_id(base_export_id)
     try:
         graph_manifest = compact_graph_packs(
@@ -123,20 +134,23 @@ def compact_active_pack_sets(
             base_export_id=base_export_id,
             created_at=created_at,
         )
-    except (GraphPackManifestError, WikiPackManifestError) as exc:
+        result = PackCompactionResult(
+            wiki_path=wiki_root,
+            staging_dir=stage_root,
+            graph_packs_dir=graph_packs_dir,
+            wiki_packs_dir=wiki_packs_dir,
+            staged_graph_packs_dir=staged_graph_packs_dir,
+            staged_wiki_packs_dir=staged_wiki_packs_dir,
+            manifest_path=manifest_path,
+            graph_manifest=graph_manifest,
+            wiki_manifest=wiki_manifest,
+        )
+        _write_compaction_manifest(result, created_at=created_at)
+    except (GraphPackManifestError, WikiPackManifestError, OSError) as exc:
         shutil.rmtree(stage_root, ignore_errors=True)
         raise PackCompactionError(str(exc)) from exc
 
-    return PackCompactionResult(
-        wiki_path=wiki_root,
-        staging_dir=stage_root,
-        graph_packs_dir=graph_packs_dir,
-        wiki_packs_dir=wiki_packs_dir,
-        staged_graph_packs_dir=staged_graph_packs_dir,
-        staged_wiki_packs_dir=staged_wiki_packs_dir,
-        graph_manifest=graph_manifest,
-        wiki_manifest=wiki_manifest,
-    )
+    return result
 
 
 def promote_staged_pack_sets(
@@ -282,6 +296,20 @@ def main(argv: list[str] | None = None) -> int:
 def _pack_id(base_export_id: str) -> str:
     value = base_export_id.strip()
     return value if value.startswith("base-") else f"base-{value}"
+
+
+def _write_compaction_manifest(
+    result: PackCompactionResult,
+    *,
+    created_at: str | None,
+) -> None:
+    payload = result.to_mapping()
+    payload["created_at"] = created_at or datetime.now(UTC).isoformat()
+    atomic_write_text(
+        result.manifest_path,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _validate_staged_pack_roots(
