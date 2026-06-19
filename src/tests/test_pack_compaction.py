@@ -205,6 +205,38 @@ def test_promote_staged_pack_sets_rejects_invalid_staged_wiki_before_graph_swap(
     ]
 
 
+def test_promote_staged_pack_sets_rejects_graph_wiki_entity_mismatch(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+    staged = compact_active_pack_sets(
+        wiki_path=wiki,
+        base_export_id="export-2",
+        staging_dir=tmp_path / "staged-compaction",
+    )
+    write_wiki_overlay_pack(
+        pack_dir=staged.staged_wiki_packs_dir / "overlay-delete-new-page",
+        pack_id="overlay-delete-new-page",
+        base_export_id="export-2",
+        parent_export_id="export-2",
+        pages={},
+        tombstones=["entities/skills/new.md"],
+    )
+
+    with pytest.raises(PackCompactionError, match="missing wiki pages"):
+        promote_staged_pack_sets(
+            wiki_path=wiki,
+            staged_graph_packs_dir=staged.staged_graph_packs_dir,
+            staged_wiki_packs_dir=staged.staged_wiki_packs_dir,
+        )
+
+    assert [entry.manifest.pack_id for entry in discover_pack_manifests(wiki / "graphify-out" / "packs")] == [
+        "base-export-1",
+        "overlay-new",
+    ]
+
+
 def _write_active_pack_sets(wiki: Path) -> tuple[Path, Path]:
     graph_packs = wiki / "graphify-out" / "packs"
     wiki_packs = wiki / "wiki-packs"

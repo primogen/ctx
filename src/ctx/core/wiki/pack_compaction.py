@@ -31,6 +31,7 @@ from ctx.core.wiki.wiki_packs import (
     load_merged_wiki_pages,
     promote_wiki_pack_set,
 )
+from ctx.core.wiki.pack_validation import validate_graph_wiki_consistency
 from ctx.utils._fs_utils import atomic_write_text
 
 PACK_COMPACTION_MANIFEST = "pack-compaction-manifest.json"
@@ -325,6 +326,11 @@ def _validate_staged_pack_roots(
         raise PackCompactionError("staged graph packs do not contain a graph")
     if not pages:
         raise PackCompactionError("staged wiki packs do not contain pages")
+    consistency = validate_graph_wiki_consistency(graph, pages)
+    if not consistency.ok:
+        raise PackCompactionError(
+            "graph/wiki consistency failed: " + "; ".join(consistency.errors())
+        )
 
 
 def _restore_graph_packs_after_partial_promotion(result: GraphPackPromotion) -> None:

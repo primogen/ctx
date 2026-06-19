@@ -1,0 +1,121 @@
+"""Validation gates for modular graph/wiki pack promotion."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import networkx as nx
+
+from ctx.core.entity_types import RECOMMENDABLE_ENTITY_TYPES, entity_relpath
+
+
+@dataclass(frozen=True)
+class GraphWikiConsistencyReport:
+    """Graph/wiki consistency report for one merged pack view."""
+
+    missing_wiki_pages: list[dict[str, object]]
+    orphan_wiki_pages: list[dict[str, str]]
+
+    @property
+    def ok(self) -> bool:
+        """Return whether the merged graph and wiki entity views agree."""
+        return not self.missing_wiki_pages and not self.orphan_wiki_pages
+
+    def errors(self) -> list[str]:
+        """Return human-readable validation errors."""
+        errors: list[str] = []
+        if self.missing_wiki_pages:
+            errors.append(f"missing wiki pages: {len(self.missing_wiki_pages)}")
+        if self.orphan_wiki_pages:
+            errors.append(f"orphan wiki pages: {len(self.orphan_wiki_pages)}")
+        return errors
+
+
+def validate_graph_wiki_consistency(
+    graph: nx.Graph,
+    pages: dict[str, str],
+) -> GraphWikiConsistencyReport:
+    """Validate known graph entity nodes against merged wiki entity pages."""
+    normalised_pages = {_normalise_relpath(path) for path in pages}
+    graph_nodes = _graph_entity_nodes(graph)
+    missing: list[dict[str, object]] = []
+    for node_id, entity_type, slug in graph_nodes:
+        expected_paths = _entity_page_candidates(entity_type, slug)
+        if expected_paths & normalised_pages:
+            continue
+        missing.append({
+            "node_id": node_id,
+            "expected_paths": sorted(expected_paths),
+        })
+    graph_node_ids = {node_id for node_id, _entity_type, _slug in graph_nodes}
+    orphan_pages = [
+        {"path": page, "expected_node_id": node_id}
+        for page in sorted(normalised_pages)
+        for node_id in [_node_id_for_entity_page(page)]
+        if node_id is not None and node_id not in graph_node_ids
+    ]
+    return GraphWikiConsistencyReport(
+        missing_wiki_pages=missing,
+        orphan_wiki_pages=orphan_pages,
+    )
+
+
+def _graph_entity_nodes(graph: nx.Graph) -> list[tuple[str, str, str]]:
+    nodes: list[tuple[str, str, str]] = []
+    for raw_node_id, attrs in graph.nodes(data=True):
+        if not isinstance(raw_node_id, str):
+            continue
+        parsed = _node_parts(raw_node_id, attrs)
+        if parsed is not None:
+            nodes.append((raw_node_id, *parsed))
+    return sorted(nodes)
+
+
+def _node_parts(node_id: str, attrs: dict[str, Any]) -> tuple[str, str] | None:
+    if ":" not in node_id:
+        return None
+    entity_type, slug = node_id.split(":", 1)
+    if entity_type not in RECOMMENDABLE_ENTITY_TYPES or not slug:
+        return None
+    attr_type = attrs.get("type")
+    if isinstance(attr_type, str) and attr_type in RECOMMENDABLE_ENTITY_TYPES:
+        entity_type = attr_type
+    return entity_type, slug
+
+
+def _entity_page_candidates(entity_type: str, slug: str) -> set[str]:
+    relpath = entity_relpath(entity_type, slug)
+    candidates = {_normalise_relpath(relpath.as_posix())} if relpath is not None else set()
+    if entity_type == "mcp-server":
+        candidates.add(f"entities/mcp-servers/{slug}.md")
+    return candidates
+
+
+def _node_id_for_entity_page(relpath: str) -> str | None:
+    parts = _pure_parts(relpath)
+    if len(parts) < 3 or parts[0] != "entities":
+        return None
+    subject = parts[1]
+    filename = parts[-1]
+    if not filename.endswith(".md"):
+        return None
+    slug = filename[:-3]
+    if subject == "skills" and len(parts) == 3:
+        return f"skill:{slug}"
+    if subject == "agents" and len(parts) == 3:
+        return f"agent:{slug}"
+    if subject == "harnesses" and len(parts) == 3:
+        return f"harness:{slug}"
+    if subject == "mcp-servers" and len(parts) in {3, 4}:
+        return f"mcp-server:{slug}"
+    return None
+
+
+def _normalise_relpath(path: str) -> str:
+    return path.replace("\\", "/").strip("/")
+
+
+def _pure_parts(path: str) -> tuple[str, ...]:
+    """Return POSIX parts without touching the local filesystem."""
+    return tuple(part for part in path.replace("\\", "/").split("/") if part)
