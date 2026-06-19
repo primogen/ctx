@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import networkx as nx
 import pytest
 import ctx_init as ci
+from ctx.core.graph.graph_packs import write_base_pack
 
 
 def _write_dashboard_index(path: Path, *, export_id: str = "test-export") -> None:
@@ -817,6 +818,56 @@ def test_graph_install_validation_does_not_parse_full_graph_json(
         return json.loads(path.read_text(encoding="utf-8"))
 
     monkeypatch.setattr(ci, "_read_json_file", guarded_read)
+
+    ci._validate_graph_install_tree(wiki)
+
+
+def test_graph_install_validation_accepts_base_pack_without_graph_json(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_out = wiki / "graphify-out"
+    graph_out.mkdir(parents=True)
+    (wiki / "index.md").write_text("# Wiki\n", encoding="utf-8")
+    graph = nx.Graph()
+    graph.add_node("skill:pack-only", label="pack-only", type="skill")
+    write_base_pack(
+        pack_dir=graph_out / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="test-export",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=graph,
+    )
+    (graph_out / "graph-delta.json").write_text(
+        json.dumps({"export_id": "test-export", "nodes": [], "edges": []}),
+        encoding="utf-8",
+    )
+    (graph_out / "communities.json").write_text(
+        json.dumps({"export_id": "test-export", "total_communities": 0}),
+        encoding="utf-8",
+    )
+    (graph_out / "graph-report.md").write_text(
+        "# Graph Report\n\n> Export ID: test-export\n",
+        encoding="utf-8",
+    )
+    (graph_out / "graph-export-manifest.json").write_text(
+        json.dumps({
+            "version": 1,
+            "export_id": "test-export",
+            "artifacts": {
+                "graph": "graph.json",
+                "delta": "graph-delta.json",
+                "communities": "communities.json",
+                "report": "graph-report.md",
+            },
+        }),
+        encoding="utf-8",
+    )
+    _write_dashboard_index(graph_out / "dashboard-neighborhoods.sqlite3")
+    external = wiki / "external-catalogs" / "skills-sh"
+    external.mkdir(parents=True)
+    (external / "catalog.json").write_text("{}", encoding="utf-8")
 
     ci._validate_graph_install_tree(wiki)
 

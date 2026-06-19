@@ -642,12 +642,13 @@ def _validate_graph_install_tree(wiki_dir: Path) -> None:
     missing = [
         name
         for name in sorted(_GRAPH_REQUIRED_FILES)
-        if not (wiki_dir / name).is_file() or (wiki_dir / name).stat().st_size == 0
+        if name != "graphify-out/graph.json"
+        and (not (wiki_dir / name).is_file() or (wiki_dir / name).stat().st_size == 0)
     ]
     if missing:
         raise ValueError(f"graph archive is missing required files: {missing}")
 
-    _validate_graph_json_outline(wiki_dir / "graphify-out" / "graph.json")
+    _validate_graph_payload_outline(wiki_dir)
 
     manifest = _read_json_file(wiki_dir / "graphify-out" / "graph-export-manifest.json")
     if not isinstance(manifest, dict):
@@ -670,6 +671,34 @@ def _validate_graph_install_tree(wiki_dir: Path) -> None:
         wiki_dir / "graphify-out" / "dashboard-neighborhoods.sqlite3",
         expected_export_id=export_id.strip(),
     )
+
+
+def _validate_graph_payload_outline(wiki_dir: Path) -> None:
+    graph_json = wiki_dir / "graphify-out" / "graph.json"
+    if graph_json.is_file() and graph_json.stat().st_size > 0:
+        _validate_graph_json_outline(graph_json)
+        return
+    _validate_graph_pack_outline(wiki_dir / "graphify-out" / "packs")
+
+
+def _validate_graph_pack_outline(packs_dir: Path) -> None:
+    try:
+        from ctx.core.graph.graph_packs import (  # noqa: PLC0415
+            GraphPackManifestError,
+            discover_pack_manifests,
+        )
+
+        entries = discover_pack_manifests(packs_dir)
+    except GraphPackManifestError as exc:
+        raise ValueError(f"graphify-out/packs is invalid: {exc}") from exc
+    if not entries:
+        raise ValueError(
+            "graph archive is missing graph payload: "
+            "graphify-out/graph.json or graphify-out/packs"
+        )
+    base = entries[0].manifest
+    if "graph.json" not in base.checksums:
+        raise ValueError("graph base pack is missing graph.json artifact")
 
 
 def _validate_graph_json_outline(path: Path) -> None:
