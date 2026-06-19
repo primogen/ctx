@@ -214,8 +214,16 @@ def main(argv: list[str] | None = None) -> int:
         description="Incremental graph attach utilities.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    calibrate = sub.add_parser("calibrate", help="Calibrate attach defaults from graph.json")
-    calibrate.add_argument("--graph", required=True, help="Path to graphify-out/graph.json")
+    calibrate = sub.add_parser(
+        "calibrate",
+        help="Calibrate attach defaults from graph.json or graph packs",
+    )
+    calibrate_source = calibrate.add_mutually_exclusive_group(required=True)
+    calibrate_source.add_argument("--graph", help="Path to graphify-out/graph.json")
+    calibrate_source.add_argument(
+        "--graph-dir",
+        help="Path to graphify-out; supports active graph packs without graph.json",
+    )
     calibrate.add_argument("--json", action="store_true", help="Emit JSON instead of Markdown")
     attach = sub.add_parser("attach", help="Attach one entity through the semantic vector index")
     attach.add_argument("--index-dir", required=True, help="Path to a persisted vector-index directory")
@@ -252,7 +260,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "calibrate":
         from ctx.core.graph.resolve_graph import load_graph  # noqa: PLC0415
 
-        graph = load_graph(Path(args.graph))
+        graph_path = (
+            Path(args.graph)
+            if args.graph
+            else Path(args.graph_dir) / "graph.json"
+        )
+        graph = load_graph(graph_path)
         summary = calibrate_attach_defaults(graph)
         if args.json:
             print(json.dumps(asdict(summary), indent=2))

@@ -12,7 +12,12 @@ from ctx.core.graph.incremental_attach import (
     main,
     render_calibration_markdown,
 )
-from ctx.core.graph.graph_packs import build_pack_manifest, load_merged_pack_graph, write_pack_manifest
+from ctx.core.graph.graph_packs import (
+    build_pack_manifest,
+    load_merged_pack_graph,
+    write_base_pack,
+    write_pack_manifest,
+)
 from ctx.core.graph.resolve_graph import load_graph
 from ctx.core.graph.vector_index import build_vector_index
 
@@ -97,6 +102,28 @@ def test_main_calibrate_outputs_json(tmp_path, capsys) -> None:
     )
 
     assert main(["calibrate", "--graph", str(graph_path), "--json"]) == 0
+
+    output = capsys.readouterr().out
+    assert '"node_count": 2' in output
+    assert '"recommended_min_semantic_score": 0.8' in output
+
+
+def test_main_calibrate_accepts_pack_only_graph_dir(tmp_path, capsys) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    G = nx.Graph()
+    G.add_node("skill:a", type="skill")
+    G.add_node("skill:b", type="skill")
+    G.add_edge("skill:a", "skill:b", semantic_sim=0.8, final_weight=0.4)
+    write_base_pack(
+        pack_dir=graph_dir / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=G,
+    )
+
+    assert main(["calibrate", "--graph-dir", str(graph_dir), "--json"]) == 0
 
     output = capsys.readouterr().out
     assert '"node_count": 2' in output
