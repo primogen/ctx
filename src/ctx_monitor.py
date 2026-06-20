@@ -88,6 +88,7 @@ from ctx.monitor.layout import layout as _layout
 from ctx.monitor.layout import monitor_asset_text as _monitor_asset_text
 from ctx.monitor.layout import monitor_inline_script as _monitor_inline_script
 from ctx.monitor import state as _monitor_state
+from ctx.monitor.pages import activity as _activity_page
 from ctx.monitor.pages import docs as _docs_page
 from ctx.monitor.server import MonitorServer as _MonitorServer
 from ctx.monitor.server import make_monitor_server as _make_server
@@ -3881,71 +3882,18 @@ def _render_home() -> str:
 
 
 def _render_sessions_index() -> str:
-    sessions = _summarize_sessions()
-    rows = []
-    for s in sessions:
-        sid = s["session_id"]
-        rows.append(
-            f"<tr>"
-            f"<td><a href='/session/{html.escape(sid)}'><code>{html.escape(sid[:32])}</code></a></td>"
-            f"<td class='muted'>{html.escape(s['first_seen'] or '—')}</td>"
-            f"<td class='muted'>{html.escape(s['last_seen'] or '—')}</td>"
-            f"<td>{len(s['skills_loaded'])}</td>"
-            f"<td>{len(s['skills_unloaded'])}</td>"
-            f"<td>{len(s['agents_loaded'])}</td>"
-            f"<td>{len(s['agents_unloaded'])}</td>"
-            f"<td>{len(s['mcps_loaded'])}</td>"
-            f"<td>{len(s['mcps_unloaded'])}</td>"
-            f"<td>{s['lifecycle_transitions']}</td>"
-            f"</tr>"
-        )
-    body = (
-        "<h1>Sessions</h1>"
-        f"<p class='muted'>{len(sessions)} unique sessions observed.</p>"
-        "<table>"
-        "<tr><th>Session</th><th>First seen</th><th>Last seen</th>"
-        "<th>Skills↑</th><th>Skills↓</th>"
-        "<th>Agents↑</th><th>Agents↓</th>"
-        "<th>MCPs↑</th><th>MCPs↓</th><th>Lifecycle</th></tr>"
-        + "".join(rows)
-        + "</table>"
+    return _activity_page.render_sessions_index(
+        layout=_layout,
+        summarize_sessions=_summarize_sessions,
     )
-    return _layout("Sessions", body)
 
 
 def _render_session_detail(session_id: str) -> str:
-    detail = _session_detail(session_id)
-    audit = detail["audit_entries"]
-    events = detail["load_events"]
-
-    audit_rows = "".join(
-        f"<tr><td class='muted'>{html.escape(r.get('ts', ''))}</td>"
-        f"<td><span class='pill'>{html.escape(r.get('event', ''))}</span></td>"
-        f"<td><code>{html.escape(r.get('subject', ''))}</code></td>"
-        f"<td class='muted'>{html.escape(json.dumps(r.get('meta', {}))[:80])}</td></tr>"
-        for r in audit
+    return _activity_page.render_session_detail(
+        session_id,
+        layout=_layout,
+        session_detail=_session_detail,
     )
-    event_rows = "".join(
-        f"<tr><td class='muted'>{html.escape(r.get('timestamp', ''))}</td>"
-        f"<td>{html.escape(r.get('event', ''))}</td>"
-        f"<td><code>{html.escape(r.get('skill') or r.get('agent') or '')}</code></td></tr>"
-        for r in events
-    )
-
-    body = (
-        f"<h1>Session {html.escape(session_id)}</h1>"
-        f"<div class='card'><strong>{len(audit)}</strong> audit entries · "
-        f"<strong>{len(events)}</strong> load/unload events</div>"
-        "<h2>Audit timeline</h2>"
-        "<table><tr><th>ts</th><th>event</th><th>subject</th><th>meta</th></tr>"
-        + audit_rows
-        + "</table>"
-        "<h2>Load/unload events</h2>"
-        "<table><tr><th>ts</th><th>event</th><th>subject</th></tr>"
-        + event_rows
-        + "</table>"
-    )
-    return _layout(f"Session {session_id}", body)
 
 
 def _render_skills(qs: dict[str, str] | None = None) -> str:
@@ -6977,43 +6925,10 @@ def _artifact_detail(status: dict[str, Any]) -> str:
 
 
 def _render_events() -> str:
-    """SSE endpoint page. The server emits events at /api/events.stream."""
-    entries = _read_jsonl(_audit_log_path(), limit=200)
-    event_lines = [
-        json.dumps(entry, ensure_ascii=False, default=str)
-        for entry in entries
-    ]
-    initial_stream = "\n".join(event_lines)
-    if not initial_stream:
-        initial_stream = "-- no audit events recorded yet; waiting for new events --"
-    return _layout(
-        "Live events",
-        "<h1>Live events</h1>"
-        "<p class='muted'>Tails <code>~/.claude/ctx-audit.jsonl</code> "
-        "via server-sent events.</p>"
-        "<div class='card'>"
-        f"<strong>Showing last {len(entries)} audit events</strong>; "
-        "new writes append below. "
-        "<span id='stream-status' class='muted'>connecting...</span>"
-        "</div>"
-        "<pre id='stream' style='min-height:20rem; max-height:70vh; "
-        "overflow-y:scroll; font-size:0.78rem;'>"
-        f"{html.escape(initial_stream)}"
-        "</pre>"
-        "<script>\n"
-        "const src = new EventSource('/api/events.stream');\n"
-        "const pre = document.getElementById('stream');\n"
-        "const status = document.getElementById('stream-status');\n"
-        "const appendLine = (line) => {\n"
-        "  if (pre.textContent && !pre.textContent.endsWith('\\n')) pre.textContent += '\\n';\n"
-        "  pre.textContent += line + '\\n';\n"
-        "  pre.scrollTop = pre.scrollHeight;\n"
-        "};\n"
-        "pre.scrollTop = pre.scrollHeight;\n"
-        "src.onopen = () => { status.textContent = 'connected; waiting for new events'; };\n"
-        "src.onmessage = (e) => { appendLine(e.data); status.textContent = 'live'; };\n"
-        "src.onerror = () => { status.textContent = 'stream error; reconnecting'; };\n"
-        "</script>",
+    return _activity_page.render_events(
+        layout=_layout,
+        read_jsonl=_read_jsonl,
+        audit_log_path=_audit_log_path,
     )
 
 
@@ -7190,108 +7105,18 @@ def _render_loaded(mutations_enabled: bool | None = None) -> str:
 
 
 def _render_runtime_lifecycle() -> str:
-    summary = _runtime_lifecycle_summary()
-
-    def _event_cell(event: dict[str, Any], key: str, limit: int = 120) -> str:
-        return html.escape(str(event.get(key) or ""))[:limit]
-
-    validation_rows = "".join(
-        "<tr>"
-        f"<td class='muted'>{_event_cell(event, 'created_at')}</td>"
-        f"<td><code>{_event_cell(event, 'check_name')}</code></td>"
-        f"<td><span class='pill'>{_event_cell(event, 'status')}</span></td>"
-        f"<td class='muted'>{_event_cell(event, 'session_id')}</td>"
-        f"<td class='muted'>{_event_cell(event, 'summary')}</td>"
-        "</tr>"
-        for event in reversed(summary["recent_validations"])
+    return _activity_page.render_runtime_lifecycle(
+        layout=_layout,
+        runtime_lifecycle_summary=_runtime_lifecycle_summary,
     )
-    escalation_rows = "".join(
-        "<tr>"
-        f"<td class='muted'>{_event_cell(event, 'created_at')}</td>"
-        f"<td><code>{_event_cell(event, 'trigger')}</code></td>"
-        f"<td><span class='pill'>{_event_cell(event, 'severity')}</span></td>"
-        f"<td class='muted'>{_event_cell(event, 'session_id')}</td>"
-        f"<td class='muted'>{_event_cell(event, 'reason')}</td>"
-        "</tr>"
-        for event in reversed(summary["open_escalations"])
-    )
-
-    body = (
-        "<h1>Runtime lifecycle</h1>"
-        "<div class='card'>"
-        f"<strong>{summary['validations_total']}</strong> validations / "
-        f"<strong>{summary['validation_failures']}</strong> failed / "
-        f"<strong>{summary['open_escalations_total']}</strong> open escalations"
-        f"<br><span class='muted'>source: <code>{html.escape(summary['path'])}</code></span>"
-        " / <a href='/api/runtime.json'>JSON</a>"
-        "</div>"
-        "<div class='card'><strong>Recent validations</strong>"
-        + (
-            "<table><tr><th>Created</th><th>Check</th><th>Status</th>"
-            "<th>Session</th><th>Summary</th></tr>"
-            + validation_rows
-            + "</table>"
-            if validation_rows else
-            "<p class='muted'>No validation checks recorded yet.</p>"
-        )
-        + "</div>"
-        "<div class='card'><strong>Open escalations</strong>"
-        + (
-            "<table><tr><th>Created</th><th>Trigger</th><th>Severity</th>"
-            "<th>Session</th><th>Reason</th></tr>"
-            + escalation_rows
-            + "</table>"
-            if escalation_rows else
-            "<p class='muted'>No open escalations.</p>"
-        )
-        + "</div>"
-    )
-    return _layout("Runtime lifecycle", body)
 
 
 def _render_logs() -> str:
-    """Filterable audit-log viewer — reads the last 500 lines of the log."""
-    entries = _read_jsonl(_audit_log_path(), limit=500)
-    rows = "".join(
-        f"<tr data-event='{html.escape(e.get('event', ''))}' "
-        f"data-subject='{html.escape(e.get('subject', ''))}' "
-        f"data-session='{html.escape(e.get('session_id', '') or '')}'>"
-        f"<td class='muted'>{html.escape(e.get('ts', ''))}</td>"
-        f"<td><span class='pill'>{html.escape(e.get('event', ''))}</span></td>"
-        f"<td><code>{html.escape(e.get('subject', ''))}</code></td>"
-        f"<td class='muted'>{html.escape(e.get('actor', ''))}</td>"
-        f"<td class='muted'>{html.escape((e.get('session_id') or '')[:24])}</td>"
-        f"<td class='muted'>{html.escape(json.dumps(e.get('meta', {}))[:100])}</td>"
-        f"</tr>"
-        for e in reversed(entries)
+    return _activity_page.render_logs(
+        layout=_layout,
+        read_jsonl=_read_jsonl,
+        audit_log_path=_audit_log_path,
     )
-    body = (
-        "<h1>Audit log</h1>"
-        f"<div class='card'>Showing last {len(entries)} of "
-        f"<code>~/.claude/ctx-audit.jsonl</code>. "
-        "<a href='/events'>Live stream →</a>"
-        "</div>"
-        "<div class='card'>"
-        "<input type='text' id='filter' placeholder='filter: event/subject/session…' "
-        "style='padding:0.35rem 0.6rem; width:20rem; border:1px solid #ccc; border-radius:4px;'>"
-        "<span class='muted' style='margin-left:0.75rem;'>"
-        "e.g. <code>skill.loaded</code>, <code>kubernetes-deployment</code>, or a session id</span>"
-        "</div>"
-        "<table id='logs'><tr><th>ts</th><th>event</th><th>subject</th>"
-        "<th>actor</th><th>session</th><th>meta</th></tr>" + rows + "</table>"
-        "<script>\n"
-        "const input = document.getElementById('filter');\n"
-        "const rows = document.querySelectorAll('#logs tr[data-event]');\n"
-        "input.addEventListener('input', () => {\n"
-        "  const q = input.value.toLowerCase();\n"
-        "  rows.forEach(r => {\n"
-        "    const hay = [r.dataset.event, r.dataset.subject, r.dataset.session].join(' ').toLowerCase();\n"
-        "    r.style.display = !q || hay.includes(q) ? '' : 'none';\n"
-        "  });\n"
-        "});\n"
-        "</script>"
-    )
-    return _layout("Audit log", body)
 
 
 # ─── Mutation endpoints ──────────────────────────────────────────────────────
