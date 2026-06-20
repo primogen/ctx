@@ -255,6 +255,62 @@ def test_pack_compaction_cli_compact_promote_one_shot(
     assert graph_store_is_fresh(store_path, wiki / "graphify-out") is True
 
 
+def test_pack_compaction_cli_validates_active_pack_sets(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+
+    rc = pack_compaction.main([
+        "validate",
+        "--wiki-path",
+        str(wiki),
+        "--json",
+    ])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["graph_nodes"] == 2
+    assert payload["graph_edges"] == 1
+    assert payload["wiki_pages"] == 2
+    assert payload["graph_pack_ids"] == ["base-export-1", "overlay-new"]
+    assert payload["base_export_id"] == "export-1"
+    assert payload["missing_wiki_pages"] == 0
+    assert payload["orphan_wiki_pages"] == 0
+
+
+def test_pack_compaction_cli_validates_staged_pack_sets_with_manifest(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+    staged = compact_active_pack_sets(
+        wiki_path=wiki,
+        base_export_id="export-2",
+        staging_dir=tmp_path / "staged-compaction",
+    )
+
+    rc = pack_compaction.main([
+        "validate",
+        "--staged-graph-packs-dir",
+        str(staged.staged_graph_packs_dir),
+        "--staged-wiki-packs-dir",
+        str(staged.staged_wiki_packs_dir),
+        "--require-compaction-manifest",
+        "--json",
+    ])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["graph_nodes"] == 2
+    assert payload["graph_edges"] == 1
+    assert payload["wiki_pages"] == 2
+    assert payload["graph_pack_ids"] == ["base-export-2"]
+    assert payload["base_export_id"] == "export-2"
+
+
 def test_promote_staged_pack_sets_rejects_invalid_staged_wiki_before_graph_swap(
     tmp_path: Path,
 ) -> None:

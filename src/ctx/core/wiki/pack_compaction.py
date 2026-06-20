@@ -218,6 +218,50 @@ def promote_staged_pack_sets(
     )
 
 
+def validate_pack_sets(
+    *,
+    graph_packs_dir: Path,
+    wiki_packs_dir: Path,
+    require_compaction_manifest: bool = False,
+) -> dict[str, object]:
+    """Validate merged graph/wiki packs without staging or promotion."""
+    graph_dir = Path(graph_packs_dir)
+    wiki_dir = Path(wiki_packs_dir)
+    try:
+        if require_compaction_manifest:
+            validate_pack_compaction_manifest(
+                staged_graph_packs_dir=graph_dir,
+                staged_wiki_packs_dir=wiki_dir,
+            )
+        graph = load_merged_pack_graph(graph_dir)
+        pages = load_merged_wiki_pages(wiki_dir)
+    except (GraphPackManifestError, WikiPackManifestError, ValueError) as exc:
+        raise PackCompactionError(str(exc)) from exc
+
+    errors: list[str] = []
+    if graph.number_of_nodes() == 0:
+        errors.append("graph packs do not contain a graph")
+    if not pages:
+        errors.append("wiki packs do not contain pages")
+    consistency = validate_graph_wiki_consistency(graph, pages)
+    errors.extend(consistency.errors())
+    if errors:
+        raise PackCompactionError("graph/wiki pack validation failed: " + "; ".join(errors))
+
+    pack_ids = graph.graph.get("ctx_pack_ids", [])
+    return {
+        "graph_packs_dir": str(graph_dir),
+        "wiki_packs_dir": str(wiki_dir),
+        "graph_nodes": graph.number_of_nodes(),
+        "graph_edges": graph.number_of_edges(),
+        "wiki_pages": len(pages),
+        "graph_pack_ids": pack_ids if isinstance(pack_ids, list) else [],
+        "base_export_id": graph.graph.get("ctx_pack_base_export_id"),
+        "missing_wiki_pages": len(consistency.missing_wiki_pages),
+        "orphan_wiki_pages": len(consistency.orphan_wiki_pages),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI for staging coordinated graph/wiki pack compaction."""
     parser = argparse.ArgumentParser(
@@ -279,6 +323,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip SQLite graph store refresh after pack promotion",
     )
     promote.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    validate = sub.add_parser(
+        "validate",
+        help="Validate active or staged graph/wiki packs without mutating them.",
+    )
+    validate.add_argument("--wiki-path", help="Path to the ctx wiki root for active packs")
+    validate.add_argument("--staged-graph-packs-dir", help="Staged graph packs root")
+    validate.add_argument("--staged-wiki-packs-dir", help="Staged wiki packs root")
+    validate.add_argument(
+        "--require-compaction-manifest",
+        action="store_true",
+        help="Require and validate pack-compaction-manifest.json beside staged roots",
+    )
+    validate.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args(argv)
 
     if args.command == "compact":
@@ -380,6 +437,37 @@ def main(argv: list[str] | None = None) -> int:
                 f"{', '.join(promotion_result.wiki.promoted_pack_ids)}"
             )
         return 0
+    if args.command == "validate":
+        try:
+            if args.staged_graph_packs_dir or args.staged_wiki_packs_dir:
+                if not args.staged_graph_packs_dir or not args.staged_wiki_packs_dir:
+                    parser.error("--staged-graph-packs-dir and --staged-wiki-packs-dir are required together")
+                graph_packs_dir = Path(args.staged_graph_packs_dir)
+                wiki_packs_dir = Path(args.staged_wiki_packs_dir)
+            elif args.wiki_path:
+                wiki_root = Path(args.wiki_path)
+                graph_packs_dir = wiki_root / "graphify-out" / "packs"
+                wiki_packs_dir = wiki_root / "wiki-packs"
+            else:
+                parser.error("validate requires --wiki-path or both staged pack dirs")
+            validation_result = validate_pack_sets(
+                graph_packs_dir=graph_packs_dir,
+                wiki_packs_dir=wiki_packs_dir,
+                require_compaction_manifest=args.require_compaction_manifest,
+            )
+        except PackCompactionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(validation_result, indent=2, sort_keys=True))
+        else:
+            print(
+                "validated graph/wiki packs: "
+                f"{validation_result['graph_nodes']} graph nodes, "
+                f"{validation_result['graph_edges']} graph edges, "
+                f"{validation_result['wiki_pages']} wiki pages"
+            )
+        return 0
     return 1
 
 
@@ -410,24 +498,11 @@ def _validate_staged_pack_roots(
     staged_graph_packs_dir: Path,
     staged_wiki_packs_dir: Path,
 ) -> None:
-    try:
-        validate_pack_compaction_manifest(
-            staged_graph_packs_dir=staged_graph_packs_dir,
-            staged_wiki_packs_dir=staged_wiki_packs_dir,
-        )
-        graph = load_merged_pack_graph(staged_graph_packs_dir)
-        pages = load_merged_wiki_pages(staged_wiki_packs_dir)
-    except (GraphPackManifestError, WikiPackManifestError, ValueError) as exc:
-        raise PackCompactionError(str(exc)) from exc
-    if graph.number_of_nodes() == 0:
-        raise PackCompactionError("staged graph packs do not contain a graph")
-    if not pages:
-        raise PackCompactionError("staged wiki packs do not contain pages")
-    consistency = validate_graph_wiki_consistency(graph, pages)
-    if not consistency.ok:
-        raise PackCompactionError(
-            "graph/wiki consistency failed: " + "; ".join(consistency.errors())
-        )
+    validate_pack_sets(
+        graph_packs_dir=staged_graph_packs_dir,
+        wiki_packs_dir=staged_wiki_packs_dir,
+        require_compaction_manifest=True,
+    )
 
 
 def _restore_graph_packs_after_partial_promotion(result: GraphPackPromotion) -> None:
