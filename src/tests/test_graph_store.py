@@ -187,6 +187,35 @@ def test_build_graph_store_from_graph_dir_prefers_active_packs(tmp_path: Path) -
     assert graph_store_is_fresh(db_path, graph_dir) is False
 
 
+def test_graph_store_freshness_tracks_full_pack_manifest_drift(
+    tmp_path: Path,
+) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    packs_dir = graph_dir / "packs"
+    base_graph = nx.Graph()
+    base_graph.add_node("skill:base", label="base", type="skill", tags=["base"])
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=base_graph,
+    )
+    db_path = tmp_path / "graph.sqlite3"
+    ensure_graph_store(graph_dir, db_path)
+
+    manifest_path = packs_dir / "base-export-1" / "graph-pack-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["node_count"] = 2
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    assert graph_store_is_fresh(db_path, graph_dir) is False
+
+
 def test_graph_store_freshness_tracks_entity_overlay_file_with_packs(
     tmp_path: Path,
 ) -> None:

@@ -341,16 +341,7 @@ def _graph_dir_source_metadata(graph_dir: Path) -> dict[str, str]:
         entries = discover_pack_manifests(packs_dir)
         if entries:
             pack_ids = [entry.manifest.pack_id for entry in entries]
-            pack_payload = [
-                {
-                    "pack_id": entry.manifest.pack_id,
-                    "pack_type": entry.manifest.pack_type,
-                    "base_export_id": entry.manifest.base_export_id,
-                    "parent_export_id": entry.manifest.parent_export_id,
-                    "checksums": entry.manifest.checksums,
-                }
-                for entry in entries
-            ]
+            pack_payload = [entry.manifest.to_mapping() for entry in entries]
             return {
                 "ctx_graph_store_source": "packs",
                 "ctx_graph_store_fingerprint": _fingerprint_payload(pack_payload),
