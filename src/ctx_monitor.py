@@ -81,7 +81,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
-from ctx import dashboard_docs, dashboard_entities, dashboard_graph
+from ctx import dashboard_entities, dashboard_graph
 from ctx.core import entity_types as core_entity_types
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
@@ -89,6 +89,7 @@ from ctx.monitor.layout import layout as _layout
 from ctx.monitor.layout import monitor_asset_text as _monitor_asset_text
 from ctx.monitor.layout import monitor_inline_script as _monitor_inline_script
 from ctx.monitor import state as _monitor_state
+from ctx.monitor.pages import docs as _docs_page
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
 from ctx.utils._fs_utils import safe_atomic_write_text as _safe_atomic_write_text
@@ -6149,23 +6150,23 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
 
 
 def _docs_roots() -> list[Path]:
-    return dashboard_docs.docs_roots(Path.cwd(), Path(__file__).resolve().parent.parent)
+    return _docs_page.docs_roots(Path.cwd(), Path(__file__).resolve().parent.parent)
 
 
 def _docs_render_disk_cache_path() -> Path:
-    return dashboard_docs.docs_render_disk_cache_path(_claude_dir())
+    return _docs_page.docs_render_disk_cache_path(_claude_dir())
 
 
 def _docs_index_entries() -> list[dict[str, Any]]:
-    return dashboard_docs.docs_index_entries(_docs_roots())
+    return _docs_page.docs_index_entries(_docs_roots())
 
 
 def _docs_tabs(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return dashboard_docs.docs_tabs(entries, _docs_roots())
+    return _docs_page.docs_tabs(entries, _docs_roots())
 
 
 def _render_docs_markdown(markdown_text: str, page_anchor: str) -> str:
-    return dashboard_docs.render_docs_markdown(
+    return _docs_page.render_docs_markdown(
         markdown_text,
         page_anchor,
         fallback_renderer=_render_wiki_markdown,
@@ -6173,7 +6174,7 @@ def _render_docs_markdown(markdown_text: str, page_anchor: str) -> str:
 
 
 def _render_docs() -> str:
-    return dashboard_docs.render_docs(
+    return _docs_page.render_docs(
         roots=_docs_roots(),
         layout=_layout,
         asset_text=_monitor_asset_text,
