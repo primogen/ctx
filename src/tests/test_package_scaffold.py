@@ -36,6 +36,8 @@ _EXPECTED_SUBPACKAGES: tuple[str, ...] = (
     "ctx.adapters.generic.providers",
     "ctx.adapters.generic.tools",
     "ctx.cli",
+    "ctx.monitor",
+    "ctx.monitor.pages",
     "ctx.mcp_server",
     "ctx.utils",
 )
