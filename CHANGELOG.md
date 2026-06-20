@@ -7,6 +7,26 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.15] - 2026-06-20
+
+### Added
+
+- Added modular graph and wiki pack manifests with immutable base packs,
+  overlay packs, tombstones, and compaction/promotion validation so normal
+  entity updates no longer require treating one monolithic graph/wiki tarball
+  as the only source of truth.
+- Added the SQLite graph-store fast path for dashboard/search/neighborhood
+  reads, plus queue-driven pack compaction and status reporting in the local
+  monitor.
+- Added Skillspector release artifacts and audit/remediation services so the
+  shipped catalog can surface stale, low-quality, or oversized skill records
+  with explicit evidence.
+
+### Fixed
+
+- Fixed the post-merge dashboard pack-compaction status typing so the full
+  package mypy gate passes on the modular graph release branch.
+
 ## [1.0.14] - 2026-06-17
 
 ### Fixed
@@ -1658,6 +1678,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.15]: https://github.com/stevesolun/ctx/releases/tag/v1.0.15
 [1.0.14]: https://github.com/stevesolun/ctx/releases/tag/v1.0.14
 [1.0.13]: https://github.com/stevesolun/ctx/releases/tag/v1.0.13
 [1.0.12]: https://github.com/stevesolun/ctx/releases/tag/v1.0.12
