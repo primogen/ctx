@@ -18,6 +18,7 @@ from ctx.core.wiki import pack_compaction
 from ctx.core.wiki.pack_compaction import (
     PackCompactionError,
     compact_active_pack_sets,
+    pack_compaction_status,
     promote_staged_pack_sets,
 )
 from ctx.core.wiki.wiki_packs import (
@@ -132,6 +133,61 @@ def test_pack_compaction_cli_emits_json_for_staged_pack_sets(
     assert payload["staged_wiki_packs_dir"] == str(staging_dir / "wiki-packs")
     assert "skill:old" not in load_merged_pack_graph(staging_dir / "graph-packs")
     assert "entities/skills/old.md" not in load_merged_wiki_pages(staging_dir / "wiki-packs")
+
+
+def test_pack_compaction_status_reports_overlay_threshold(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+
+    default_status = pack_compaction_status(wiki_path=wiki)
+    assert default_status["overlay_threshold"] == 25
+    assert default_status["needs_compaction"] is False
+
+    status = pack_compaction_status(
+        wiki_path=wiki,
+        overlay_threshold=1,
+    )
+
+    assert status["base_export_id"] == "export-1"
+    assert status["graph_overlay_count"] == 1
+    assert status["wiki_overlay_count"] == 1
+    assert status["max_overlay_count"] == 1
+    assert status["overlay_threshold"] == 1
+    assert status["needs_compaction"] is True
+    assert status["can_compact_now"] is True
+    assert status["graph_pack_ids"] == ["base-export-1", "overlay-new"]
+    assert status["wiki_pack_ids"] == ["base-export-1", "overlay-new"]
+    validation = status["validation"]
+    assert isinstance(validation, dict)
+    assert validation["graph_nodes"] == 2
+    assert validation["wiki_pages"] == 2
+
+
+def test_pack_compaction_cli_status_emits_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+
+    rc = pack_compaction.main([
+        "status",
+        "--wiki-path",
+        str(wiki),
+        "--overlay-threshold",
+        "2",
+        "--json",
+    ])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["base_export_id"] == "export-1"
+    assert payload["max_overlay_count"] == 1
+    assert payload["overlay_threshold"] == 2
+    assert payload["needs_compaction"] is False
+    assert payload["can_compact_now"] is True
 
 
 def test_promote_staged_pack_sets_replaces_graph_and_wiki_with_backups(

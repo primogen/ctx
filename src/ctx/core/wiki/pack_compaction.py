@@ -11,24 +11,29 @@ import argparse
 import json
 import shutil
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ctx.core.graph.graph_packs import (
+    GraphPackEntry,
     GraphPackManifest,
     GraphPackManifestError,
     GraphPackPromotion,
     compact_graph_packs,
+    discover_pack_manifests,
     load_merged_pack_graph,
     promote_graph_pack_set,
 )
 from ctx.core.graph.graph_store import ensure_graph_store
 from ctx.core.wiki.wiki_packs import (
+    WikiPackEntry,
     WikiPackManifest,
     WikiPackManifestError,
     WikiPackPromotion,
     compact_wiki_packs,
+    discover_wiki_pack_manifests,
     load_merged_wiki_pages,
     promote_wiki_pack_set,
 )
@@ -94,6 +99,74 @@ class PackPromotionResult:
             "wiki": self.wiki.to_mapping(),
             "graph_store": self.graph_store,
         }
+
+
+def pack_compaction_status(
+    *,
+    wiki_path: Path,
+    overlay_threshold: int | None = None,
+    validate: bool = True,
+) -> dict[str, object]:
+    """Return read-only operational status for active graph/wiki pack sets."""
+    threshold = _normalise_overlay_threshold(
+        overlay_threshold if overlay_threshold is not None else _default_overlay_threshold()
+    )
+    wiki_root = Path(wiki_path)
+    graph_packs_dir = wiki_root / "graphify-out" / "packs"
+    wiki_packs_dir = wiki_root / "wiki-packs"
+    try:
+        graph_entries = discover_pack_manifests(graph_packs_dir)
+        wiki_entries = discover_wiki_pack_manifests(wiki_packs_dir)
+    except (GraphPackManifestError, WikiPackManifestError) as exc:
+        raise PackCompactionError(str(exc)) from exc
+
+    graph_overlays = _overlay_count(graph_entries)
+    wiki_overlays = _overlay_count(wiki_entries)
+    max_overlays = max(graph_overlays, wiki_overlays)
+    validation_result: dict[str, object] | None = None
+    if validate and graph_entries and wiki_entries:
+        validation_result = validate_pack_sets(
+            graph_packs_dir=graph_packs_dir,
+            wiki_packs_dir=wiki_packs_dir,
+        )
+
+    graph_base_export_id = (
+        graph_entries[0].manifest.base_export_id if graph_entries else None
+    )
+    wiki_base_export_id = (
+        wiki_entries[0].manifest.base_export_id if wiki_entries else None
+    )
+    base_export_id = (
+        graph_base_export_id
+        if graph_base_export_id == wiki_base_export_id
+        else None
+    )
+    can_compact_now = bool(
+        graph_entries
+        and wiki_entries
+        and graph_overlays > 0
+        and wiki_overlays > 0
+        and base_export_id is not None
+    )
+    return {
+        "wiki_path": str(wiki_root),
+        "graph_packs_dir": str(graph_packs_dir),
+        "wiki_packs_dir": str(wiki_packs_dir),
+        "base_export_id": base_export_id,
+        "graph_base_export_id": graph_base_export_id,
+        "wiki_base_export_id": wiki_base_export_id,
+        "graph_pack_ids": [entry.manifest.pack_id for entry in graph_entries],
+        "wiki_pack_ids": [entry.manifest.pack_id for entry in wiki_entries],
+        "graph_pack_count": len(graph_entries),
+        "wiki_pack_count": len(wiki_entries),
+        "graph_overlay_count": graph_overlays,
+        "wiki_overlay_count": wiki_overlays,
+        "max_overlay_count": max_overlays,
+        "overlay_threshold": threshold,
+        "needs_compaction": max_overlays >= threshold,
+        "can_compact_now": can_compact_now,
+        "validation": validation_result,
+    }
 
 
 def compact_active_pack_sets(
@@ -270,6 +343,22 @@ def main(argv: list[str] | None = None) -> int:
         description="Stage compacted ctx graph and LLM-wiki base packs.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    status = sub.add_parser(
+        "status",
+        help="Report active graph/wiki overlay counts and compaction readiness.",
+    )
+    status.add_argument("--wiki-path", required=True, help="Path to the ctx wiki root")
+    status.add_argument(
+        "--overlay-threshold",
+        type=int,
+        help="Override graph.pack_compaction.overlay_threshold for this check",
+    )
+    status.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="Skip merged graph/wiki validation and report counts only",
+    )
+    status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     compact = sub.add_parser(
         "compact",
         help="Stage compacted graph/wiki base packs without mutating active packs.",
@@ -339,6 +428,27 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args(argv)
 
+    if args.command == "status":
+        try:
+            status_result = pack_compaction_status(
+                wiki_path=Path(args.wiki_path),
+                overlay_threshold=args.overlay_threshold,
+                validate=not args.no_validate,
+            )
+        except PackCompactionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(status_result, indent=2, sort_keys=True))
+        else:
+            state = "recommended" if status_result["needs_compaction"] else "not needed"
+            print(
+                "graph/wiki pack compaction status: "
+                f"{status_result['max_overlay_count']} overlays "
+                f"(threshold {status_result['overlay_threshold']}); "
+                f"compaction {state}"
+            )
+        return 0
     if args.command == "compact":
         try:
             compact_result = compact_active_pack_sets(
@@ -475,6 +585,25 @@ def main(argv: list[str] | None = None) -> int:
 def _pack_id(base_export_id: str) -> str:
     value = base_export_id.strip()
     return value if value.startswith("base-") else f"base-{value}"
+
+
+def _default_overlay_threshold() -> int:
+    from ctx_config import cfg  # noqa: PLC0415
+
+    return int(cfg.graph_pack_compaction_overlay_threshold)
+
+
+def _normalise_overlay_threshold(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise PackCompactionError(
+            "overlay_threshold must be an integer >= 1 "
+            f"(got {value!r})"
+        )
+    return value
+
+
+def _overlay_count(entries: Iterable[GraphPackEntry | WikiPackEntry]) -> int:
+    return sum(1 for entry in entries if entry.manifest.pack_type == "overlay")
 
 
 def _default_graph_store_db(wiki_path: Path) -> Path:
