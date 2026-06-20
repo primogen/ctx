@@ -6,6 +6,8 @@ import html
 import json
 from importlib.resources import files
 
+from ctx.monitor.routes import NAV_ROUTES
+
 
 def monitor_asset_text(name: str) -> str:
     """Read a packaged dashboard asset."""
@@ -21,32 +23,14 @@ _CSS = monitor_asset_text("monitor.css")
 
 def layout(title: str, body: str) -> str:
     """Wrap body HTML in the standard page chrome."""
-    nav_items = (
-        ("home", "Home", "/"),
-        ("loaded", "Loaded", "/loaded"),
-        ("skills", "Skills", "/skills"),
-        ("skillspector", "SkillSpector", "/skillspector"),
-        ("wiki", "Wiki", "/wiki"),
-        ("graph", "Graph", "/graph"),
-        ("manage", "Manage", "/manage"),
-        ("harness", "Harness Setup", "/harness"),
-        ("docs", "Docs", "/docs"),
-        ("config", "Config", "/config"),
-        ("status", "Status", "/status"),
-        ("kpi", "KPIs", "/kpi"),
-        ("runtime", "Runtime", "/runtime"),
-        ("sessions", "Sessions", "/sessions"),
-        ("logs", "Logs", "/logs"),
-        ("events", "Live", "/events"),
-    )
     nav_html = "".join(
         f"<a href='{html.escape(href)}' data-nav-key='{html.escape(key)}' "
         "draggable='true' title='Drag to reorder dashboard tabs'>"
         f"{html.escape(label)}</a>"
-        for key, label, href in nav_items
+        for key, label, href in NAV_ROUTES
     )
     nav_default_keys = html.escape(
-        json.dumps([key for key, _label, _href in nav_items]),
+        json.dumps([key for key, _label, _href in NAV_ROUTES]),
         quote=True,
     )
     return (
