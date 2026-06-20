@@ -164,6 +164,31 @@ def _write_entity_overlay(graph_dir: Path) -> None:
     )
 
 
+def _write_test_graph_pack(graph_dir: Path, *, export_id: str) -> Path:
+    graph = nx.Graph()
+    graph.add_node(
+        "skill:skills-sh-example-skill",
+        type="skill",
+        source_catalog="skills.sh",
+    )
+    graph.add_node("harness:langgraph", type="harness")
+    graph.add_edge(
+        "skill:skills-sh-example-skill",
+        "harness:langgraph",
+        semantic_sim=0.91,
+    )
+    pack_root = graph_dir / f"graph-pack-source-{export_id}"
+    write_base_pack(
+        pack_dir=pack_root / f"base-{export_id}",
+        pack_id=f"base-{export_id}",
+        base_export_id=export_id,
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=graph,
+    )
+    return pack_root
+
+
 def _write_runtime_archive(
     graph_dir: Path,
     *,
@@ -608,6 +633,44 @@ def test_validate_graph_artifacts_accepts_full_graph_pack_payload(
     assert stats.graph_nodes == 2
     assert stats.graph_edges == 1
     assert stats.graph_semantic_edges == 1
+
+
+def test_validate_graph_artifacts_rejects_runtime_graph_pack_export_id_drift(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    _write_runtime_archive(
+        tmp_path,
+        graph={"graph": {"export_id": "export-test"}, "nodes": [], "edges": []},
+        graph_pack_dir=_write_test_graph_pack(tmp_path, export_id="wrong-export"),
+    )
+
+    with pytest.raises(GraphArtifactError, match="graph export_id mismatch"):
+        validate_graph_artifacts(tmp_path, expected_harnesses={"langgraph"})
+
+
+def test_validate_graph_artifacts_rejects_full_graph_pack_export_id_drift(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(
+        tmp_path,
+        graph_pack_dir=_write_test_graph_pack(tmp_path, export_id="wrong-export"),
+    )
+    _write_runtime_archive(
+        tmp_path,
+        graph={"graph": {"export_id": "export-test"}, "nodes": [], "edges": []},
+    )
+
+    with pytest.raises(GraphArtifactError, match="graph export_id mismatch"):
+        validate_graph_artifacts(tmp_path, expected_harnesses={"langgraph"})
 
 
 def test_validate_graph_artifacts_rejects_mixed_export_generation(

@@ -336,14 +336,20 @@ def _record_graph_pack_export_id(
     *,
     context: str,
 ) -> None:
-    if _GRAPH_PAYLOAD_NAME in export_ids:
-        return
+    if not any(name.startswith(_GRAPH_PACK_PREFIX) for name in names):
+        if _GRAPH_PAYLOAD_NAME in export_ids:
+            return
+        raise GraphArtifactError(
+            f"{context} is missing graph payload: graphify-out/graph.json or graphify-out/packs",
+        )
     *_, export_id = _scan_graph_pack_payload(
         names,
         packs_dir,
         deep=False,
         context=context,
     )
+    if export_id is None:
+        return
     _record_export_id(export_ids, "graphify-out/packs", export_id)
 
 
@@ -985,6 +991,13 @@ def validate_graph_artifacts(
                 context="wiki graph archive",
             )
             _record_export_id(export_ids, "graphify-out/packs", graph_export_id)
+        else:
+            _record_graph_pack_export_id(
+                export_ids,
+                names,
+                graph_packs_dir,
+                context="wiki graph archive",
+            )
     finally:
         graph_pack_tmp.cleanup()
     try:
