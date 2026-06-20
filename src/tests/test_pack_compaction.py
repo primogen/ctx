@@ -278,6 +278,7 @@ def test_pack_compaction_cli_validates_active_pack_sets(
     assert payload["base_export_id"] == "export-1"
     assert payload["missing_wiki_pages"] == 0
     assert payload["orphan_wiki_pages"] == 0
+    assert payload["stale_wiki_links"] == 0
 
 
 def test_pack_compaction_cli_validates_staged_pack_sets_with_manifest(
@@ -309,6 +310,32 @@ def test_pack_compaction_cli_validates_staged_pack_sets_with_manifest(
     assert payload["wiki_pages"] == 2
     assert payload["graph_pack_ids"] == ["base-export-2"]
     assert payload["base_export_id"] == "export-2"
+
+
+def test_pack_compaction_validate_rejects_stale_entity_wikilinks(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    wiki = tmp_path / "wiki"
+    _write_active_pack_sets(wiki)
+    write_wiki_overlay_pack(
+        pack_dir=wiki / "wiki-packs" / "overlay-z-stale-link",
+        pack_id="overlay-z-stale-link",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        pages={"entities/skills/new.md": "# New\n\n[[entities/skills/missing]]\n"},
+        tombstones=[],
+    )
+
+    rc = pack_compaction.main([
+        "validate",
+        "--wiki-path",
+        str(wiki),
+        "--json",
+    ])
+
+    assert rc == 1
+    assert "stale wiki links: 1" in capsys.readouterr().err
 
 
 def test_promote_staged_pack_sets_rejects_invalid_staged_wiki_before_graph_swap(

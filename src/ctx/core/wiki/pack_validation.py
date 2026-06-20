@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,11 +24,16 @@ class GraphWikiConsistencyReport:
 
     missing_wiki_pages: list[dict[str, object]]
     orphan_wiki_pages: list[dict[str, str]]
+    stale_wiki_links: list[dict[str, str]]
 
     @property
     def ok(self) -> bool:
         """Return whether the merged graph and wiki entity views agree."""
-        return not self.missing_wiki_pages and not self.orphan_wiki_pages
+        return (
+            not self.missing_wiki_pages
+            and not self.orphan_wiki_pages
+            and not self.stale_wiki_links
+        )
 
     def errors(self) -> list[str]:
         """Return human-readable validation errors."""
@@ -36,6 +42,8 @@ class GraphWikiConsistencyReport:
             errors.append(f"missing wiki pages: {len(self.missing_wiki_pages)}")
         if self.orphan_wiki_pages:
             errors.append(f"orphan wiki pages: {len(self.orphan_wiki_pages)}")
+        if self.stale_wiki_links:
+            errors.append(f"stale wiki links: {len(self.stale_wiki_links)}")
         return errors
 
 
@@ -65,6 +73,7 @@ def validate_graph_wiki_consistency(
     return GraphWikiConsistencyReport(
         missing_wiki_pages=missing,
         orphan_wiki_pages=orphan_pages,
+        stale_wiki_links=_stale_entity_wikilinks(pages, normalised_pages, graph_node_ids),
     )
 
 
@@ -176,6 +185,47 @@ def _node_id_for_entity_page(relpath: str) -> str | None:
     if subject == "mcp-servers" and len(parts) in {3, 4}:
         return f"mcp-server:{slug}"
     return None
+
+
+_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
+
+
+def _stale_entity_wikilinks(
+    pages: dict[str, str],
+    known_pages: set[str],
+    known_node_ids: set[str],
+) -> list[dict[str, str]]:
+    stale: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for source_path, text in sorted(pages.items()):
+        normalised_source = _normalise_relpath(source_path)
+        for match in _WIKILINK_RE.finditer(text):
+            target = _normalise_wikilink_target(match.group(1))
+            node_id = _node_id_for_entity_page(target)
+            if node_id is None:
+                continue
+            if target not in known_pages:
+                reason = "missing page"
+            elif node_id not in known_node_ids:
+                reason = "missing graph node"
+            else:
+                continue
+            key = (normalised_source, target, reason)
+            if key in seen:
+                continue
+            seen.add(key)
+            stale.append({
+                "source_path": normalised_source,
+                "target": target,
+                "expected_node_id": node_id,
+                "reason": reason,
+            })
+    return stale
+
+
+def _normalise_wikilink_target(target: str) -> str:
+    relpath = _normalise_relpath(target)
+    return relpath if relpath.endswith(".md") else f"{relpath}.md"
 
 
 def _normalise_relpath(path: str) -> str:

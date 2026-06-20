@@ -259,6 +259,7 @@ def validate_pack_sets(
         "base_export_id": graph.graph.get("ctx_pack_base_export_id"),
         "missing_wiki_pages": len(consistency.missing_wiki_pages),
         "orphan_wiki_pages": len(consistency.orphan_wiki_pages),
+        "stale_wiki_links": len(consistency.stale_wiki_links),
     }
 
 
