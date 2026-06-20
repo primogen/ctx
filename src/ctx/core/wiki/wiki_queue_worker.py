@@ -35,6 +35,7 @@ _ENTITY_SUBJECT_TYPES = {
     "harness": "harnesses",
 }
 _DEFAULT_ATTACH_MIN_FINAL_WEIGHT = 0.03
+_VECTOR_INDEX_META_NAME = "vector-index.meta.json"
 MaintenanceHandler = Callable[[Path, dict[str, Any]], str]
 
 
@@ -285,7 +286,7 @@ def _try_incremental_attach(
 ) -> _AttachOutcome:
     node_id = f"{entity_type}:{slug}"
     index_dir = _semantic_vector_index_dir(wiki_path)
-    if not (index_dir / "vector-index.meta.json").is_file():
+    if not (index_dir / _VECTOR_INDEX_META_NAME).is_file():
         node_pack_status = _try_graph_pack_node_upsert(
             wiki_path=wiki_path,
             node_id=node_id,
@@ -314,6 +315,7 @@ def _try_incremental_attach(
             top_k=int(cfg.graph_semantic_top_k),
             min_score=float(cfg.graph_semantic_build_floor),
             min_final_weight=_DEFAULT_ATTACH_MIN_FINAL_WEIGHT,
+            delta_index_dirs=_semantic_vector_delta_index_dirs(wiki_path),
             **_graph_pack_attach_kwargs(wiki_path),
         )
     except Exception as exc:  # noqa: BLE001 - attach is derived, not source of truth.
@@ -415,6 +417,16 @@ def _semantic_vector_index_dir(wiki_path: Path) -> Path:
     if wiki_resolved != cfg_wiki_resolved and configured_resolved == default_resolved:
         return Path(wiki_path) / ".embedding-cache" / "graph" / "vector-index"
     return configured / "vector-index"
+
+
+def _semantic_vector_delta_index_dirs(wiki_path: Path) -> list[Path]:
+    delta_root = _semantic_vector_index_dir(wiki_path).with_name("vector-index-deltas")
+    if not delta_root.is_dir():
+        return []
+    return sorted(
+        path for path in delta_root.iterdir()
+        if path.is_dir() and (path / _VECTOR_INDEX_META_NAME).is_file()
+    )
 
 
 def _extract_frontmatter_tags(text: str) -> list[str]:

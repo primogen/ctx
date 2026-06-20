@@ -205,8 +205,53 @@ def test_process_next_entity_upsert_runs_incremental_attach_when_index_exists(
             "top_k": 20,
             "min_score": 0.5,
             "min_final_weight": 0.03,
+            "delta_index_dirs": [],
         }
     ]
+
+
+def test_process_next_entity_upsert_passes_delta_index_dirs_when_present(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    entity_text = "---\ntags:\n  - testing\n---\n# alpha\n"
+    entity_path = _write_entity(wiki, "entities/skills/alpha.md", entity_text)
+    index_dir = wiki / ".embedding-cache" / "graph" / "vector-index"
+    index_dir.mkdir(parents=True)
+    (index_dir / "vector-index.meta.json").write_text("{}", encoding="utf-8")
+    delta_root = wiki / ".embedding-cache" / "graph" / "vector-index-deltas"
+    delta_b = delta_root / "b-delta"
+    delta_a = delta_root / "a-delta"
+    ignored_delta = delta_root / "ignored-delta"
+    for delta_dir in (delta_b, delta_a):
+        delta_dir.mkdir(parents=True)
+        (delta_dir / "vector-index.meta.json").write_text("{}", encoding="utf-8")
+    ignored_delta.mkdir(parents=True)
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="alpha",
+        entity_path=entity_path,
+        content=entity_text,
+        action="created",
+        source="test",
+        now=10.0,
+    )
+    monkeypatch.setattr(wiki_queue_worker, "update_index", MagicMock())
+    calls: list[dict[str, Any]] = []
+
+    def fake_attach_entity(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"status": "inserted", "record": {}}
+
+    monkeypatch.setattr(wiki_queue_worker, "attach_entity", fake_attach_entity)
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert calls[0]["delta_index_dirs"] == [delta_a, delta_b]
 
 
 def test_process_next_entity_upsert_real_attach_writes_active_overlay_and_resolver_sees_it(
