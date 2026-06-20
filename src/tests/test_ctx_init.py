@@ -17,6 +17,7 @@ import networkx as nx
 import pytest
 import ctx_init as ci
 from ctx.core.graph.graph_packs import write_base_pack
+from ctx.core.graph.graph_store import validate_graph_store
 from ctx.core.wiki.wiki_packs import write_wiki_base_pack
 
 
@@ -927,6 +928,30 @@ def test_runtime_graph_install_extracts_and_validates_graph_packs(
         wiki / "graphify-out" / "packs" / "base-test-export" / "graph-pack-manifest.json"
     ).is_file()
     ci._validate_graph_install_tree(wiki)
+
+
+def test_build_graph_refreshes_operational_graph_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = _write_graph_archive(tmp_path, include_graph_pack=True)
+    claude = tmp_path / "home"
+    monkeypatch.setattr(
+        ci,
+        "_find_local_graph_archive",
+        lambda _install_mode="runtime": archive,
+    )
+    monkeypatch.setattr(ci, "_verify_local_graph_archive", lambda *_a, **_k: None)
+    monkeypatch.setattr(ci, "_install_graph_entity_overlay", lambda *_a, **_k: None)
+
+    assert ci.build_graph(claude) == 0
+    graph_dir = claude / "skill-wiki" / "graphify-out"
+    store = graph_dir / "graph-store.sqlite3"
+    assert validate_graph_store(store, graph_dir)["ok"] is True
+
+    store.unlink()
+    assert ci.build_graph(claude) == 0
+    assert validate_graph_store(store, graph_dir)["ok"] is True
 
 
 def test_graph_install_rejects_mismatched_graph_pack_export_id(

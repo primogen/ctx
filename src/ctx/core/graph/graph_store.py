@@ -10,7 +10,8 @@ import argparse
 import hashlib
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -348,12 +349,20 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+@contextmanager
+def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _metadata_rows(

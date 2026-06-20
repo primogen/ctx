@@ -313,9 +313,10 @@ def build_graph(
                 wiki_dir,
                 allow_release_download=graph_url is None,
             )
+            _refresh_graph_store(wiki_dir)
         except Exception as exc:
             print(
-                f"  [error] graph overlay install failed: {type(exc).__name__}: {exc}",
+                f"  [error] graph overlay/store refresh failed: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             return 1
@@ -357,6 +358,7 @@ def build_graph(
 
     try:
         _validate_graph_install_tree(wiki_dir)
+        _refresh_graph_store(wiki_dir)
     except ValueError as exc:
         print(f"  [error] graph install validation failed: {exc}", file=sys.stderr)
         return 1
@@ -675,6 +677,26 @@ def _wiki_packs_have_full_entities(packs_dir: Path) -> bool:
         "entities/mcp-servers/",
     )
     return any(path.startswith(full_prefixes) and path.endswith(".md") for path in pages)
+
+
+def _refresh_graph_store(wiki_dir: Path) -> None:
+    graph_dir = wiki_dir / "graphify-out"
+    db_path = graph_dir / "graph-store.sqlite3"
+    try:
+        from ctx.core.graph.graph_store import (  # noqa: PLC0415
+            ensure_graph_store,
+            validate_graph_store,
+        )
+
+        ensure_graph_store(graph_dir, db_path)
+        report = validate_graph_store(db_path, graph_dir)
+    except Exception as exc:
+        raise ValueError(f"graph-store.sqlite3 refresh failed: {exc}") from exc
+    if not report.get("ok"):
+        raise ValueError(
+            "graph-store.sqlite3 validation failed: "
+            f"{report.get('errors', [])}",
+        )
 
 
 def _validate_graph_install_tree(wiki_dir: Path) -> None:
