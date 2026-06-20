@@ -7,6 +7,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.16] - 2026-06-20
+
+### Fixed
+
+- Fixed `ctx-init --graph` for the large runtime graph artifact shipped in
+  `v1.0.15`. The installer now scans large `graph.json` files for required
+  node-link keys without parsing the whole graph, so first-time PyPI installs
+  can validate and install the released runtime graph.
+- Supersedes `v1.0.15` for public install flows because `v1.0.15` published
+  successfully but the public smoke exposed a runtime graph validation false
+  negative.
+
 ## [1.0.15] - 2026-06-20
 
 ### Added
@@ -1678,6 +1690,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.16]: https://github.com/stevesolun/ctx/releases/tag/v1.0.16
 [1.0.15]: https://github.com/stevesolun/ctx/releases/tag/v1.0.15
 [1.0.14]: https://github.com/stevesolun/ctx/releases/tag/v1.0.14
 [1.0.13]: https://github.com/stevesolun/ctx/releases/tag/v1.0.13
