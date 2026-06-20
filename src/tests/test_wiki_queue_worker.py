@@ -24,7 +24,7 @@ from ctx.core.graph.graph_packs import (
 )
 from ctx.core.graph.graph_store import graph_store_metadata, validate_graph_store
 from ctx.core.graph.resolve_graph import load_graph, resolve_by_seeds
-from ctx.core.graph.vector_index import build_vector_index
+from ctx.core.graph.vector_index import build_vector_index, load_vector_index
 from ctx.core.wiki import wiki_queue, wiki_queue_worker
 from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack
 
@@ -206,6 +206,9 @@ def test_process_next_entity_upsert_runs_incremental_attach_when_index_exists(
             "min_score": 0.5,
             "min_final_weight": 0.03,
             "delta_index_dirs": [],
+            "delta_index_write_dir": (
+                wiki / ".embedding-cache" / "graph" / "vector-index-deltas" / "local-skill"
+            ),
         }
     ]
 
@@ -252,6 +255,9 @@ def test_process_next_entity_upsert_passes_delta_index_dirs_when_present(
     assert result is not None
     assert result.status == wiki_queue.STATUS_SUCCEEDED
     assert calls[0]["delta_index_dirs"] == [delta_a, delta_b]
+    assert calls[0]["delta_index_write_dir"] == (
+        wiki / ".embedding-cache" / "graph" / "vector-index-deltas" / "local-skill"
+    )
 
 
 def test_process_next_entity_upsert_real_attach_writes_active_overlay_and_resolver_sees_it(
@@ -314,6 +320,70 @@ def test_process_next_entity_upsert_real_attach_writes_active_overlay_and_resolv
     assert graph.has_edge("skill:worker-python", "skill:python-testing")
     resolved = resolve_by_seeds(graph, ["python-testing"], max_hops=1, top_n=5)
     assert any(item["name"] == "worker-python" for item in resolved)
+
+
+def test_process_next_entity_upsert_delta_index_feeds_next_attach(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_path = _write_base_graph_for_overlay(wiki)
+    _build_vector_index_for_overlay(wiki)
+    monkeypatch.setattr(wiki_queue_worker, "update_index", MagicMock())
+    _patch_test_embedder(monkeypatch)
+
+    first_text = "---\ntags:\n  - python\n  - testing\n---\n# first-worker\n"
+    first_path = _write_entity(wiki, "entities/skills/first-worker.md", first_text)
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="first-worker",
+        entity_path=first_path,
+        content=first_text,
+        action="created",
+        source="test",
+        now=10.0,
+    )
+    first = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+    assert first is not None
+    assert first.status == wiki_queue.STATUS_SUCCEEDED
+
+    delta_dir = wiki / ".embedding-cache" / "graph" / "vector-index-deltas" / "local-skill"
+    delta_meta = json.loads((delta_dir / "vector-index.meta.json").read_text(encoding="utf-8"))
+    delta_index = load_vector_index(
+        delta_dir,
+        expected_model_id="test-model",
+        expected_content_fingerprint=delta_meta["content_fingerprint"],
+    )
+    assert delta_index is not None
+    assert delta_index.node_ids == ["skill:first-worker"]
+
+    second_text = "---\ntags:\n  - python\n  - testing\n---\n# second-worker\n"
+    second_path = wiki / "entities" / "skills" / "second-worker.md"
+    second_path.write_text(second_text, encoding="utf-8")
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="second-worker",
+        entity_path=second_path,
+        content=second_text,
+        action="created",
+        source="test",
+        now=30.0,
+    )
+    second = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=40.0)
+    assert second is not None
+    assert second.status == wiki_queue.STATUS_SUCCEEDED
+
+    records = active_overlay_records(
+        load_overlay_records(wiki / "graphify-out" / "entity-overlays.jsonl")
+    )
+    second_record = next(
+        record for record in records if record["node_id"] == "skill:second-worker"
+    )
+    assert any(edge["target"] == "skill:first-worker" for edge in second_record["edges"])
+    graph = load_graph(graph_path)
+    assert graph.has_edge("skill:second-worker", "skill:first-worker")
 
 
 def test_process_next_entity_upsert_writes_overlay_pack_when_base_pack_exists(

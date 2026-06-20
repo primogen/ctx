@@ -19,7 +19,11 @@ import numpy as np
 from ctx.core.graph.edge_scoring import type_affinity_score
 from ctx.core.graph.entity_overlays import upsert_overlay_record
 from ctx.core.graph.graph_packs import GRAPH_PACK_MANIFEST, write_overlay_pack
-from ctx.core.graph.vector_index import MergedVectorIndex, load_vector_index
+from ctx.core.graph.vector_index import (
+    MergedVectorIndex,
+    load_vector_index,
+    upsert_numpy_flat_index_entry,
+)
 
 _PERCENTILES = (50, 60, 75, 90, 95)
 _DEFAULT_MIN_SEMANTIC_SCORE = 0.80
@@ -148,6 +152,7 @@ def attach_entity(
     parent_export_id: str | None = None,
     config_hash: str | None = None,
     delta_index_dirs: list[Path] | None = None,
+    delta_index_write_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Attach one new/updated entity to an existing semantic vector index."""
     meta = _read_index_meta(index_dir)
@@ -221,6 +226,27 @@ def attach_entity(
             parent_export_id=parent_export_id,
             config_hash=config_hash,
         )
+    if delta_index_write_dir is not None and not dry_run:
+        try:
+            delta_index = upsert_numpy_flat_index_entry(
+                delta_index_write_dir,
+                model_id=resolved_model_id,
+                node_id=node_id,
+                content_hash=content_hash,
+                vector=vector,
+            )
+            result["delta_index"] = {
+                "status": "upserted",
+                "path": str(delta_index_write_dir),
+                "node_count": delta_index.meta.node_count,
+                "content_fingerprint": delta_index.meta.content_fingerprint,
+            }
+        except Exception as exc:  # noqa: BLE001 - delta index is derived data.
+            result["delta_index"] = {
+                "status": "skipped",
+                "path": str(delta_index_write_dir),
+                "error": str(exc),
+            }
     return result
 
 
@@ -248,6 +274,10 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         help="Additional local vector-index directory; repeatable for base+delta queries",
+    )
+    attach.add_argument(
+        "--delta-index-write-dir",
+        help="Optional local vector-index directory to upsert this entity after attach",
     )
     attach.add_argument("--overlay", required=True, help="Path to graphify-out/entity-overlays.jsonl")
     attach.add_argument("--node-id", required=True, help="Graph node id, e.g. skill:my-skill")
@@ -321,6 +351,11 @@ def main(argv: list[str] | None = None) -> int:
                 parent_export_id=args.parent_export_id,
                 config_hash=args.config_hash,
                 delta_index_dirs=[Path(path) for path in args.delta_index_dir or []],
+                delta_index_write_dir=(
+                    Path(args.delta_index_write_dir)
+                    if args.delta_index_write_dir
+                    else None
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - CLI reports concise errors.
             print(f"error: {exc}", file=sys.stderr)

@@ -316,6 +316,10 @@ def _try_incremental_attach(
             min_score=float(cfg.graph_semantic_build_floor),
             min_final_weight=_DEFAULT_ATTACH_MIN_FINAL_WEIGHT,
             delta_index_dirs=_semantic_vector_delta_index_dirs(wiki_path),
+            delta_index_write_dir=_semantic_vector_delta_write_dir(
+                wiki_path,
+                entity_type,
+            ),
             **_graph_pack_attach_kwargs(wiki_path),
         )
     except Exception as exc:  # noqa: BLE001 - attach is derived, not source of truth.
@@ -426,6 +430,18 @@ def _semantic_vector_delta_index_dirs(wiki_path: Path) -> list[Path]:
     return sorted(
         path for path in delta_root.iterdir()
         if path.is_dir() and (path / _VECTOR_INDEX_META_NAME).is_file()
+    )
+
+
+def _semantic_vector_delta_write_dir(wiki_path: Path, entity_type: str) -> Path:
+    safe_type = "".join(
+        char if char.isalnum() or char in {"-", "_"} else "-"
+        for char in entity_type
+    ).strip("-_") or "entity"
+    return (
+        _semantic_vector_index_dir(wiki_path)
+        .with_name("vector-index-deltas")
+        / f"local-{safe_type}"
     )
 
 
