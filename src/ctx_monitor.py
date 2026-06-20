@@ -71,12 +71,11 @@ import sqlite3
 import socket
 import sys
 import tarfile
-import threading
 import time
 import zlib
 from collections import defaultdict, deque
 from http.cookies import CookieError, SimpleCookie
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
@@ -90,6 +89,9 @@ from ctx.monitor.layout import monitor_asset_text as _monitor_asset_text
 from ctx.monitor.layout import monitor_inline_script as _monitor_inline_script
 from ctx.monitor import state as _monitor_state
 from ctx.monitor.pages import docs as _docs_page
+from ctx.monitor.server import MonitorServer as _MonitorServer
+from ctx.monitor.server import make_monitor_server as _make_server
+from ctx.monitor.server import server_shutdown_requested as _server_shutdown_requested
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
 from ctx.utils._fs_utils import safe_atomic_write_text as _safe_atomic_write_text
@@ -7326,11 +7328,6 @@ def _perform_unload(slug: str, entity_type: str = "skill") -> tuple[bool, str]:
 # ─── HTTP handler ────────────────────────────────────────────────────────────
 
 
-def _server_shutdown_requested(server: Any) -> bool:
-    event = getattr(server, "_ctx_shutdown", None)
-    return bool(event is not None and event.is_set())
-
-
 class _MonitorHandler(BaseHTTPRequestHandler):
     # Silence the per-request access log spam. Users running
     # ctx-monitor get a clean stdout; errors still surface via
@@ -7782,38 +7779,15 @@ class _MonitorHandler(BaseHTTPRequestHandler):
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
 
-class _MonitorServer(ThreadingHTTPServer):
-    daemon_threads = True
-    block_on_close = False
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self._ctx_shutdown = threading.Event()
-        super().__init__(*args, **kwargs)
-
-    def shutdown(self) -> None:
-        self._ctx_shutdown.set()
-        super().shutdown()
-
-    def server_close(self) -> None:
-        self._ctx_shutdown.set()
-        super().server_close()
-
-    def handle_error(self, request: Any, client_address: Any) -> None:
-        exc_type, _, _ = sys.exc_info()
-        if exc_type is not None and issubclass(
-            exc_type,
-            (BrokenPipeError, ConnectionAbortedError, ConnectionResetError),
-        ):
-            return
-        super().handle_error(request, client_address)
-
-
 def _make_monitor_server(host: str, port: int) -> _MonitorServer:
     global _MONITOR_MUTATIONS_ENABLED
     _MONITOR_MUTATIONS_ENABLED = _host_allows_mutations(host)
-    server = _MonitorServer((host, port), _MonitorHandler)
-    server._ctx_mutations_enabled = _MONITOR_MUTATIONS_ENABLED
-    return server
+    return _make_server(
+        host,
+        port,
+        _MonitorHandler,
+        mutations_enabled=_MONITOR_MUTATIONS_ENABLED,
+    )
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
