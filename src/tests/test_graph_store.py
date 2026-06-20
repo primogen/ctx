@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 import networkx as nx
+import pytest
 
 from ctx.core.graph.graph_store import (
     build_graph_store,
@@ -549,8 +550,13 @@ def test_validate_graph_store_reports_stale_source(tmp_path: Path) -> None:
 
 def test_validate_graph_store_rejects_missing_source_graph(tmp_path: Path) -> None:
     graph_dir = tmp_path / "graphify-out"
+    graph_dir.mkdir()
+    payload = nx.node_link_data(_sample_graph(), edges="edges")
+    graph_json = graph_dir / "graph.json"
+    graph_json.write_text(json.dumps(payload), encoding="utf-8")
     db_path = tmp_path / "graph.sqlite3"
     build_graph_store_from_graph_dir(graph_dir, db_path)
+    graph_json.unlink()
 
     assert graph_store_is_fresh(db_path, graph_dir) is False
     report = validate_graph_store(db_path, graph_dir)
@@ -558,10 +564,32 @@ def test_validate_graph_store_rejects_missing_source_graph(tmp_path: Path) -> No
     assert report == {
         "ok": False,
         "fresh": False,
-        "nodes": 0,
-        "edges": 0,
+        "nodes": 3,
+        "edges": 2,
         "errors": ["source graph is missing"],
     }
+
+
+def test_build_graph_store_from_graph_dir_rejects_missing_source_graph(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    db_path = tmp_path / "graph.sqlite3"
+
+    with pytest.raises(ValueError, match="source graph is missing"):
+        build_graph_store_from_graph_dir(graph_dir, db_path)
+
+    assert not db_path.exists()
+
+
+def test_cli_build_returns_1_for_missing_source_graph(tmp_path: Path, capsys) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    db_path = tmp_path / "graph.sqlite3"
+
+    result = main(["build", "--graph-dir", str(graph_dir), "--db", str(db_path)])
+
+    assert result == 1
+    assert not db_path.exists()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"error": "source graph is missing", "ok": False}
 
 
 def test_validate_graph_store_reports_corrupt_count_metadata(tmp_path: Path) -> None:

@@ -93,6 +93,10 @@ def build_graph_store_from_graph_dir(
     """
     from ctx.core.graph.resolve_graph import load_graph  # noqa: PLC0415
 
+    source_metadata = _graph_dir_source_metadata(graph_dir)
+    if source_metadata.get("ctx_graph_store_source") == "missing":
+        raise ValueError("source graph is missing")
+
     graph = load_graph(
         graph_dir / "graph.json",
         apply_runtime_filter=apply_runtime_filter,
@@ -100,7 +104,7 @@ def build_graph_store_from_graph_dir(
     build_graph_store(
         db_path,
         graph,
-        extra_metadata=_graph_dir_source_metadata(graph_dir),
+        extra_metadata=source_metadata,
     )
     return graph_store_stats(db_path)
 
@@ -305,11 +309,15 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "build":
-        stats = build_graph_store_from_graph_dir(
-            Path(args.graph_dir),
-            Path(args.db),
-            apply_runtime_filter=not args.no_runtime_filter,
-        )
+        try:
+            stats = build_graph_store_from_graph_dir(
+                Path(args.graph_dir),
+                Path(args.db),
+                apply_runtime_filter=not args.no_runtime_filter,
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc), "ok": False}, sort_keys=True))
+            return 1
         print(json.dumps(stats, sort_keys=True))
         return 0
     if args.command == "validate":
