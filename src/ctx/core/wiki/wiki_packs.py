@@ -266,14 +266,28 @@ def load_merged_wiki_pages(packs_dir: Path) -> dict[str, str]:
         return {}
     pages: dict[str, str] = {}
     for entry in entries:
-        for row in _read_jsonl_objects(entry.path / "pages.jsonl"):
+        page_rows = _read_jsonl_objects(entry.path / "pages.jsonl")
+        tombstone_rows = _read_jsonl_objects(entry.path / "tombstones.jsonl")
+        _validate_pack_count(
+            entry.manifest.pack_id,
+            "page_count",
+            actual=len(page_rows),
+            expected=entry.manifest.page_count,
+        )
+        _validate_pack_count(
+            entry.manifest.pack_id,
+            "tombstone_count",
+            actual=len(tombstone_rows),
+            expected=entry.manifest.tombstone_count,
+        )
+        for row in page_rows:
             relpath = _normalise_page_path(_required_str(row, "path"))
             text = _required_str(row, "text")
             expected_sha = row.get("sha256")
             if isinstance(expected_sha, str) and expected_sha != _sha256_text(text):
                 raise WikiPackManifestError(f"wiki page checksum mismatch: {relpath}")
             pages[relpath] = text
-        for row in _read_jsonl_objects(entry.path / "tombstones.jsonl"):
+        for row in tombstone_rows:
             pages.pop(_normalise_page_path(_required_str(row, "path")), None)
     return pages
 
@@ -516,6 +530,19 @@ def _verify_pack_checksums(pack_dir: Path, manifest: WikiPackManifest) -> None:
             raise WikiPackManifestError(
                 f"wiki pack {manifest.pack_id} checksum mismatch for {name}"
             )
+
+
+def _validate_pack_count(
+    pack_id: str,
+    field_name: str,
+    *,
+    actual: int,
+    expected: int,
+) -> None:
+    if actual != expected:
+        raise WikiPackManifestError(
+            f"wiki pack {pack_id} {field_name} mismatch: expected {expected}, got {actual}"
+        )
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:

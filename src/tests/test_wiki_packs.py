@@ -189,6 +189,52 @@ def test_load_merged_wiki_pages_rejects_page_checksum_drift(tmp_path: Path) -> N
         load_merged_wiki_pages(packs_dir)
 
 
+def test_load_merged_wiki_pages_rejects_base_page_count_drift(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "wiki-packs"
+    base_dir = packs_dir / "base-export-1"
+    write_wiki_base_pack(
+        pack_dir=base_dir,
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"index.md": "# Index\n"},
+    )
+    manifest_path = base_dir / "wiki-pack-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["page_count"] = 2
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(WikiPackManifestError, match="page_count mismatch"):
+        load_merged_wiki_pages(packs_dir)
+
+
+def test_load_merged_wiki_pages_rejects_overlay_tombstone_count_drift(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"entities/skills/old.md": "# Old\n"},
+    )
+    overlay_dir = packs_dir / "overlay-delete"
+    write_wiki_overlay_pack(
+        pack_dir=overlay_dir,
+        pack_id="overlay-delete",
+        base_export_id="wiki-export-1",
+        parent_export_id="wiki-export-1",
+        pages={},
+        tombstones=["entities/skills/old.md"],
+    )
+    manifest_path = overlay_dir / "wiki-pack-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["tombstone_count"] = 2
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(WikiPackManifestError, match="tombstone_count mismatch"):
+        load_merged_wiki_pages(packs_dir)
+
+
 def test_compact_wiki_packs_writes_staged_base_without_mutating_active_packs(
     tmp_path: Path,
 ) -> None:
