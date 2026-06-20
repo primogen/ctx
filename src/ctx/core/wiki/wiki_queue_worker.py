@@ -23,6 +23,11 @@ from ctx.core.graph.graph_store import ensure_graph_store
 from ctx.core.graph.incremental_attach import attach_entity
 from ctx.core.wiki.artifact_promotion import promote_staged_artifact
 from ctx.core.wiki import wiki_queue
+from ctx.core.wiki.pack_compaction import (
+    compact_active_pack_sets,
+    pack_compaction_status,
+    promote_staged_pack_sets,
+)
 from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_active_wiki_overlay_pack
 from ctx.core.wiki.wiki_sync import update_index
 from ctx.utils._fs_utils import reject_symlink_path
@@ -531,6 +536,55 @@ def _handle_artifact_promotion(_wiki_path: Path, payload: dict[str, Any]) -> str
     return f"promoted artifact to {result.target}"
 
 
+def _handle_pack_compaction(wiki_path: Path, payload: dict[str, Any]) -> str:
+    threshold = _optional_payload_int(
+        payload,
+        "overlay_threshold",
+        default=int(cfg.graph_pack_compaction_overlay_threshold),
+    )
+    status = pack_compaction_status(
+        wiki_path=wiki_path,
+        overlay_threshold=threshold,
+    )
+    if not status["needs_compaction"]:
+        return (
+            "pack compaction not needed: "
+            f"{status['max_overlay_count']} overlays below threshold "
+            f"{status['overlay_threshold']}"
+        )
+    if not status["can_compact_now"]:
+        return (
+            "pack compaction skipped: active graph/wiki packs are not "
+            "ready for coordinated compaction"
+        )
+    base_export_id = (
+        _optional_payload_string(payload, "base_export_id")
+        or f"export-compacted-{status['max_overlay_count']}"
+    )
+    compacted = compact_active_pack_sets(
+        wiki_path=wiki_path,
+        base_export_id=base_export_id,
+        staging_dir=_optional_payload_path(payload, "staging_dir"),
+        graph_config_hash=_optional_payload_string(payload, "graph_config_hash"),
+        graph_model_id=_optional_payload_string(payload, "graph_model_id"),
+        created_at=_optional_payload_string(payload, "created_at"),
+    )
+    promoted = promote_staged_pack_sets(
+        wiki_path=wiki_path,
+        staged_graph_packs_dir=compacted.staged_graph_packs_dir,
+        staged_wiki_packs_dir=compacted.staged_wiki_packs_dir,
+        graph_backup_packs_dir=_optional_payload_path(payload, "graph_backup_packs_dir"),
+        wiki_backup_packs_dir=_optional_payload_path(payload, "wiki_backup_packs_dir"),
+        refresh_graph_store=not bool(payload.get("no_graph_store_refresh", False)),
+        graph_store_db_path=_optional_payload_path(payload, "graph_store_db"),
+    )
+    return (
+        f"pack compaction promoted {base_export_id}: "
+        f"{', '.join(promoted.graph.promoted_pack_ids)} / "
+        f"{', '.join(promoted.wiki.promoted_pack_ids)}"
+    )
+
+
 def _catalog_refresh_args(payload: dict[str, Any], *, update_wiki_tar: bool) -> list[str]:
     args = [sys.executable, "-m", "import_skills_sh_catalog"]
     if payload.get("fetch"):
@@ -582,12 +636,30 @@ def _optional_payload_string(payload: dict[str, Any], key: str) -> str | None:
     return value.strip()
 
 
+def _optional_payload_path(payload: dict[str, Any], key: str) -> Path | None:
+    value = _optional_payload_string(payload, key)
+    return Path(value) if value is not None else None
+
+
+def _optional_payload_int(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    default: int,
+) -> int:
+    value = payload.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"maintenance payload {key} must be an integer >= 1")
+    return value
+
+
 MAINTENANCE_HANDLERS: dict[str, MaintenanceHandler] = {
     wiki_queue.GRAPH_EXPORT_JOB: _handle_graph_export,
     wiki_queue.GRAPH_STORE_REFRESH_JOB: _handle_graph_store_refresh,
     wiki_queue.CATALOG_REFRESH_JOB: _handle_catalog_refresh,
     wiki_queue.TAR_REFRESH_JOB: _handle_tar_refresh,
     wiki_queue.ARTIFACT_PROMOTION_JOB: _handle_artifact_promotion,
+    wiki_queue.PACK_COMPACTION_JOB: _handle_pack_compaction,
 }
 
 

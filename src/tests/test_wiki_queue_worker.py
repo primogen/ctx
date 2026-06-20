@@ -26,7 +26,11 @@ from ctx.core.graph.graph_store import graph_store_metadata, validate_graph_stor
 from ctx.core.graph.resolve_graph import load_graph, resolve_by_seeds
 from ctx.core.graph.vector_index import build_vector_index, load_vector_index
 from ctx.core.wiki import wiki_queue, wiki_queue_worker
-from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack
+from ctx.core.wiki.wiki_packs import (
+    load_merged_wiki_pages,
+    write_wiki_base_pack,
+    write_wiki_overlay_pack,
+)
 
 
 def _write_entity(wiki: Path, relpath: str, text: str) -> Path:
@@ -872,6 +876,111 @@ def test_process_next_graph_store_refresh_job_retries_missing_source_graph(
     current = wiki_queue.get_job(wiki_queue.queue_db_path(wiki), queued.id)
     assert current.status == wiki_queue.STATUS_PENDING
     assert current.last_error == "source graph is missing"
+    assert not (wiki / "graphify-out" / "graph-store.sqlite3").exists()
+
+
+def test_process_next_pack_compaction_job_promotes_base_and_refreshes_store(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_path = _write_base_graph_for_overlay(wiki)
+    graph_packs = _write_base_graph_pack_for_overlay(wiki, graph_path)
+    write_overlay_pack(
+        pack_dir=graph_packs / "overlay-docs",
+        pack_id="overlay-docs",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="test-model",
+        nodes=[{"id": "skill:docs", "type": "skill", "label": "docs"}],
+        edges=[{"source": "skill:docs", "target": "skill:python-testing", "weight": 0.8}],
+        tombstones=[],
+    )
+    wiki_packs = wiki / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=wiki_packs / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        pages={
+            "entities/skills/python-testing.md": "# Python Testing\n",
+            "entities/skills/ruby-testing.md": "# Ruby Testing\n",
+        },
+    )
+    write_wiki_overlay_pack(
+        pack_dir=wiki_packs / "overlay-docs",
+        pack_id="overlay-docs",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        pages={"entities/skills/docs.md": "# Docs\n"},
+        tombstones=[],
+    )
+    queued = wiki_queue.enqueue_maintenance_job(
+        wiki,
+        kind=wiki_queue.PACK_COMPACTION_JOB,
+        payload={
+            "overlay_threshold": 1,
+            "base_export_id": "export-2",
+            "staging_dir": str(tmp_path / "staged-pack-compaction"),
+            "graph_backup_packs_dir": str(tmp_path / "graph-packs.backup"),
+            "wiki_backup_packs_dir": str(tmp_path / "wiki-packs.backup"),
+        },
+        source="test",
+        now=10.0,
+    )
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.job_id == queued.id
+    assert result.kind == wiki_queue.PACK_COMPACTION_JOB
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert result.message == "pack compaction promoted export-2: base-export-2 / base-export-2"
+    compacted_graph = load_merged_pack_graph(wiki / "graphify-out" / "packs")
+    assert sorted(compacted_graph.nodes) == [
+        "skill:docs",
+        "skill:python-testing",
+        "skill:ruby-testing",
+    ]
+    assert compacted_graph.has_edge("skill:docs", "skill:python-testing")
+    assert load_merged_wiki_pages(wiki / "wiki-packs") == {
+        "entities/skills/docs.md": "# Docs\n",
+        "entities/skills/python-testing.md": "# Python Testing\n",
+        "entities/skills/ruby-testing.md": "# Ruby Testing\n",
+    }
+    graph_dir = wiki / "graphify-out"
+    assert validate_graph_store(graph_dir / "graph-store.sqlite3", graph_dir)["ok"] is True
+
+
+def test_process_next_pack_compaction_job_noops_below_threshold(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_path = _write_base_graph_for_overlay(wiki)
+    _write_base_graph_pack_for_overlay(wiki, graph_path)
+    write_wiki_base_pack(
+        pack_dir=wiki / "wiki-packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        pages={
+            "entities/skills/python-testing.md": "# Python Testing\n",
+            "entities/skills/ruby-testing.md": "# Ruby Testing\n",
+        },
+    )
+    queued = wiki_queue.enqueue_maintenance_job(
+        wiki,
+        kind=wiki_queue.PACK_COMPACTION_JOB,
+        payload={"overlay_threshold": 2},
+        source="test",
+        now=10.0,
+    )
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.job_id == queued.id
+    assert result.kind == wiki_queue.PACK_COMPACTION_JOB
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert result.message == "pack compaction not needed: 0 overlays below threshold 2"
     assert not (wiki / "graphify-out" / "graph-store.sqlite3").exists()
 
 
