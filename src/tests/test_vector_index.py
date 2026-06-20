@@ -9,6 +9,7 @@ from ctx.core.graph.vector_index import (
     VectorIndexUnavailable,
     build_vector_index,
     load_vector_index,
+    upsert_numpy_flat_index_entry,
 )
 
 
@@ -239,6 +240,73 @@ def test_build_vector_index_rejects_duplicate_node_ids() -> None:
             node_ids=["a", "a"],
             content_hashes=["ha", "hb"],
             vectors=_vectors()[:2],
+        )
+
+
+def test_upsert_numpy_flat_index_entry_creates_appends_and_replaces(tmp_path) -> None:
+    first = upsert_numpy_flat_index_entry(
+        tmp_path,
+        model_id="model-a",
+        node_id="a",
+        content_hash="ha",
+        vector=np.asarray([1.0, 0.0], dtype=np.float32),
+    )
+    assert first.node_ids == ["a"]
+    assert first.content_hashes == ["ha"]
+
+    second = upsert_numpy_flat_index_entry(
+        tmp_path,
+        model_id="model-a",
+        node_id="b",
+        content_hash="hb",
+        vector=np.asarray([[0.0, 1.0]], dtype=np.float32),
+    )
+    assert second.node_ids == ["a", "b"]
+    assert second.content_hashes == ["ha", "hb"]
+
+    third = upsert_numpy_flat_index_entry(
+        tmp_path,
+        model_id="model-a",
+        node_id="a",
+        content_hash="ha2",
+        vector=np.asarray([0.6, 0.8], dtype=np.float32),
+    )
+
+    loaded = load_vector_index(
+        tmp_path,
+        expected_model_id="model-a",
+        expected_content_fingerprint=third.meta.content_fingerprint,
+    )
+    assert loaded is not None
+    assert loaded.meta.index_kind == "numpy-flat"
+    assert loaded.node_ids == ["a", "b"]
+    assert loaded.content_hashes == ["ha2", "hb"]
+    rows = loaded.query(
+        np.asarray([[0.6, 0.8]], dtype=np.float32),
+        top_k=1,
+        min_score=0.0,
+    )
+    assert [neighbor.node_id for neighbor in rows[0]] == ["a"]
+
+
+def test_upsert_numpy_flat_index_entry_rejects_incompatible_existing_index(
+    tmp_path,
+) -> None:
+    upsert_numpy_flat_index_entry(
+        tmp_path,
+        model_id="model-a",
+        node_id="a",
+        content_hash="ha",
+        vector=np.asarray([1.0, 0.0], dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="incompatible"):
+        upsert_numpy_flat_index_entry(
+            tmp_path,
+            model_id="model-b",
+            node_id="b",
+            content_hash="hb",
+            vector=np.asarray([0.0, 1.0], dtype=np.float32),
         )
 
 

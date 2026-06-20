@@ -313,6 +313,83 @@ def load_vector_index(
     return None
 
 
+def upsert_numpy_flat_index_entry(
+    cache_dir: Path,
+    *,
+    model_id: str,
+    node_id: str,
+    content_hash: str,
+    vector: np.ndarray,
+) -> NumpyFlatVectorIndex:
+    """Create or update one row in a small portable delta vector index."""
+    if not model_id:
+        raise ValueError("model_id must be non-empty")
+    if not node_id:
+        raise ValueError("node_id must be non-empty")
+    if not content_hash:
+        raise ValueError("content_hash must be non-empty")
+    vector_row = _single_vector_row(vector)
+    cache_dir = Path(cache_dir)
+    upsert_lock = cache_dir / ".vector-index-upsert"
+    with file_lock(upsert_lock):
+        existing = _load_existing_delta_index(cache_dir, model_id=model_id)
+        if existing is None:
+            node_ids: list[str] = []
+            content_hashes: list[str] = []
+            vectors = np.empty((0, vector_row.shape[1]), dtype=np.float32)
+        else:
+            if existing.meta.dim != int(vector_row.shape[1]):
+                raise ValueError(
+                    f"vector dim {vector_row.shape[1]} does not match existing "
+                    f"index dim {existing.meta.dim}"
+                )
+            node_ids = list(existing.node_ids)
+            content_hashes = list(existing.content_hashes)
+            vectors = np.asarray(existing.vectors, dtype=np.float32).copy()
+
+        if node_id in node_ids:
+            row_index = node_ids.index(node_id)
+            content_hashes[row_index] = content_hash
+            vectors[row_index] = vector_row[0]
+        else:
+            node_ids.append(node_id)
+            content_hashes.append(content_hash)
+            vectors = np.vstack([vectors, vector_row])
+
+        index = build_vector_index(
+            kind="numpy-flat",
+            model_id=model_id,
+            node_ids=node_ids,
+            content_hashes=content_hashes,
+            vectors=vectors,
+        )
+        index.save(cache_dir)
+        return index
+
+
+def _load_existing_delta_index(
+    cache_dir: Path,
+    *,
+    model_id: str,
+) -> NumpyFlatVectorIndex | None:
+    meta_path = cache_dir / _META_NAME
+    if not meta_path.is_file():
+        return None
+    try:
+        meta_raw = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = VectorIndexMeta(**meta_raw)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"existing vector index metadata is unreadable: {exc}") from exc
+    index = load_vector_index(
+        cache_dir,
+        expected_model_id=model_id,
+        expected_content_fingerprint=meta.content_fingerprint,
+    )
+    if index is None:
+        raise ValueError("existing vector index is incompatible or unreadable")
+    return index
+
+
 def content_fingerprint(node_ids: list[str], content_hashes: list[str]) -> str:
     payload = "\n".join(
         f"{node_id}\t{content_hash}"
@@ -438,6 +515,15 @@ def _validate_inputs(
         raise ValueError("vectors must be a 2D array")
     if vectors.shape[0] != len(node_ids):
         raise ValueError("vectors row count must match node_ids")
+
+
+def _single_vector_row(vector: np.ndarray) -> np.ndarray:
+    row = np.asarray(vector, dtype=np.float32)
+    if row.ndim == 1:
+        row = row.reshape(1, -1)
+    if row.ndim != 2 or row.shape[0] != 1 or row.shape[1] <= 0:
+        raise ValueError("vector must be a single non-empty row")
+    return row
 
 
 def _normalize(vectors: np.ndarray) -> np.ndarray:
