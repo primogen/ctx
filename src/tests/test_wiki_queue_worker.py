@@ -850,6 +850,31 @@ def test_process_next_graph_store_refresh_job_builds_from_active_packs_without_g
     assert metadata["ctx_graph_pack_fallback"] == "true"
 
 
+def test_process_next_graph_store_refresh_job_retries_missing_source_graph(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    queued = wiki_queue.enqueue_maintenance_job(
+        wiki,
+        kind=wiki_queue.GRAPH_STORE_REFRESH_JOB,
+        payload={},
+        source="test",
+        now=10.0,
+    )
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.job_id == queued.id
+    assert result.kind == wiki_queue.GRAPH_STORE_REFRESH_JOB
+    assert result.status == wiki_queue.STATUS_PENDING
+    assert result.message == "source graph is missing"
+    current = wiki_queue.get_job(wiki_queue.queue_db_path(wiki), queued.id)
+    assert current.status == wiki_queue.STATUS_PENDING
+    assert current.last_error == "source graph is missing"
+    assert not (wiki / "graphify-out" / "graph-store.sqlite3").exists()
+
+
 def test_process_next_maintenance_job_retries_handler_failure(
     tmp_path: Path,
     monkeypatch: Any,
