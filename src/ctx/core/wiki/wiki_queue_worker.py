@@ -468,12 +468,13 @@ def _handle_graph_export(wiki_path: Path, payload: dict[str, Any]) -> str:
 def _handle_graph_store_refresh(wiki_path: Path, payload: dict[str, Any]) -> str:
     graph_dir = wiki_path / "graphify-out"
     db_path = graph_dir / "graph-store.sqlite3"
-    ensure_graph_store(
+    result = ensure_graph_store(
         graph_dir,
         db_path,
         apply_runtime_filter=not payload.get("no_runtime_filter", False),
     )
-    return "graph store refreshed"
+    action = "rebuilt" if result["rebuilt"] else "reused"
+    return f"graph store {action}: {result['nodes']} nodes, {result['edges']} edges"
 
 
 def _handle_catalog_refresh(_wiki_path: Path, payload: dict[str, Any]) -> str:

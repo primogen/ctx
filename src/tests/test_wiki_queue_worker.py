@@ -22,7 +22,7 @@ from ctx.core.graph.graph_packs import (
     write_overlay_pack,
     write_pack_manifest,
 )
-from ctx.core.graph.graph_store import validate_graph_store
+from ctx.core.graph.graph_store import graph_store_metadata, validate_graph_store
 from ctx.core.graph.resolve_graph import load_graph, resolve_by_seeds
 from ctx.core.graph.vector_index import build_vector_index
 from ctx.core.wiki import wiki_queue, wiki_queue_worker
@@ -700,9 +700,39 @@ def test_process_next_graph_store_refresh_job_builds_valid_store(tmp_path: Path)
     assert result.job_id == queued.id
     assert result.kind == wiki_queue.GRAPH_STORE_REFRESH_JOB
     assert result.status == wiki_queue.STATUS_SUCCEEDED
-    assert result.message == "graph store refreshed"
+    assert result.message == "graph store rebuilt: 2 nodes, 0 edges"
     db_path = graph_path.parent / "graph-store.sqlite3"
     assert validate_graph_store(db_path, graph_path.parent)["ok"] is True
+
+
+def test_process_next_graph_store_refresh_job_builds_from_active_packs_without_graph_json(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_path = _write_base_graph_for_overlay(wiki)
+    _write_base_graph_pack_for_overlay(wiki, graph_path)
+    graph_path.unlink()
+    queued = wiki_queue.enqueue_maintenance_job(
+        wiki,
+        kind=wiki_queue.GRAPH_STORE_REFRESH_JOB,
+        payload={},
+        source="test",
+        now=10.0,
+    )
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.job_id == queued.id
+    assert result.kind == wiki_queue.GRAPH_STORE_REFRESH_JOB
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert result.message == "graph store rebuilt: 2 nodes, 0 edges"
+    graph_dir = wiki / "graphify-out"
+    db_path = graph_dir / "graph-store.sqlite3"
+    assert validate_graph_store(db_path, graph_dir)["ok"] is True
+    metadata = graph_store_metadata(db_path)
+    assert metadata["ctx_graph_store_source"] == "packs"
+    assert metadata["ctx_graph_pack_fallback"] == "true"
 
 
 def test_process_next_maintenance_job_retries_handler_failure(
