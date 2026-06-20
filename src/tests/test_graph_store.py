@@ -187,6 +187,80 @@ def test_build_graph_store_from_graph_dir_prefers_active_packs(tmp_path: Path) -
     assert graph_store_is_fresh(db_path, graph_dir) is False
 
 
+def test_graph_store_freshness_tracks_entity_overlay_file_with_packs(
+    tmp_path: Path,
+) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    packs_dir = graph_dir / "packs"
+    base_graph = nx.Graph()
+    base_graph.add_node(
+        "skill:base",
+        label="base",
+        title="Base",
+        type="skill",
+        tags=["base"],
+    )
+    base_graph.add_node(
+        "mcp-server:github",
+        label="github",
+        title="GitHub",
+        type="mcp-server",
+        tags=["github"],
+    )
+    base_graph.add_edge("skill:base", "mcp-server:github", weight=0.2)
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=base_graph,
+    )
+    db_path = tmp_path / "graph.sqlite3"
+
+    assert ensure_graph_store(graph_dir, db_path) == {
+        "rebuilt": True,
+        "nodes": 2,
+        "edges": 1,
+    }
+    metadata = graph_store_metadata(db_path)
+    assert metadata["ctx_graph_store_entity_overlay"] == "absent"
+    assert graph_store_is_fresh(db_path, graph_dir) is True
+
+    (graph_dir / "entity-overlays.jsonl").write_text(
+        json.dumps({
+            "overlay_id": "overlay-docs",
+            "nodes": [{
+                "id": "skill:docs",
+                "label": "docs",
+                "title": "Docs",
+                "type": "skill",
+                "tags": ["docs"],
+            }],
+            "edges": [{
+                "source": "skill:docs",
+                "target": "mcp-server:github",
+                "weight": 0.8,
+            }],
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert graph_store_is_fresh(db_path, graph_dir) is False
+    assert ensure_graph_store(graph_dir, db_path) == {
+        "rebuilt": True,
+        "nodes": 3,
+        "edges": 2,
+    }
+    metadata = graph_store_metadata(db_path)
+    assert metadata["ctx_graph_store_entity_overlay"] == "present"
+    assert [row["id"] for row in search_nodes(db_path, "docs")] == ["skill:docs"]
+    neighborhood = load_neighborhood(db_path, "skill:docs")
+    assert {edge["target"] for edge in neighborhood["edges"]} == {"mcp-server:github"}
+    assert graph_store_is_fresh(db_path, graph_dir) is True
+
+
 def test_build_graph_store_from_graph_dir_falls_back_to_legacy_graph_json(tmp_path: Path) -> None:
     graph_dir = tmp_path / "graphify-out"
     graph_dir.mkdir()

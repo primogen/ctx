@@ -335,6 +335,7 @@ def _graph_dir_source_metadata(graph_dir: Path) -> dict[str, str]:
         sha256_file,
     )
 
+    overlay_metadata = _entity_overlay_source_metadata(graph_dir)
     packs_dir = graph_dir / "packs"
     if packs_dir.is_dir():
         entries = discover_pack_manifests(packs_dir)
@@ -354,6 +355,7 @@ def _graph_dir_source_metadata(graph_dir: Path) -> dict[str, str]:
                 "ctx_graph_store_source": "packs",
                 "ctx_graph_store_fingerprint": _fingerprint_payload(pack_payload),
                 "ctx_graph_store_pack_ids": json.dumps(pack_ids, sort_keys=True),
+                **overlay_metadata,
             }
 
     graph_json = graph_dir / "graph.json"
@@ -361,10 +363,27 @@ def _graph_dir_source_metadata(graph_dir: Path) -> dict[str, str]:
         return {
             "ctx_graph_store_source": "graph.json",
             "ctx_graph_store_fingerprint": sha256_file(graph_json),
+            **overlay_metadata,
         }
     return {
         "ctx_graph_store_source": "missing",
         "ctx_graph_store_fingerprint": "",
+        **overlay_metadata,
+    }
+
+
+def _entity_overlay_source_metadata(graph_dir: Path) -> dict[str, str]:
+    from ctx.core.graph.graph_packs import sha256_file  # noqa: PLC0415
+
+    overlay_path = graph_dir / "entity-overlays.jsonl"
+    if not overlay_path.is_file():
+        return {
+            "ctx_graph_store_entity_overlay": "absent",
+            "ctx_graph_store_entity_overlay_fingerprint": "",
+        }
+    return {
+        "ctx_graph_store_entity_overlay": "present",
+        "ctx_graph_store_entity_overlay_fingerprint": sha256_file(overlay_path),
     }
 
 
