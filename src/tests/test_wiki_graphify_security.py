@@ -254,6 +254,30 @@ def test_load_prior_graph_returns_none_on_missing_json(graphify_out: Path) -> No
     assert wiki_graphify.load_prior_graph() is None
 
 
+def test_load_prior_graph_uses_active_packs_when_graph_json_is_absent(
+    graphify_out: Path,
+) -> None:
+    from ctx.core.graph.graph_packs import write_base_pack
+    from ctx.core.wiki import wiki_graphify
+
+    graph = _make_sample_graph()
+    write_base_pack(
+        pack_dir=graphify_out / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=graph,
+    )
+
+    loaded = wiki_graphify.load_prior_graph()
+
+    assert loaded is not None
+    assert loaded.number_of_nodes() == graph.number_of_nodes()
+    assert loaded.number_of_edges() == graph.number_of_edges()
+    assert loaded.graph["ctx_pack_base_export_id"] == "export-1"
+
+
 def test_load_prior_graph_returns_none_on_malformed_json(graphify_out: Path) -> None:
     from ctx.core.wiki import wiki_graphify
 

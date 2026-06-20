@@ -30,6 +30,7 @@ from networkx.algorithms.community import (
 
 from ctx.core.graph.graph_packs import (
     GraphPackManifestError,
+    load_merged_pack_graph,
     promote_graph_pack_set,
     write_base_pack,
 )
@@ -856,12 +857,13 @@ def _metadata_affected_nodes(
 
 
 def load_prior_graph() -> nx.Graph | None:
-    """Load the previous run's graph from ``graph.json``, or None on any issue.
+    """Load the previous run's graph for incremental graphify.
 
-    The canonical on-disk artifact is ``graph.json`` (node-link format).
+    Legacy installs read ``graph.json`` (node-link format). Pack-native
+    installs can omit ``graph.json`` and resume from ``graphify-out/packs``.
     ``patch_graph`` uses the loaded graph as the starting point for an
-    incremental update; callers that can't load (missing file, corrupt
-    JSON, wrong schema, first run) just build from scratch instead.
+    incremental update; callers that can't load a trusted prior graph just
+    build from scratch instead.
 
     SECURITY NOTE: earlier revisions of this function read a
     ``graph.pickle`` sidecar via ``pickle.loads``, which is an RCE
@@ -874,7 +876,7 @@ def load_prior_graph() -> nx.Graph | None:
     """
     path = GRAPH_OUT / "graph.json"
     if not path.is_file():
-        return None
+        return _load_prior_graph_pack()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -971,6 +973,24 @@ def load_prior_graph() -> nx.Graph | None:
         )
         return None
     if not isinstance(graph, nx.Graph):
+        return None
+    return graph
+
+
+def _load_prior_graph_pack() -> nx.Graph | None:
+    """Load prior graph from active graph packs when legacy graph.json is absent."""
+    packs_dir = GRAPH_OUT / "packs"
+    if not packs_dir.is_dir():
+        return None
+    try:
+        graph = load_merged_pack_graph(packs_dir)
+    except GraphPackManifestError as exc:
+        print(
+            f"wiki_graphify: prior graph packs invalid ({exc}); full rebuild",
+            flush=True,
+        )
+        return None
+    if graph.number_of_nodes() == 0:
         return None
     return graph
 
