@@ -281,6 +281,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     validate.add_argument("--graph-dir", required=True, help="Path to graphify-out")
     validate.add_argument("--db", required=True, help="SQLite database to validate")
+    search = sub.add_parser(
+        "search",
+        help="Search a built SQLite graph store.",
+    )
+    search.add_argument("--db", required=True, help="SQLite database to query")
+    search.add_argument("--query", required=True, help="Search text")
+    search.add_argument("--limit", type=int, default=20, help="Maximum rows to return")
+    neighborhood = sub.add_parser(
+        "neighborhood",
+        help="Read a 1-hop neighborhood from a built SQLite graph store.",
+    )
+    neighborhood.add_argument("--db", required=True, help="SQLite database to query")
+    neighborhood.add_argument("--node-id", required=True, help="Center node id")
+    neighborhood.add_argument("--limit", type=int, default=50, help="Maximum edges to return")
 
     args = parser.parse_args(argv)
     if args.command == "build":
@@ -295,6 +309,14 @@ def main(argv: list[str] | None = None) -> int:
         report = validate_graph_store(Path(args.db), Path(args.graph_dir))
         print(json.dumps(report, sort_keys=True))
         return 0 if report["ok"] else 1
+    if args.command == "search":
+        rows = search_nodes(Path(args.db), args.query, limit=args.limit)
+        print(json.dumps({"results": rows}, sort_keys=True))
+        return 0
+    if args.command == "neighborhood":
+        neighborhood_payload = load_neighborhood(Path(args.db), args.node_id, limit=args.limit)
+        print(json.dumps(neighborhood_payload, sort_keys=True))
+        return 0
     parser.error(f"unknown command: {args.command}")
     return 2
 

@@ -351,6 +351,98 @@ def test_cli_validate_returns_1_for_stale_graph_store(tmp_path: Path) -> None:
     assert result == 1
 
 
+def test_cli_search_reads_built_pack_backed_store(tmp_path: Path, capsys) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    packs_dir = graph_dir / "packs"
+    base_graph = nx.Graph()
+    base_graph.add_node("skill:base", label="base", type="skill", tags=["base"])
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=base_graph,
+    )
+    write_overlay_pack(
+        pack_dir=packs_dir / "overlay-review",
+        pack_id="overlay-review",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        nodes=[{
+            "id": "agent:reviewer",
+            "label": "reviewer",
+            "title": "Code Reviewer",
+            "type": "agent",
+            "tags": ["review"],
+        }],
+        edges=[],
+        tombstones=[],
+    )
+    db_path = tmp_path / "graph.sqlite3"
+    ensure_graph_store(graph_dir, db_path)
+
+    result = main(["search", "--db", str(db_path), "--query", "review"])
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["id"] for row in payload["results"]] == ["agent:reviewer"]
+
+
+def test_cli_neighborhood_reads_built_pack_backed_store(tmp_path: Path, capsys) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    packs_dir = graph_dir / "packs"
+    base_graph = nx.Graph()
+    base_graph.add_node("skill:base", label="base", type="skill", tags=["base"])
+    base_graph.add_node("mcp-server:github", label="github", type="mcp-server", tags=["github"])
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=base_graph,
+    )
+    write_overlay_pack(
+        pack_dir=packs_dir / "overlay-review-edge",
+        pack_id="overlay-review-edge",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        nodes=[],
+        edges=[{
+            "source": "skill:base",
+            "target": "mcp-server:github",
+            "weight": 0.9,
+        }],
+        tombstones=[],
+    )
+    db_path = tmp_path / "graph.sqlite3"
+    ensure_graph_store(graph_dir, db_path)
+
+    result = main([
+        "neighborhood",
+        "--db", str(db_path),
+        "--node-id", "skill:base",
+    ])
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert {node["id"] for node in payload["nodes"]} == {
+        "skill:base",
+        "mcp-server:github",
+    }
+    assert payload["edges"] == [{
+        "attrs": {"weight": 0.9},
+        "source": "skill:base",
+        "target": "mcp-server:github",
+        "weight": 0.9,
+    }]
+
+
 def test_ensure_graph_store_reuses_fresh_store_and_rebuilds_stale_store(
     tmp_path: Path,
 ) -> None:
