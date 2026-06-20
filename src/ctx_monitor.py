@@ -1688,11 +1688,13 @@ def _pack_compaction_artifact_status(wiki: Path) -> dict[str, Any]:
             "mtime": None,
             "error": str(exc),
         }
+    graph_pack_count = status.get("graph_pack_count")
+    wiki_pack_count = status.get("wiki_pack_count")
     return {
         "path": str(wiki),
         "exists": bool(
-            int(status.get("graph_pack_count") or 0)
-            or int(status.get("wiki_pack_count") or 0)
+            (graph_pack_count if isinstance(graph_pack_count, int) else 0)
+            or (wiki_pack_count if isinstance(wiki_pack_count, int) else 0)
         ),
         "size": 0,
         "mtime": None,
