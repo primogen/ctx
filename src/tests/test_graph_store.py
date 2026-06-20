@@ -509,6 +509,23 @@ def test_validate_graph_store_reports_stale_source(tmp_path: Path) -> None:
     assert "source fingerprint is stale" in errors
 
 
+def test_validate_graph_store_rejects_missing_source_graph(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    db_path = tmp_path / "graph.sqlite3"
+    build_graph_store_from_graph_dir(graph_dir, db_path)
+
+    assert graph_store_is_fresh(db_path, graph_dir) is False
+    report = validate_graph_store(db_path, graph_dir)
+
+    assert report == {
+        "ok": False,
+        "fresh": False,
+        "nodes": 0,
+        "edges": 0,
+        "errors": ["source graph is missing"],
+    }
+
+
 def test_validate_graph_store_reports_corrupt_count_metadata(tmp_path: Path) -> None:
     graph_dir = tmp_path / "graphify-out"
     graph_dir.mkdir()

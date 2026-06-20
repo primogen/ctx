@@ -147,6 +147,8 @@ def graph_store_is_fresh(db_path: Path, graph_dir: Path) -> bool:
         current = _graph_dir_source_metadata(graph_dir)
     except (OSError, sqlite3.DatabaseError, ValueError):
         return False
+    if current.get("ctx_graph_store_source") == "missing":
+        return False
     return all(stored.get(key) == value for key, value in current.items())
 
 
@@ -178,8 +180,11 @@ def validate_graph_store(db_path: Path, graph_dir: Path) -> dict[str, object]:
         errors.append("schema_version is not supported")
     _validate_count_metadata(metadata, stats, "node_count", "nodes", errors)
     _validate_count_metadata(metadata, stats, "edge_count", "edges", errors)
+    source_missing = _source_graph_is_missing(graph_dir)
     fresh = graph_store_is_fresh(db_path, graph_dir)
-    if not fresh:
+    if source_missing:
+        errors.append("source graph is missing")
+    elif not fresh:
         errors.append("source fingerprint is stale")
     return {
         "ok": not errors,
@@ -398,6 +403,13 @@ def _entity_overlay_source_metadata(graph_dir: Path) -> dict[str, str]:
         "ctx_graph_store_entity_overlay": "present",
         "ctx_graph_store_entity_overlay_fingerprint": sha256_file(overlay_path),
     }
+
+
+def _source_graph_is_missing(graph_dir: Path) -> bool:
+    try:
+        return _graph_dir_source_metadata(graph_dir).get("ctx_graph_store_source") == "missing"
+    except (OSError, ValueError):
+        return False
 
 
 def _fingerprint_payload(payload: object) -> str:
