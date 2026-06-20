@@ -1674,6 +1674,32 @@ def _graph_store_status(graph_dir: Path) -> dict[str, Any]:
     return status
 
 
+def _pack_compaction_artifact_status(wiki: Path) -> dict[str, Any]:
+    """Return coordinated graph/wiki pack compaction state for /status."""
+    try:
+        from ctx.core.wiki.pack_compaction import pack_compaction_status  # noqa: PLC0415
+
+        status = pack_compaction_status(wiki_path=wiki, validate=False)
+    except Exception as exc:  # noqa: BLE001 - status should render degraded state.
+        return {
+            "path": str(wiki),
+            "exists": False,
+            "size": 0,
+            "mtime": None,
+            "error": str(exc),
+        }
+    return {
+        "path": str(wiki),
+        "exists": bool(
+            int(status.get("graph_pack_count") or 0)
+            or int(status.get("wiki_pack_count") or 0)
+        ),
+        "size": 0,
+        "mtime": None,
+        **status,
+    }
+
+
 def _repo_graph_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "graph"
 
@@ -1812,6 +1838,7 @@ def _artifact_status() -> dict[str, Any]:
             wiki / "wiki-packs",
             manifest_name="wiki-pack-manifest.json",
         ),
+        "pack_compaction": _pack_compaction_artifact_status(wiki),
         "wiki_graph_tar": _first_existing_file_status(
             claude_graph_dir / "wiki-graph.tar.gz",
             repo_graph_dir / "wiki-graph.tar.gz",
@@ -6912,6 +6939,7 @@ def _render_status() -> str:
         ("communities_json", "communities.json"),
         ("graph_store", "graph-store.sqlite3"),
         ("wiki_packs", "wiki packs"),
+        ("pack_compaction", "pack compaction"),
         ("wiki_graph_tar", "wiki-graph.tar.gz"),
         ("skills_sh_catalog", "skill-index.json.gz"),
     )
@@ -6977,7 +7005,16 @@ def _render_status() -> str:
 
 
 def _artifact_detail(status: dict[str, Any]) -> str:
-    if "pack_count" in status:
+    if "needs_compaction" in status:
+        need = "needed" if status.get("needs_compaction") else "not needed"
+        readiness = "ready" if status.get("can_compact_now") else "not ready"
+        detail = (
+            f"compaction: {need}, "
+            f"{int(status.get('max_overlay_count') or 0)} overlays / "
+            f"threshold {int(status.get('overlay_threshold') or 0)}, "
+            f"{readiness}"
+        )
+    elif "pack_count" in status:
         detail = (
             f"packs: {int(status.get('pack_count') or 0)} "
             f"(base {int(status.get('base_count') or 0)}, "

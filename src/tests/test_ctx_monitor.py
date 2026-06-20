@@ -427,7 +427,7 @@ def test_artifact_status_reads_promotion_metadata(
 
     from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack
     from ctx.core.graph.graph_store import ensure_graph_store
-    from ctx.core.wiki.wiki_packs import write_wiki_base_pack
+    from ctx.core.wiki.wiki_packs import write_wiki_base_pack, write_wiki_overlay_pack
 
     graph_dir = fake_claude / "skill-wiki" / "graphify-out"
     graph_dir.mkdir(parents=True)
@@ -457,8 +457,16 @@ def test_artifact_status_reads_promotion_metadata(
     write_wiki_base_pack(
         pack_dir=fake_claude / "skill-wiki" / "wiki-packs" / "base-export-1",
         pack_id="base-export-1",
-        base_export_id="wiki-export-1",
+        base_export_id="export-1",
         pages={"entities/skills/pack-skill.md": "# Pack Skill\n"},
+    )
+    write_wiki_overlay_pack(
+        pack_dir=fake_claude / "skill-wiki" / "wiki-packs" / "overlay-pack-skill",
+        pack_id="overlay-pack-skill",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        pages={"entities/skills/pack-skill.md": "# Pack Skill\n\nUpdated.\n"},
+        tombstones=[],
     )
     ensure_graph_store(graph_dir, graph_dir / "graph-store.sqlite3")
     repo_graph = tmp_path / "repo-graph"
@@ -489,9 +497,12 @@ def test_artifact_status_reads_promotion_metadata(
     assert status["graph_packs"]["pack_count"] == 2
     assert status["graph_packs"]["base_count"] == 1
     assert status["graph_packs"]["overlay_count"] == 1
-    assert status["wiki_packs"]["pack_count"] == 1
+    assert status["wiki_packs"]["pack_count"] == 2
     assert status["wiki_packs"]["base_count"] == 1
-    assert status["wiki_packs"]["overlay_count"] == 0
+    assert status["wiki_packs"]["overlay_count"] == 1
+    assert status["pack_compaction"]["needs_compaction"] is False
+    assert status["pack_compaction"]["can_compact_now"] is True
+    assert status["pack_compaction"]["max_overlay_count"] == 1
     assert status["graph_store"]["exists"] is True
     assert status["graph_store"]["fresh"] is True
     assert status["graph_store"]["ok"] is True
@@ -522,7 +533,9 @@ def test_status_page_and_api_show_queue_and_artifacts(
     assert "graph packs" in html_out
     assert "graph-store.sqlite3" in html_out
     assert "wiki packs" in html_out
+    assert "pack compaction" in html_out
     assert "packs: 0 (base 0, overlay 0)" in html_out
+    assert "compaction: not needed, 0 overlays / threshold" in html_out
     assert "store: stale or missing, 0 nodes, 0 edges" in html_out
     assert wiki_queue.GRAPH_EXPORT_JOB in html_out
 
