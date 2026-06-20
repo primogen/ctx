@@ -208,6 +208,71 @@ def test_main_attach_queries_delta_vector_indexes(tmp_path, capsys) -> None:
     assert '"target": "skill:base-ruby"' not in output
 
 
+def test_main_validate_indexes_reports_base_and_delta(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "base-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:base-python"],
+        content_hashes=["hb"],
+        vectors=np.asarray([[1.0, 0.0]], dtype="float32"),
+    ).save(index_dir)
+    delta_index_dir = tmp_path / "delta-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:delta-python"],
+        content_hashes=["hd"],
+        vectors=np.asarray([[0.9, 0.1]], dtype="float32"),
+    ).save(delta_index_dir)
+
+    rc = main([
+        "validate-indexes",
+        "--index-dir", str(index_dir),
+        "--delta-index-dir", str(delta_index_dir),
+        "--json",
+    ])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["model_id"] == "model-a"
+    assert payload["index_count"] == 2
+    assert payload["node_count"] == 2
+    assert [item["role"] for item in payload["indexes"]] == ["base", "delta"]
+
+
+def test_main_validate_indexes_rejects_incompatible_delta(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "base-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:base-python"],
+        content_hashes=["hb"],
+        vectors=np.asarray([[1.0, 0.0]], dtype="float32"),
+    ).save(index_dir)
+    delta_index_dir = tmp_path / "delta-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-b",
+        node_ids=["skill:delta-python"],
+        content_hashes=["hd"],
+        vectors=np.asarray([[0.9, 0.1]], dtype="float32"),
+    ).save(delta_index_dir)
+
+    rc = main([
+        "validate-indexes",
+        "--index-dir", str(index_dir),
+        "--delta-index-dir", str(delta_index_dir),
+        "--json",
+    ])
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "delta vector index is unreadable or stale" in payload["error"]
+
+
 def test_main_attach_writes_idempotent_overlay_used_by_resolver(tmp_path) -> None:
     index_dir = tmp_path / "vector-index"
     build_vector_index(

@@ -130,6 +130,55 @@ def render_calibration_markdown(summary: AttachCalibrationSummary) -> str:
     return "\n".join(lines) + "\n"
 
 
+def validate_vector_index_set(
+    *,
+    index_dir: Path,
+    delta_index_dirs: list[Path] | None = None,
+) -> dict[str, Any]:
+    """Validate a base vector index plus optional local delta indexes."""
+    base_meta = _read_index_meta(index_dir)
+    model_id = str(base_meta["model_id"])
+    base_index = load_vector_index(
+        index_dir,
+        expected_model_id=model_id,
+        expected_content_fingerprint=str(base_meta["content_fingerprint"]),
+    )
+    if base_index is None:
+        raise ValueError(f"base vector index is unreadable or stale at {index_dir}")
+    indexes = [base_index]
+    index_reports: list[dict[str, Any]] = [_index_report(index_dir, base_index, "base")]
+    for delta_index_dir in delta_index_dirs or []:
+        delta_meta = _read_index_meta(delta_index_dir)
+        delta_index = load_vector_index(
+            delta_index_dir,
+            expected_model_id=model_id,
+            expected_content_fingerprint=str(delta_meta["content_fingerprint"]),
+        )
+        if delta_index is None:
+            raise ValueError(f"delta vector index is unreadable or stale at {delta_index_dir}")
+        indexes.append(delta_index)
+        index_reports.append(_index_report(delta_index_dir, delta_index, "delta"))
+    MergedVectorIndex(indexes)
+    return {
+        "ok": True,
+        "model_id": model_id,
+        "dim": base_index.meta.dim,
+        "index_count": len(indexes),
+        "node_count": sum(index.meta.node_count for index in indexes),
+        "indexes": index_reports,
+    }
+
+
+def _index_report(index_dir: Path, index: Any, role: str) -> dict[str, Any]:
+    return {
+        "role": role,
+        "path": str(index_dir),
+        "index_kind": index.meta.index_kind,
+        "node_count": index.meta.node_count,
+        "content_fingerprint": index.meta.content_fingerprint,
+    }
+
+
 def attach_entity(
     *,
     index_dir: Path,
@@ -267,6 +316,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to graphify-out; supports active graph packs without graph.json",
     )
     calibrate.add_argument("--json", action="store_true", help="Emit JSON instead of Markdown")
+    validate_indexes = sub.add_parser(
+        "validate-indexes",
+        help="Validate a base vector index plus optional local delta indexes",
+    )
+    validate_indexes.add_argument("--index-dir", required=True, help="Path to base vector-index")
+    validate_indexes.add_argument(
+        "--delta-index-dir",
+        action="append",
+        default=[],
+        help="Additional local vector-index directory; repeatable",
+    )
+    validate_indexes.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     attach = sub.add_parser("attach", help="Attach one entity through the semantic vector index")
     attach.add_argument("--index-dir", required=True, help="Path to a persisted vector-index directory")
     attach.add_argument(
@@ -323,6 +384,26 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(summary), indent=2))
         else:
             print(render_calibration_markdown(summary), end="")
+        return 0
+    if args.command == "validate-indexes":
+        try:
+            result = validate_vector_index_set(
+                index_dir=Path(args.index_dir),
+                delta_index_dirs=[Path(path) for path in args.delta_index_dir or []],
+            )
+        except Exception as exc:  # noqa: BLE001 - CLI reports concise validation errors.
+            if args.json:
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            else:
+                print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(
+                "validated vector indexes: "
+                f"{result['index_count']} indexes / {result['node_count']} nodes"
+            )
         return 0
     if args.command == "attach":
         try:
