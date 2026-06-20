@@ -291,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Search a built SQLite graph store.",
     )
     search.add_argument("--db", required=True, help="SQLite database to query")
+    search.add_argument("--graph-dir", help="Require the store to be fresh for this graphify-out")
     search.add_argument("--query", required=True, help="Search text")
     search.add_argument("--limit", type=int, default=20, help="Maximum rows to return")
     neighborhood = sub.add_parser(
@@ -298,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Read a 1-hop neighborhood from a built SQLite graph store.",
     )
     neighborhood.add_argument("--db", required=True, help="SQLite database to query")
+    neighborhood.add_argument("--graph-dir", help="Require the store to be fresh for this graphify-out")
     neighborhood.add_argument("--node-id", required=True, help="Center node id")
     neighborhood.add_argument("--limit", type=int, default=50, help="Maximum edges to return")
 
@@ -315,11 +317,23 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, sort_keys=True))
         return 0 if report["ok"] else 1
     if args.command == "search":
-        rows = search_nodes(Path(args.db), args.query, limit=args.limit)
+        db_path = Path(args.db)
+        if args.graph_dir:
+            report = validate_graph_store(db_path, Path(args.graph_dir))
+            if not report["ok"]:
+                print(json.dumps(report, sort_keys=True))
+                return 1
+        rows = search_nodes(db_path, args.query, limit=args.limit)
         print(json.dumps({"results": rows}, sort_keys=True))
         return 0
     if args.command == "neighborhood":
-        neighborhood_payload = load_neighborhood(Path(args.db), args.node_id, limit=args.limit)
+        db_path = Path(args.db)
+        if args.graph_dir:
+            report = validate_graph_store(db_path, Path(args.graph_dir))
+            if not report["ok"]:
+                print(json.dumps(report, sort_keys=True))
+                return 1
+        neighborhood_payload = load_neighborhood(db_path, args.node_id, limit=args.limit)
         print(json.dumps(neighborhood_payload, sort_keys=True))
         return 0
     parser.error(f"unknown command: {args.command}")

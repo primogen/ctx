@@ -384,11 +384,48 @@ def test_cli_search_reads_built_pack_backed_store(tmp_path: Path, capsys) -> Non
     db_path = tmp_path / "graph.sqlite3"
     ensure_graph_store(graph_dir, db_path)
 
-    result = main(["search", "--db", str(db_path), "--query", "review"])
+    result = main([
+        "search",
+        "--db", str(db_path),
+        "--graph-dir", str(graph_dir),
+        "--query", "review",
+    ])
 
     assert result == 0
     payload = json.loads(capsys.readouterr().out)
     assert [row["id"] for row in payload["results"]] == ["agent:reviewer"]
+
+
+def test_cli_search_rejects_stale_store_when_graph_dir_is_required(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_dir.mkdir()
+    graph = _sample_graph()
+    (graph_dir / "graph.json").write_text(
+        json.dumps(nx.node_link_data(graph, edges="edges")),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "graph.sqlite3"
+    ensure_graph_store(graph_dir, db_path)
+    graph.add_node("skill:docs", label="docs", type="skill", tags=["docs"])
+    (graph_dir / "graph.json").write_text(
+        json.dumps(nx.node_link_data(graph, edges="edges")),
+        encoding="utf-8",
+    )
+
+    result = main([
+        "search",
+        "--db", str(db_path),
+        "--graph-dir", str(graph_dir),
+        "--query", "docs",
+    ])
+
+    assert result == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "source fingerprint is stale" in payload["errors"]
 
 
 def test_cli_neighborhood_reads_built_pack_backed_store(tmp_path: Path, capsys) -> None:
@@ -426,6 +463,7 @@ def test_cli_neighborhood_reads_built_pack_backed_store(tmp_path: Path, capsys) 
     result = main([
         "neighborhood",
         "--db", str(db_path),
+        "--graph-dir", str(graph_dir),
         "--node-id", "skill:base",
     ])
 
