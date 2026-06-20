@@ -826,10 +826,28 @@ def _validate_graph_json_outline(path: Path) -> None:
     if tail_text and not tail_text.rstrip().endswith("}"):
         raise ValueError("graphify-out/graph.json appears truncated")
     outline = f"{head_text}\n{tail_text}"
-    if '"nodes"' not in outline:
+    if '"nodes"' not in outline and not _json_file_contains_any_key(path, ("nodes",)):
         raise ValueError("graphify-out/graph.json is missing a nodes list")
-    if '"edges"' not in outline and '"links"' not in outline:
+    if '"edges"' not in outline and '"links"' not in outline and not _json_file_contains_any_key(
+        path,
+        ("edges", "links"),
+    ):
         raise ValueError("graphify-out/graph.json is missing an edges/links list")
+
+
+def _json_file_contains_any_key(path: Path, keys: tuple[str, ...]) -> bool:
+    patterns = tuple(f'"{key}"'.encode("utf-8") for key in keys)
+    overlap = max((len(pattern) for pattern in patterns), default=1) - 1
+    previous = b""
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(_GRAPH_JSON_OUTLINE_BYTES)
+            if not chunk:
+                return False
+            haystack = previous + chunk
+            if any(pattern in haystack for pattern in patterns):
+                return True
+            previous = haystack[-overlap:] if overlap > 0 else b""
 
 
 def _validate_dashboard_index_file(path: Path, *, expected_export_id: str) -> None:

@@ -852,6 +852,21 @@ def test_graph_install_validation_does_not_parse_full_graph_json(
     ci._validate_graph_install_tree(wiki)
 
 
+def test_graph_json_outline_scans_middle_for_edges_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ci, "_GRAPH_JSON_OUTLINE_BYTES", 32)
+    filler = "x" * 256
+    graph_json = tmp_path / "graph.json"
+    graph_json.write_text(
+        '{"nodes":["' + filler + '"],"edges":[],"graph":"' + filler + '"}',
+        encoding="utf-8",
+    )
+
+    ci._validate_graph_json_outline(graph_json)
+
+
 def test_graph_install_validation_accepts_base_pack_without_graph_json(
     tmp_path: Path,
 ) -> None:
