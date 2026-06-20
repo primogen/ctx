@@ -167,7 +167,11 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
                 payload={},
                 source="entity-delete",
             )
-            return f"queued graph store refresh for deleted {subject_type} entity {slug}"
+            suffix = _pack_compaction_suffix_if_due(wiki_path)
+            return (
+                f"queued graph store refresh for deleted {subject_type} entity {slug}"
+                f"{suffix}"
+            )
         else:
             wiki_queue.enqueue_maintenance_job(
                 wiki_path,
@@ -202,6 +206,7 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
             payload={},
             source="entity-upsert",
         )
+        suffix = _pack_compaction_suffix_if_due(wiki_path)
     else:
         wiki_queue.enqueue_maintenance_job(
             wiki_path,
@@ -209,7 +214,36 @@ def _process_entity_upsert(wiki_path: Path, payload: dict[str, Any]) -> str:
             payload={"graph_only": True, "incremental": True},
             source="entity-upsert",
         )
-    return f"refreshed {subject_type} index for {slug}; {attach_outcome.message}"
+        suffix = ""
+    return f"refreshed {subject_type} index for {slug}; {attach_outcome.message}{suffix}"
+
+
+def _pack_compaction_suffix_if_due(wiki_path: Path) -> str:
+    return "; queued pack compaction" if _enqueue_pack_compaction_if_due(wiki_path) else ""
+
+
+def _enqueue_pack_compaction_if_due(wiki_path: Path) -> bool:
+    threshold = int(cfg.graph_pack_compaction_overlay_threshold)
+    try:
+        status = pack_compaction_status(
+            wiki_path=wiki_path,
+            overlay_threshold=threshold,
+            validate=False,
+        )
+        if not (
+            bool(status.get("needs_compaction"))
+            and bool(status.get("can_compact_now"))
+        ):
+            return False
+        wiki_queue.enqueue_maintenance_job(
+            wiki_path,
+            kind=wiki_queue.PACK_COMPACTION_JOB,
+            payload={"overlay_threshold": threshold},
+            source="pack-threshold",
+        )
+    except Exception:  # noqa: BLE001 - compaction is derived maintenance, not source of truth.
+        return False
+    return True
 
 
 def _emit_wiki_page_upsert(wiki_path: Path, relpath: str, text: str) -> None:

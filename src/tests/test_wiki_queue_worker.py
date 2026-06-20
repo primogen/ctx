@@ -430,6 +430,57 @@ def test_process_next_entity_upsert_writes_overlay_pack_when_base_pack_exists(
     assert jobs[1].payload == {"source": "entity-upsert"}
 
 
+def test_process_next_entity_upsert_queues_pack_compaction_at_overlay_threshold(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_path = _write_base_graph_for_overlay(wiki)
+    _write_base_graph_pack_for_overlay(wiki, graph_path)
+    write_wiki_base_pack(
+        pack_dir=wiki / "wiki-packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        pages={
+            "entities/skills/python-testing.md": "# Python Testing\n",
+            "entities/skills/ruby-testing.md": "# Ruby Testing\n",
+        },
+    )
+    _build_vector_index_for_overlay(wiki)
+    entity_text = "---\ntags:\n  - python\n  - testing\n---\n# worker-python\n"
+    entity_path = _write_entity(wiki, "entities/skills/worker-python.md", entity_text)
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="worker-python",
+        entity_path=entity_path,
+        content=entity_text,
+        action="created",
+        source="test",
+        now=10.0,
+    )
+    monkeypatch.setattr(wiki_queue_worker, "update_index", MagicMock())
+    monkeypatch.setattr(wiki_queue_worker.cfg, "graph_pack_compaction_overlay_threshold", 1)
+    _patch_test_embedder(monkeypatch)
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert result.message.endswith("; queued pack compaction")
+    jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
+    assert [job.kind for job in jobs] == [
+        wiki_queue.ENTITY_UPSERT_JOB,
+        wiki_queue.GRAPH_STORE_REFRESH_JOB,
+        wiki_queue.PACK_COMPACTION_JOB,
+    ]
+    assert jobs[1].payload == {"source": "entity-upsert"}
+    assert jobs[2].payload == {
+        "overlay_threshold": 1,
+        "source": "pack-threshold",
+    }
+
+
 def test_process_next_entity_upsert_writes_node_pack_without_vector_index(
     tmp_path: Path,
     monkeypatch: Any,
@@ -678,6 +729,54 @@ def test_process_next_entity_delete_writes_graph_pack_tombstone_when_base_pack_e
         wiki_queue.GRAPH_STORE_REFRESH_JOB,
     ]
     assert jobs[1].payload == {"source": "entity-delete"}
+
+
+def test_process_next_entity_delete_queues_pack_compaction_at_overlay_threshold(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_path = _write_base_graph_for_overlay(wiki)
+    _write_base_graph_pack_for_overlay(wiki, graph_path)
+    write_wiki_base_pack(
+        pack_dir=wiki / "wiki-packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        pages={
+            "entities/skills/python-testing.md": "# Python Testing\n",
+            "entities/skills/ruby-testing.md": "# Ruby Testing\n",
+        },
+    )
+    entity_path = wiki / "entities" / "skills" / "python-testing.md"
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="python-testing",
+        entity_path=entity_path,
+        content="",
+        action="delete",
+        source="test",
+        now=10.0,
+    )
+    monkeypatch.setattr(wiki_queue_worker, "update_index", MagicMock())
+    monkeypatch.setattr(wiki_queue_worker.cfg, "graph_pack_compaction_overlay_threshold", 1)
+
+    result = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+
+    assert result is not None
+    assert result.status == wiki_queue.STATUS_SUCCEEDED
+    assert result.message.endswith("; queued pack compaction")
+    jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
+    assert [job.kind for job in jobs] == [
+        wiki_queue.ENTITY_UPSERT_JOB,
+        wiki_queue.GRAPH_STORE_REFRESH_JOB,
+        wiki_queue.PACK_COMPACTION_JOB,
+    ]
+    assert jobs[1].payload == {"source": "entity-delete"}
+    assert jobs[2].payload == {
+        "overlay_threshold": 1,
+        "source": "pack-threshold",
+    }
 
 
 def test_process_next_retries_hash_mismatch(
