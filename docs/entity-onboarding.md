@@ -19,11 +19,14 @@ ctx-scan-repo --repo . --recommend
 ```
 
 If a persisted semantic vector index exists, that worker pass also runs a
-best-effort incremental attach into `graphify-out/entity-overlays.jsonl` so the
-new entity can connect to existing graph nodes without a full all-pairs
-semantic rebuild. The wiki page remains the source of truth; if incremental
-attach is skipped or fails, the worker still queues the normal incremental
-graph export job.
+best-effort incremental attach into `graphify-out/entity-overlays.jsonl` and,
+when active graph packs exist, writes a small graph overlay pack for the
+changed entity. If the vector index is missing, the worker can still write a
+node-only graph overlay pack and refresh `graph-store.sqlite3`, so local
+dashboard/search/recommendation reads see the merged base+overlay graph without
+a full all-pairs semantic rebuild. The wiki page remains the source of truth;
+only legacy installs without active graph packs fall back to the normal
+incremental graph export job.
 
 ## Updating the Graph and LLM Wiki
 
@@ -43,8 +46,9 @@ the update is treated like a release step.
    still changing.
 5. Drain the wiki queue for local runtime use:
    `ctx-wiki-worker --wiki ~/.claude/skill-wiki --limit 1`. This updates the
-   wiki index, attempts incremental ANN graph attach when a vector index exists,
-   and queues the normal incremental graph export.
+   wiki index, writes wiki overlay packs, attempts incremental ANN graph attach
+   when a vector index exists, writes graph overlay packs when active packs are
+   present, and queues a graph-store refresh so local reads see the merged view.
 6. Rebuild the curated wiki graph with `ctx-wiki-graphify` before shipping
    release artifacts or when you need a full graph/export reconciliation.
 7. Repack `graph/wiki-graph.tar.gz` through the artifact promotion path:

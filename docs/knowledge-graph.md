@@ -280,6 +280,14 @@ graph pack manifest, wiki pack manifest, checksums, matching export IDs, and
 graph/wiki entity consistency before replacing active packs:
 
 ```bash
+ctx-pack-compact validate \
+  --staged-graph-packs-dir /tmp/ctx-pack-stage/graph-packs \
+  --staged-wiki-packs-dir /tmp/ctx-pack-stage/wiki-packs \
+  --require-compaction-manifest \
+  --json
+```
+
+```bash
 ctx-pack-compact promote \
   --wiki-path ~/.claude/skill-wiki \
   --staged-graph-packs-dir /tmp/ctx-pack-stage/graph-packs \
@@ -292,6 +300,10 @@ Use `--graph-store-db <path>` to refresh a non-default store, or
 `--no-graph-store-refresh` only when you plan to rebuild it separately:
 
 ```bash
+ctx-pack-compact validate \
+  --wiki-path ~/.claude/skill-wiki \
+  --json
+
 ctx-graph-store build \
   --graph-dir ~/.claude/skill-wiki/graphify-out \
   --db ~/.claude/skill-wiki/graphify-out/graph-store.sqlite3
