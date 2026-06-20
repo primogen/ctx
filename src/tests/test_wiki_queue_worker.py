@@ -852,6 +852,74 @@ def test_process_next_entity_delete_queues_pack_compaction_at_overlay_threshold(
     }
 
 
+def test_entity_delete_modular_flow_refreshes_store_and_compacts_tombstones(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_path = _write_base_graph_for_overlay(wiki)
+    graph_packs = _write_base_graph_pack_for_overlay(wiki, graph_path)
+    wiki_packs = wiki / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=wiki_packs / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        pages={
+            "entities/skills/python-testing.md": "# Python Testing\n",
+            "entities/skills/ruby-testing.md": "# Ruby Testing\n",
+        },
+    )
+    entity_path = wiki / "entities" / "skills" / "python-testing.md"
+    wiki_queue.enqueue_entity_upsert(
+        wiki,
+        entity_type="skill",
+        slug="python-testing",
+        entity_path=entity_path,
+        content="",
+        action="delete",
+        source="test",
+        now=10.0,
+    )
+    monkeypatch.setattr(wiki_queue_worker, "update_index", MagicMock())
+    monkeypatch.setattr(wiki_queue_worker.cfg, "graph_pack_compaction_overlay_threshold", 1)
+
+    delete = wiki_queue_worker.process_next(wiki, worker_id="worker-a", now=20.0)
+    refresh = wiki_queue_worker.process_next(wiki, worker_id="worker-a")
+    compact = wiki_queue_worker.process_next(wiki, worker_id="worker-a")
+
+    assert delete is not None
+    assert delete.status == wiki_queue.STATUS_SUCCEEDED
+    assert delete.message.endswith("; queued pack compaction")
+    assert refresh is not None
+    assert refresh.kind == wiki_queue.GRAPH_STORE_REFRESH_JOB
+    assert refresh.status == wiki_queue.STATUS_SUCCEEDED
+    assert compact is not None
+    assert compact.kind == wiki_queue.PACK_COMPACTION_JOB
+    assert compact.status == wiki_queue.STATUS_SUCCEEDED
+    assert compact.message.startswith("pack compaction promoted export-compacted-1")
+
+    compacted_graph = load_merged_pack_graph(graph_packs)
+    assert sorted(compacted_graph.nodes) == ["skill:ruby-testing"]
+    assert "skill:python-testing" not in compacted_graph
+    compacted_pages = load_merged_wiki_pages(wiki_packs)
+    assert compacted_pages == {
+        "entities/skills/ruby-testing.md": "# Ruby Testing\n",
+    }
+    assert sorted(path.name for path in graph_packs.iterdir()) == [
+        "base-export-compacted-1",
+    ]
+    assert sorted(path.name for path in wiki_packs.iterdir()) == [
+        "base-export-compacted-1",
+    ]
+
+    graph_dir = wiki / "graphify-out"
+    db_path = graph_dir / "graph-store.sqlite3"
+    assert validate_graph_store(db_path, graph_dir)["ok"] is True
+    assert graph_store_metadata(db_path)["ctx_graph_store_source"] == "packs"
+    assert "skill:python-testing" not in load_graph(graph_path)
+    assert wiki_queue_worker.process_next(wiki, worker_id="worker-a") is None
+
+
 def test_process_next_retries_hash_mismatch(
     tmp_path: Path,
     monkeypatch: Any,
