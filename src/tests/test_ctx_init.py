@@ -308,6 +308,8 @@ def test_main_with_hooks_flag_invokes_inject(tmp_path: Path, monkeypatch) -> Non
 def _write_graph_archive(
     tmp_path: Path,
     *,
+    include_graph_pack: bool = False,
+    graph_pack_export_id: str = "test-export",
     include_wiki_pack: bool = False,
     wiki_pack_export_id: str = "test-export",
 ) -> Path:
@@ -351,6 +353,17 @@ def _write_graph_archive(
     entities.mkdir(parents=True)
     (entities / "current.md").write_text("# Current\n", encoding="utf-8")
     (source / "index.md").write_text("# Wiki\n", encoding="utf-8")
+    if include_graph_pack:
+        graph = nx.Graph()
+        graph.add_node("skill:current", label="current", type="skill")
+        write_base_pack(
+            pack_dir=graph_out / "packs" / f"base-{graph_pack_export_id}",
+            pack_id=f"base-{graph_pack_export_id}",
+            base_export_id=graph_pack_export_id,
+            config_hash="config-1",
+            model_id="model-1",
+            graph=graph,
+        )
     if include_wiki_pack:
         write_wiki_base_pack(
             pack_dir=source / "wiki-packs" / f"base-{wiki_pack_export_id}",
@@ -900,6 +913,33 @@ def test_runtime_graph_install_extracts_and_validates_wiki_packs(
     assert not (wiki / "entities" / "skills" / "current.md").exists()
     ci._validate_graph_install_tree(wiki)
     assert ci._graph_full_install_complete(wiki) is True
+
+
+def test_runtime_graph_install_extracts_and_validates_graph_packs(
+    tmp_path: Path,
+) -> None:
+    archive = _write_graph_archive(tmp_path, include_graph_pack=True)
+    wiki = tmp_path / "installed-wiki"
+
+    ci._extract_graph_archive(archive, wiki, install_mode="runtime")
+
+    assert (
+        wiki / "graphify-out" / "packs" / "base-test-export" / "graph-pack-manifest.json"
+    ).is_file()
+    ci._validate_graph_install_tree(wiki)
+
+
+def test_graph_install_rejects_mismatched_graph_pack_export_id(
+    tmp_path: Path,
+) -> None:
+    archive = _write_graph_archive(
+        tmp_path,
+        include_graph_pack=True,
+        graph_pack_export_id="wrong-export",
+    )
+
+    with pytest.raises(ValueError, match="graphify-out/packs export_id mismatch"):
+        ci._extract_graph_archive(archive, tmp_path / "installed-wiki", install_mode="runtime")
 
 
 def test_graph_install_rejects_mismatched_wiki_pack_export_id(

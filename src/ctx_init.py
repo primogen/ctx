@@ -687,7 +687,7 @@ def _validate_graph_install_tree(wiki_dir: Path) -> None:
     if missing:
         raise ValueError(f"graph archive is missing required files: {missing}")
 
-    _validate_graph_payload_outline(wiki_dir)
+    has_graph_json = _validate_graph_payload_outline(wiki_dir)
 
     manifest = _read_json_file(wiki_dir / "graphify-out" / "graph-export-manifest.json")
     if not isinstance(manifest, dict):
@@ -706,6 +706,11 @@ def _validate_graph_install_tree(wiki_dir: Path) -> None:
     }
     if not isinstance(artifacts, dict) or artifacts != expected_artifacts:
         raise ValueError("graph export manifest artifacts map is incomplete")
+    _validate_graph_pack_outline(
+        wiki_dir / "graphify-out" / "packs",
+        expected_export_id=export_id.strip(),
+        required=not has_graph_json,
+    )
     _validate_dashboard_index_file(
         wiki_dir / "graphify-out" / "dashboard-neighborhoods.sqlite3",
         expected_export_id=export_id.strip(),
@@ -713,15 +718,28 @@ def _validate_graph_install_tree(wiki_dir: Path) -> None:
     _validate_wiki_pack_outline(wiki_dir / "wiki-packs", expected_export_id=export_id.strip())
 
 
-def _validate_graph_payload_outline(wiki_dir: Path) -> None:
+def _validate_graph_payload_outline(wiki_dir: Path) -> bool:
     graph_json = wiki_dir / "graphify-out" / "graph.json"
     if graph_json.is_file() and graph_json.stat().st_size > 0:
         _validate_graph_json_outline(graph_json)
+        return True
+    _validate_graph_pack_outline(wiki_dir / "graphify-out" / "packs", required=True)
+    return False
+
+
+def _validate_graph_pack_outline(
+    packs_dir: Path,
+    *,
+    expected_export_id: str | None = None,
+    required: bool,
+) -> None:
+    if not packs_dir.exists():
+        if required:
+            raise ValueError(
+                "graph archive is missing graph payload: "
+                "graphify-out/graph.json or graphify-out/packs"
+            )
         return
-    _validate_graph_pack_outline(wiki_dir / "graphify-out" / "packs")
-
-
-def _validate_graph_pack_outline(packs_dir: Path) -> None:
     try:
         from ctx.core.graph.graph_packs import (  # noqa: PLC0415
             GraphPackManifestError,
@@ -732,11 +750,13 @@ def _validate_graph_pack_outline(packs_dir: Path) -> None:
     except GraphPackManifestError as exc:
         raise ValueError(f"graphify-out/packs is invalid: {exc}") from exc
     if not entries:
-        raise ValueError(
-            "graph archive is missing graph payload: "
-            "graphify-out/graph.json or graphify-out/packs"
-        )
+        raise ValueError("graphify-out/packs exists but does not contain a valid base pack")
     base = entries[0].manifest
+    if expected_export_id is not None and base.base_export_id != expected_export_id:
+        raise ValueError(
+            "graphify-out/packs export_id mismatch: expected "
+            f"{expected_export_id}, got {base.base_export_id}",
+        )
     if "graph.json" not in base.checksums:
         raise ValueError("graph base pack is missing graph.json artifact")
 
