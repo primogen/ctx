@@ -308,9 +308,9 @@ def _validate_wiki_pack_payload(
     packs_dir: Path,
     *,
     expected_export_id: str,
-) -> None:
+) -> dict[str, str]:
     if not any(name.startswith(_WIKI_PACK_PREFIX) for name in names):
-        return
+        return {}
     try:
         entries = discover_wiki_pack_manifests(packs_dir)
         pages = load_merged_wiki_pages(packs_dir)
@@ -326,6 +326,7 @@ def _validate_wiki_pack_payload(
         )
     if "index.md" not in pages:
         raise GraphArtifactError("wiki pack payload is missing index.md")
+    return pages
 
 
 def _record_graph_pack_export_id(
@@ -517,6 +518,27 @@ def _count_lines(payload: bytes) -> int:
 
 def _is_converted_skill_page(name: str) -> bool:
     return name.startswith("converted/") and name.endswith("/SKILL.md")
+
+
+def _count_wiki_page_inventory(names: set[str]) -> tuple[int, int, int, int, int]:
+    skill_pages = sum(
+        1 for name in names if name.startswith("entities/skills/") and name.endswith(".md")
+    )
+    agent_pages = sum(
+        1 for name in names if name.startswith("entities/agents/") and name.endswith(".md")
+    )
+    mcp_pages = sum(
+        1 for name in names if name.startswith("entities/mcp-servers/") and name.endswith(".md")
+    )
+    harness_pages = sum(
+        1 for name in names if name.startswith("entities/harnesses/") and name.endswith(".md")
+    )
+    skills_sh_converted = sum(
+        1
+        for name in names
+        if name.startswith("converted/skills-sh-") and name.endswith("/SKILL.md")
+    )
+    return skill_pages, agent_pages, mcp_pages, harness_pages, skills_sh_converted
 
 
 def _iter_skill_bundle_refs(payload: bytes) -> list[str]:
@@ -834,7 +856,6 @@ def validate_graph_artifacts(
     names: set[str] = set()
     graph_nodes = graph_edges = graph_semantic_edges = skills_sh_nodes = 0
     harness_nodes = 0
-    skill_pages = agent_pages = mcp_pages = harness_pages = skills_sh_converted = 0
     export_ids: dict[str, str] = {}
     manifest: dict[str, Any] | None = None
     archive_communities: dict[str, Any] | None = None
@@ -859,16 +880,6 @@ def validate_graph_artifacts(
                 raise GraphArtifactError(
                     f"archive contains transient queue state: {member.name}",
                 )
-            if name.startswith("entities/skills/") and name.endswith(".md"):
-                skill_pages += 1
-            elif name.startswith("entities/agents/") and name.endswith(".md"):
-                agent_pages += 1
-            elif name.startswith("entities/mcp-servers/") and name.endswith(".md"):
-                mcp_pages += 1
-            elif name.startswith("entities/harnesses/") and name.endswith(".md"):
-                harness_pages += 1
-            if name.startswith("converted/skills-sh-") and name.endswith("/SKILL.md"):
-                skills_sh_converted += 1
             if member.isfile() and _is_converted_skill_page(name):
                 f = tf.extractfile(member)
                 if f is None:
@@ -943,18 +954,6 @@ def validate_graph_artifacts(
                             f"{member.name} has {lines} lines, above limit {limit}",
                         )
 
-    missing_bundle_refs = [
-        (skill_page, ref, target)
-        for skill_page, ref, target in skill_bundle_refs
-        if target not in names
-    ]
-    if missing_bundle_refs:
-        sample = "; ".join(
-            f"{skill_page} references {ref} but {target} is absent"
-            for skill_page, ref, target in missing_bundle_refs[:5]
-        )
-        raise GraphArtifactError(f"missing bundled skill file: {sample}")
-
     required_names = _GRAPH_RUNTIME_REQUIRED_NAMES - {_GRAPH_PAYLOAD_NAME}
     missing_required = sorted(required_names - names)
     if missing_required:
@@ -989,13 +988,49 @@ def validate_graph_artifacts(
     finally:
         graph_pack_tmp.cleanup()
     try:
-        _validate_wiki_pack_payload(
+        wiki_pack_pages = _validate_wiki_pack_payload(
             names,
             wiki_packs_dir,
             expected_export_id=manifest_export_id,
         )
     finally:
         wiki_pack_tmp.cleanup()
+    for page_name, text in wiki_pack_pages.items():
+        payload = text.encode("utf-8")
+        if _is_converted_skill_page(page_name):
+            for ref in _iter_skill_bundle_refs(payload):
+                skill_bundle_refs.append((
+                    page_name,
+                    ref,
+                    _skill_bundle_target_name(page_name, ref),
+                ))
+        if deep and page_name.startswith("converted/skills-sh-"):
+            if page_name.endswith("/SKILL.md") or "/references/" in page_name:
+                lines = _count_lines(payload)
+                limit = line_threshold if page_name.endswith("/SKILL.md") else max_stage_lines
+                if lines > limit:
+                    raise GraphArtifactError(
+                        f"{page_name} has {lines} lines, above limit {limit}",
+                    )
+    all_page_names = names | set(wiki_pack_pages)
+    missing_bundle_refs = [
+        (skill_page, ref, target)
+        for skill_page, ref, target in skill_bundle_refs
+        if target not in all_page_names
+    ]
+    if missing_bundle_refs:
+        sample = "; ".join(
+            f"{skill_page} references {ref} but {target} is absent"
+            for skill_page, ref, target in missing_bundle_refs[:5]
+        )
+        raise GraphArtifactError(f"missing bundled skill file: {sample}")
+    (
+        skill_pages,
+        agent_pages,
+        mcp_pages,
+        harness_pages,
+        skills_sh_converted,
+    ) = _count_wiki_page_inventory(all_page_names)
     if dashboard_index_path is None:
         raise GraphArtifactError("graphify-out/dashboard-neighborhoods.sqlite3 is missing")
     try:
@@ -1009,16 +1044,16 @@ def validate_graph_artifacts(
     _validate_export_ids(export_ids, expected=manifest_export_id)
     _validate_root_communities(root_communities, archive_communities)
     _validate_graph_previews(graph_dir, export_id=manifest_export_id, manifest=manifest)
-    missing_pages = sorted(required_skill_pages - names)
+    missing_pages = sorted(required_skill_pages - all_page_names)
     if missing_pages:
         raise GraphArtifactError(f"missing Skills.sh entity pages: {missing_pages[:5]}")
-    missing_converted = sorted(available_converted_paths - names)
+    missing_converted = sorted(available_converted_paths - all_page_names)
     if missing_converted:
         raise GraphArtifactError(f"missing converted Skills.sh body: {missing_converted[0]}")
     missing_harnesses = sorted(
         f"entities/harnesses/{slug}.md"
         for slug in expected_harnesses
-        if f"entities/harnesses/{slug}.md" not in names
+        if f"entities/harnesses/{slug}.md" not in all_page_names
     )
     if missing_harnesses:
         raise GraphArtifactError(f"missing harness entity pages: {missing_harnesses}")

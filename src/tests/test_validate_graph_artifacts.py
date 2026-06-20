@@ -59,6 +59,7 @@ def _write_test_wiki_pack(graph_dir: Path, *, export_id: str) -> Path:
             "index.md": "# Wiki\n",
             "entities/skills/skills-sh-example-skill.md": "# Example\n",
             "entities/harnesses/langgraph.md": "# LangGraph\n",
+            "converted/skills-sh-example-skill/SKILL.md": "# Example\n",
         },
     )
     return pack_root
@@ -243,6 +244,7 @@ def _write_archive(
     include_graph: bool = True,
     graph_artifact: str = "graph.json",
     graph_pack_dir: Path | None = None,
+    include_expanded_entity_pages: bool = True,
     include_wiki_pack: bool = True,
     wiki_pack_dir: Path | None = None,
     include_original: bool = False,
@@ -338,8 +340,9 @@ def _write_archive(
             _dashboard_index_bytes(graph_dir, export_id=manifest_export_id),
         )
         _add_text(tf, "./external-catalogs/skills-sh/catalog.json", "{}")
-        _add_text(tf, "./entities/skills/skills-sh-example-skill.md", "# Example\n")
-        _add_text(tf, "./entities/harnesses/langgraph.md", "# LangGraph\n")
+        if include_expanded_entity_pages:
+            _add_text(tf, "./entities/skills/skills-sh-example-skill.md", "# Example\n")
+            _add_text(tf, "./entities/harnesses/langgraph.md", "# LangGraph\n")
         if include_converted:
             _add_text(tf, "./converted/skills-sh-example-skill/SKILL.md", converted_skill_text)
             _add_text(tf, "./converted/skills-sh-example-skill/references/01-scope.md", "# Scope\n")
@@ -466,6 +469,39 @@ def test_validate_graph_artifacts_rejects_mismatched_wiki_pack_export_id(
             min_semantic_edges=1,
             expected_harnesses={"langgraph"},
         )
+
+
+def test_validate_graph_artifacts_accepts_pack_native_full_wiki_pages(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(
+        tmp_path,
+        include_expanded_entity_pages=False,
+        include_converted=False,
+    )
+
+    stats = validate_graph_artifacts(
+        tmp_path,
+        deep=True,
+        min_nodes=2,
+        min_edges=1,
+        min_skills_sh_nodes=1,
+        min_semantic_edges=1,
+        expected_harnesses={"langgraph"},
+        expected_skills_sh_converted=1,
+        expected_skill_pages=1,
+        expected_agent_pages=0,
+        expected_mcp_pages=0,
+        expected_harness_pages=1,
+    )
+
+    assert stats.skill_pages == 1
+    assert stats.harness_pages == 1
+    assert stats.skills_sh_converted == 1
 
 
 def test_validate_graph_artifacts_accepts_runtime_graph_pack_payload(
@@ -859,7 +895,7 @@ def test_validate_graph_artifacts_rejects_missing_converted_catalog_path(
         converted_path="converted/skills-sh-example-skill/SKILL.md",
     )
     (tmp_path / "communities.json").write_text("{}", encoding="utf-8")
-    _write_archive(tmp_path, include_converted=False)
+    _write_archive(tmp_path, include_converted=False, include_wiki_pack=False)
 
     with pytest.raises(GraphArtifactError, match="missing converted Skills.sh body"):
         validate_graph_artifacts(tmp_path)
