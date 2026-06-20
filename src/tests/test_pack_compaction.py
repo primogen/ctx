@@ -68,6 +68,43 @@ def test_compact_active_pack_sets_stages_graph_and_wiki_without_mutating_active(
     assert manifest["wiki"]["pack_id"] == "base-export-2"
 
 
+def test_compact_active_pack_sets_rejects_graph_wiki_mismatch_before_return(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_packs, wiki_packs = _write_active_pack_sets(wiki)
+    staging_dir = tmp_path / "staged-compaction"
+    write_overlay_pack(
+        pack_dir=graph_packs / "overlay-missing-wiki",
+        pack_id="overlay-missing-wiki",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        nodes=[{"id": "skill:missing-wiki", "type": "skill", "label": "missing wiki"}],
+        edges=[{"source": "skill:missing-wiki", "target": "skill:keep", "weight": 0.8}],
+        tombstones=[],
+    )
+
+    with pytest.raises(PackCompactionError, match="missing wiki pages"):
+        compact_active_pack_sets(
+            wiki_path=wiki,
+            base_export_id="export-2",
+            staging_dir=staging_dir,
+        )
+
+    assert not staging_dir.exists()
+    assert [entry.manifest.pack_id for entry in discover_pack_manifests(graph_packs)] == [
+        "base-export-1",
+        "overlay-new",
+        "overlay-missing-wiki",
+    ]
+    assert [entry.manifest.pack_id for entry in discover_wiki_pack_manifests(wiki_packs)] == [
+        "base-export-1",
+        "overlay-new",
+    ]
+
+
 def test_pack_compaction_cli_emits_json_for_staged_pack_sets(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

@@ -107,8 +107,8 @@ def compact_active_pack_sets(
 ) -> PackCompactionResult:
     """Stage matching compacted graph and wiki base packs.
 
-    The active pack directories are not mutated. The caller can validate the
-    staged roots and promote them in a later operation.
+    The active pack directories are not mutated. Staged roots are validated
+    before returning so a successful result is promotable by construction.
     """
     if not base_export_id.strip():
         raise PackCompactionError("base_export_id must be non-empty")
@@ -152,7 +152,8 @@ def compact_active_pack_sets(
             wiki_manifest=wiki_manifest,
         )
         _write_compaction_manifest(result, created_at=created_at)
-    except (GraphPackManifestError, WikiPackManifestError, OSError) as exc:
+        _validate_staged_pack_roots(staged_graph_packs_dir, staged_wiki_packs_dir)
+    except (GraphPackManifestError, WikiPackManifestError, PackCompactionError, OSError) as exc:
         shutil.rmtree(stage_root, ignore_errors=True)
         raise PackCompactionError(str(exc)) from exc
 
