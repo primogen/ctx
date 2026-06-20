@@ -48,6 +48,7 @@ from ctx.adapters.generic.runtime_lifecycle import RuntimeLifecycleStore
 from ctx.adapters.generic.tools import TOOL_SEPARATOR
 from ctx.core.entity_types import (
     RECOMMENDABLE_ENTITY_TYPES,
+    entity_relpath,
     entity_page_path,
     entity_wikilink,
 )
@@ -74,7 +75,9 @@ _RESPONSE_FORMAT_PROPERTY = {
 }
 
 FileSignature = tuple[int, int, str]
-GraphSignature = tuple[FileSignature | None, FileSignature | None]
+PackSignature = tuple[tuple[str, FileSignature | None], ...]
+GraphSignature = tuple[FileSignature | None, FileSignature | None, PackSignature]
+PageSignature = tuple[int, int, int, PackSignature]
 
 
 def _response_format_from_args(args: Mapping[str, Any]) -> str:
@@ -146,7 +149,7 @@ class CtxCoreToolbox:
         self._graph: Any | None = None       # networkx.Graph
         self._pages: list[Any] | None = None  # list[SkillPage]
         self._graph_signature: GraphSignature | None = None
-        self._pages_signature: tuple[int, int, int] | None = None
+        self._pages_signature: PageSignature | None = None
         self._semantic_signature: tuple[FileSignature | None, ...] | None = None
 
     # ── Public Protocol surface ─────────────────────────────────────────
@@ -528,8 +531,24 @@ class CtxCoreToolbox:
             return json.dumps({"error": "wiki_dir not configured"})
 
         candidates = _wiki_get_candidates(wiki, slug, entity_type or None)
+        try:
+            pack_pages = _wiki_pack_pages(wiki)
+        except Exception as exc:  # noqa: BLE001 - surface corrupt pack state to callers.
+            return json.dumps({"error": f"could not read wiki-packs: {exc}"})
 
         for candidate_type, path, wikilink in candidates:
+            if pack_pages is not None:
+                relpath = _wiki_entity_relpath(candidate_type, slug)
+                text = pack_pages.get(relpath)
+                if text is not None:
+                    return self._serialise_page_text(
+                        path,
+                        text,
+                        candidate_type,
+                        wikilink,
+                        _response_format_from_args(args),
+                    )
+                continue
             if path.is_file():
                 return self._serialise_page(
                     path,
@@ -638,12 +657,22 @@ class CtxCoreToolbox:
         wikilink: str,
         response_format: str,
     ) -> str:
-        from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body  # noqa: PLC0415
-
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             return json.dumps({"error": f"could not read {path}: {exc}"})
+        return self._serialise_page_text(path, text, entity_type, wikilink, response_format)
+
+    def _serialise_page_text(
+        self,
+        path: Path,
+        text: str,
+        entity_type: str,
+        wikilink: str,
+        response_format: str,
+    ) -> str:
+        from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body  # noqa: PLC0415
+
         fm, body = parse_frontmatter_and_body(text)
         return _encode_response({
             "slug": path.stem,
@@ -684,6 +713,13 @@ class CtxCoreToolbox:
 
     def _graph_file_path(self) -> Path | None:
         if self._graph_path is not None:
+            if _graph_source_available(self._graph_path):
+                return self._graph_path
+            wiki = self._wiki_dir_resolved()
+            if wiki is not None:
+                wiki_graph_path = wiki / "graphify-out" / "graph.json"
+                if _graph_source_available(wiki_graph_path):
+                    return wiki_graph_path
             return self._graph_path
         wiki = self._wiki_dir_resolved()
         if wiki is not None:
@@ -722,6 +758,13 @@ def _wiki_entity_path(wiki: Path, slug: str, entity_type: str) -> Path:
     return path
 
 
+def _wiki_entity_relpath(entity_type: str, slug: str) -> str:
+    relpath = entity_relpath(entity_type, slug)
+    if relpath is None:
+        raise ValueError(f"unknown entity type {entity_type!r}")
+    return relpath.as_posix()
+
+
 def _wiki_entity_link(slug: str, entity_type: str) -> str:
     link = entity_wikilink(entity_type, slug)
     if link is None:
@@ -741,6 +784,15 @@ def _wiki_get_candidates(
     ]
 
 
+def _wiki_pack_pages(wiki: Path) -> dict[str, str] | None:
+    packs_dir = wiki / "wiki-packs"
+    if not packs_dir.is_dir():
+        return None
+    from ctx.core.wiki.wiki_packs import load_merged_wiki_pages  # noqa: PLC0415
+
+    return load_merged_wiki_pages(packs_dir)
+
+
 def _file_signature(path: Path) -> FileSignature | None:
     try:
         stat = path.stat()
@@ -757,7 +809,34 @@ def _graph_file_signature(path: Path) -> GraphSignature:
     return (
         _file_signature(path),
         _file_signature(path.with_name("entity-overlays.jsonl")),
+        _graph_pack_signature(path),
     )
+
+
+def _graph_source_available(path: Path) -> bool:
+    return path.is_file() or (path.parent / "packs").is_dir()
+
+
+def _graph_pack_signature(graph_path: Path) -> PackSignature:
+    return _pack_dir_signature(graph_path.parent / "packs")
+
+
+def _pack_dir_signature(packs_dir: Path) -> PackSignature:
+    if not packs_dir.is_dir():
+        return ()
+
+    rows: list[tuple[str, FileSignature | None]] = []
+    try:
+        paths = sorted(path for path in packs_dir.rglob("*") if path.is_file())
+    except OSError:
+        return (("<unreadable>", None),)
+    for path in paths:
+        try:
+            relpath = path.relative_to(packs_dir).as_posix()
+        except ValueError:
+            relpath = path.name
+        rows.append((relpath, _file_signature(path)))
+    return tuple(rows)
 
 
 def _file_content_fingerprint(path: Path, size: int) -> str:
@@ -775,22 +854,21 @@ def _file_content_fingerprint(path: Path, size: int) -> str:
     return hasher.hexdigest()
 
 
-def _wiki_pages_signature(wiki: Path) -> tuple[int, int, int]:
+def _wiki_pages_signature(wiki: Path) -> PageSignature:
     entity_root = wiki / "entities"
     count = 0
     newest = 0
     total_size = 0
-    if not entity_root.is_dir():
-        return count, newest, total_size
-    for path in entity_root.rglob("*.md"):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        count += 1
-        newest = max(newest, stat.st_mtime_ns)
-        total_size += stat.st_size
-    return count, newest, total_size
+    if entity_root.is_dir():
+        for path in entity_root.rglob("*.md"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            count += 1
+            newest = max(newest, stat.st_mtime_ns)
+            total_size += stat.st_size
+    return count, newest, total_size, _pack_dir_signature(wiki / "wiki-packs")
 
 
 def _semantic_cache_signature(

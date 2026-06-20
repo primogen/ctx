@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 import mcp_enrich as _me
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack
 
 
 class TestRenderScalar:
@@ -119,3 +120,47 @@ class TestRenderScalar:
             f"YAML injection via newline succeeded — found status keys: "
             f"{status_keys!r}\nFull frontmatter:\n{fm}"
         )
+
+    def test_enrich_entities_updates_pack_only_mcp_page(self, tmp_path, monkeypatch):
+        wiki = tmp_path / "wiki"
+        relpath = "entities/mcp-servers/p/pack-only.md"
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={
+                relpath: (
+                    "---\n"
+                    "name: Pack Only\n"
+                    "homepage_url: https://www.pulsemcp.com/servers/source-slug\n"
+                    "github_url: null\n"
+                    "stars: null\n"
+                    "updated: '2026-01-01'\n"
+                    "---\n"
+                    "# Pack Only\n"
+                )
+            },
+        )
+
+        class Source:
+            def fetch_details(self, slug, *, refresh=False):  # noqa: ARG002, ANN001, ANN201
+                assert slug == "source-slug"
+                return {"github_url": "https://github.com/example/pack-only", "stars": 7}
+
+        monkeypatch.setitem(_me.SOURCES, "pulsemcp", Source())
+
+        entity_paths = list(_me._iter_entities(wiki))
+        checkpoint = _me._empty_checkpoint("pulsemcp")
+        _me.enrich_entities(
+            entity_paths,
+            source_name="pulsemcp",
+            wiki_path=wiki,
+            checkpoint=checkpoint,
+            sleep_seconds=0,
+            report_progress=False,
+        )
+
+        merged = load_merged_wiki_pages(wiki / "wiki-packs")
+        assert 'github_url: "https://github.com/example/pack-only"' in merged[relpath]
+        assert "stars: 7" in merged[relpath]
+        assert not (wiki / relpath).exists()

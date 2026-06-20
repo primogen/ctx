@@ -17,8 +17,23 @@ import json
 import os
 import re
 import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 
+from ctx.core.graph.graph_packs import (
+    GraphPackManifestError,
+    discover_pack_manifests,
+    load_merged_pack_graph,
+    write_overlay_pack,
+)
+from ctx.core.wiki import wiki_queue
+from ctx.core.wiki.wiki_packs import (
+    WikiPackManifestError,
+    load_merged_wiki_pages,
+    write_active_wiki_overlay_pack,
+)
 from ctx.core.wiki.wiki_utils import validate_skill_name
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
@@ -32,23 +47,59 @@ SKILL_ENTITIES = WIKI_DIR / "entities" / "skills"
 AGENT_ENTITIES = WIKI_DIR / "entities" / "agents"
 
 
-def _graph_node_id_for_page(name: str, page: Path) -> str | None:
-    try:
-        resolved = page.resolve()
-        if resolved.parent == SKILL_ENTITIES.resolve():
-            return f"skill:{name}"
-        if resolved.parent == AGENT_ENTITIES.resolve():
-            return f"agent:{name}"
-    except OSError:
-        return None
+@dataclass(frozen=True)
+class EntityPageRef:
+    name: str
+    subject_type: str
+    path: Path
+    relpath: str
+    content: str
+
+
+def _graph_node_id_for_subject_type(name: str, subject_type: str) -> str | None:
+    if subject_type == "skills":
+        return f"skill:{name}"
+    if subject_type == "agents":
+        return f"agent:{name}"
     return None
 
 
-def _sync_graph_never_load(name: str, page: Path, value: bool) -> bool:
-    """Best-effort mirror of never_load into graph.json for immediate filtering."""
-    node_id = _graph_node_id_for_page(name, page)
+def _sync_graph_never_load_for_entity(ref: EntityPageRef, value: bool) -> bool:
+    """Best-effort mirror of never_load into graph artifacts for merged wiki entities."""
+    node_id = _graph_node_id_for_subject_type(ref.name, ref.subject_type)
+    return _sync_graph_never_load_for_node(node_id, value)
+
+
+def _sync_graph_never_load_for_node(node_id: str | None, value: bool) -> bool:
+    """Best-effort mirror of never_load into graph artifacts for immediate filtering."""
     if node_id is None:
         return False
+    legacy_changed = _sync_graph_json_never_load(node_id, value)
+    pack_changed = _sync_graph_pack_never_load(node_id, value)
+    changed = legacy_changed or pack_changed
+    if changed:
+        _queue_graph_store_refresh(node_id, value)
+    return changed
+
+
+def _queue_graph_store_refresh(node_id: str, value: bool) -> None:
+    """Queue a hot graph-store rebuild after graph metadata changes."""
+    try:
+        wiki_queue.enqueue_maintenance_job(
+            WIKI_DIR,
+            kind=wiki_queue.GRAPH_STORE_REFRESH_JOB,
+            payload={
+                "reason": "never_load",
+                "node_id": node_id,
+                "never_load": value,
+            },
+            source="skill_unload",
+        )
+    except Exception as exc:  # noqa: BLE001 - refresh is best-effort for CLI UX.
+        print(f"Warning: failed to queue graph store refresh: {exc}", file=sys.stderr)
+
+
+def _sync_graph_json_never_load(node_id: str, value: bool) -> bool:
     graph_json = WIKI_DIR / "graphify-out" / "graph.json"
     if not graph_json.is_file():
         return False
@@ -73,10 +124,125 @@ def _sync_graph_never_load(name: str, page: Path, value: bool) -> bool:
     return True
 
 
+def _sync_graph_pack_never_load(node_id: str, value: bool) -> bool:
+    packs_dir = WIKI_DIR / "graphify-out" / "packs"
+    try:
+        entries = discover_pack_manifests(packs_dir)
+        if not entries:
+            return False
+        graph = load_merged_pack_graph(packs_dir)
+        if node_id not in graph or bool(graph.nodes[node_id].get("never_load")) == value:
+            return False
+        base = entries[0].manifest
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        digest = sha256(f"{node_id}:{value}".encode("utf-8")).hexdigest()[:12]
+        stem = node_id.replace(":", "-")
+        pack_id = f"overlay-{timestamp}-{stem}-never-load-{digest}"
+        for suffix in ["", *[f"-{index}" for index in range(1, 1000)]]:
+            candidate = f"{pack_id}{suffix}"
+            pack_dir = packs_dir / candidate
+            if pack_dir.exists():
+                continue
+            write_overlay_pack(
+                pack_dir=pack_dir,
+                pack_id=candidate,
+                base_export_id=base.base_export_id,
+                parent_export_id=base.base_export_id,
+                config_hash=base.config_hash,
+                model_id=base.model_id,
+                nodes=[{"id": node_id, "never_load": value}],
+                edges=[],
+                tombstones=[],
+            )
+            return True
+    except (GraphPackManifestError, OSError):
+        return False
+    return False
+
+
 
 def _sanitize_yaml_value(value: str) -> str:
     """Strip newlines/CRs so a value can't inject extra YAML keys."""
     return value.replace("\r", " ").replace("\n", " ").strip()
+
+
+def _entity_subjects(entity_type: str | None = None) -> list[str]:
+    if entity_type == "skill":
+        return ["skills"]
+    if entity_type == "agent":
+        return ["agents"]
+    return ["skills", "agents"]
+
+
+def _entity_dir(subject_type: str) -> Path:
+    if subject_type == "skills":
+        return SKILL_ENTITIES
+    if subject_type == "agents":
+        return AGENT_ENTITIES
+    raise ValueError(f"unknown subject_type: {subject_type}")
+
+
+def _entity_relpath(subject_type: str, name: str) -> str:
+    return f"entities/{subject_type}/{name}.md"
+
+
+def _iter_entity_page_refs(*, entity_type: str | None = None) -> list[EntityPageRef]:
+    packs_dir = WIKI_DIR / "wiki-packs"
+    subjects = set(_entity_subjects(entity_type))
+    if packs_dir.is_dir():
+        refs: list[EntityPageRef] = []
+        try:
+            pages = load_merged_wiki_pages(packs_dir)
+        except (WikiPackManifestError, OSError) as exc:
+            print(f"Warning: failed to read wiki packs: {exc}", file=sys.stderr)
+            pages = {}
+        for relpath, content in sorted(pages.items()):
+            path = Path(relpath)
+            if (
+                len(path.parts) == 3
+                and path.parts[0] == "entities"
+                and path.parts[1] in subjects
+                and path.suffix == ".md"
+            ):
+                refs.append(EntityPageRef(
+                    name=path.stem,
+                    subject_type=path.parts[1],
+                    path=WIKI_DIR / relpath,
+                    relpath=relpath,
+                    content=content,
+                ))
+        return refs
+
+    legacy_refs: list[EntityPageRef] = []
+    for subject_type in _entity_subjects(entity_type):
+        entity_dir = _entity_dir(subject_type)
+        if not entity_dir.exists():
+            continue
+        for page in sorted(entity_dir.glob("*.md")):
+            try:
+                content = page.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                print(f"Warning: entity page read error for {page.stem}: {exc}", file=sys.stderr)
+                continue
+            legacy_refs.append(EntityPageRef(
+                name=page.stem,
+                subject_type=subject_type,
+                path=page,
+                relpath=_entity_relpath(subject_type, page.stem),
+                content=content,
+            ))
+    return legacy_refs
+
+
+def _find_entity_page_ref(name: str, *, entity_type: str | None = None) -> EntityPageRef | None:
+    try:
+        validate_skill_name(name)
+    except ValueError:
+        return None
+    for ref in _iter_entity_page_refs(entity_type=entity_type):
+        if ref.name == name:
+            return ref
+    return None
 
 
 def load_manifest() -> dict:
@@ -92,6 +258,18 @@ def save_manifest(manifest: dict) -> None:
     _atomic_write_text(MANIFEST_PATH, json.dumps(manifest, indent=2))
 
 
+def _set_frontmatter_field_text(content: str, field: str, value: str) -> tuple[str, bool]:
+    safe_value = _sanitize_yaml_value(value)
+    escaped_field = re.escape(field)
+    pattern = rf"^{escaped_field}:\s*.+$"
+    replacement = f"{field}: {safe_value}"
+    new_content, count = re.subn(pattern, replacement, content, count=1, flags=re.MULTILINE)
+    if count == 0:
+        # Field doesn't exist; add it after the opening frontmatter delimiter.
+        new_content = re.sub(r"(---\n)", rf"\1{field}: {safe_value}\n", content, count=1)
+    return new_content, new_content != content
+
+
 def set_frontmatter_field(filepath: Path, field: str, value: str) -> bool:
     """Set a YAML frontmatter field in a wiki entity page. Returns True if changed.
 
@@ -101,19 +279,29 @@ def set_frontmatter_field(filepath: Path, field: str, value: str) -> bool:
     """
     if not filepath.exists():
         return False
-    safe_value = _sanitize_yaml_value(value)
-    escaped_field = re.escape(field)
     content = filepath.read_text(encoding="utf-8", errors="replace")
-    pattern = rf"^{escaped_field}:\s*.+$"
-    replacement = f"{field}: {safe_value}"
-    new_content, count = re.subn(pattern, replacement, content, count=1, flags=re.MULTILINE)
-    if count == 0:
-        # Field doesn't exist — add it after the opening frontmatter delimiter.
-        new_content = re.sub(r"(---\n)", rf"\1{field}: {safe_value}\n", content, count=1)
-    if new_content != content:
+    new_content, changed = _set_frontmatter_field_text(content, field, value)
+    if changed:
         _atomic_write_text(filepath, new_content)
         return True
     return False
+
+
+def _set_entity_frontmatter_field(ref: EntityPageRef, field: str, value: str) -> bool:
+    new_content, changed = _set_frontmatter_field_text(ref.content, field, value)
+    if not changed:
+        return False
+    if ref.path.exists():
+        _atomic_write_text(ref.path, new_content)
+    try:
+        write_active_wiki_overlay_pack(
+            packs_dir=WIKI_DIR / "wiki-packs",
+            pages={ref.relpath: new_content},
+            tombstones=[],
+        )
+    except (WikiPackManifestError, OSError) as exc:
+        print(f"Warning: failed to mirror entity update into wiki pack: {exc}", file=sys.stderr)
+    return True
 
 
 def find_entity_page(name: str, entity_type: str | None = None) -> Path | None:
@@ -126,18 +314,10 @@ def find_entity_page(name: str, entity_type: str | None = None) -> Path | None:
         validate_skill_name(name)
     except ValueError:
         return None
-    if entity_type == "agent":
-        agent_page = AGENT_ENTITIES / f"{name}.md"
-        return agent_page if agent_page.exists() else None
-    if entity_type == "skill":
-        skill_page = SKILL_ENTITIES / f"{name}.md"
-        return skill_page if skill_page.exists() else None
-    skill_page = SKILL_ENTITIES / f"{name}.md"
-    if skill_page.exists():
-        return skill_page
-    agent_page = AGENT_ENTITIES / f"{name}.md"
-    if agent_page.exists():
-        return agent_page
+    for subject_type in _entity_subjects(entity_type):
+        page = _entity_dir(subject_type) / f"{name}.md"
+        if page.exists():
+            return page
     return None
 
 
@@ -232,10 +412,10 @@ def set_never_load(names: list[str], *, entity_type: str | None = None) -> list[
     """Set never_load: true in wiki entity pages."""
     updated: list[str] = []
     for name in names:
-        page = find_entity_page(name, entity_type=entity_type)
+        page = _find_entity_page_ref(name, entity_type=entity_type)
         if page:
-            changed = set_frontmatter_field(page, "never_load", "true")
-            graph_changed = _sync_graph_never_load(name, page, True)
+            changed = _set_entity_frontmatter_field(page, "never_load", "true")
+            graph_changed = _sync_graph_never_load_for_entity(page, True)
         else:
             changed = graph_changed = False
         if page and (changed or graph_changed):
@@ -252,10 +432,10 @@ def restore_load(names: list[str], *, entity_type: str | None = None) -> list[st
     """Remove never_load flag from wiki entity pages."""
     restored: list[str] = []
     for name in names:
-        page = find_entity_page(name, entity_type=entity_type)
+        page = _find_entity_page_ref(name, entity_type=entity_type)
         if page:
-            changed = set_frontmatter_field(page, "never_load", "false")
-            graph_changed = _sync_graph_never_load(name, page, False)
+            changed = _set_entity_frontmatter_field(page, "never_load", "false")
+            graph_changed = _sync_graph_never_load_for_entity(page, False)
         else:
             changed = graph_changed = False
         if page and (changed or graph_changed):
@@ -271,18 +451,9 @@ def restore_load(names: list[str], *, entity_type: str | None = None) -> list[st
 def get_stale_skills(*, entity_type: str | None = None) -> list[str]:
     """Find all skills with status: stale in their entity pages."""
     stale: list[str] = []
-    entity_dirs = [SKILL_ENTITIES, AGENT_ENTITIES]
-    if entity_type == "skill":
-        entity_dirs = [SKILL_ENTITIES]
-    elif entity_type == "agent":
-        entity_dirs = [AGENT_ENTITIES]
-    for entity_dir in entity_dirs:
-        if not entity_dir.exists():
-            continue
-        for page in entity_dir.glob("*.md"):
-            content = page.read_text(encoding="utf-8", errors="replace")
-            if re.search(r"^status:\s*stale", content, re.MULTILINE):
-                stale.append(page.stem)
+    for page in _iter_entity_page_refs(entity_type=entity_type):
+        if re.search(r"^status:\s*stale", page.content, re.MULTILINE):
+            stale.append(page.name)
     return stale
 
 
@@ -305,18 +476,9 @@ def list_loaded(*, entity_type: str | None = None) -> None:
 def list_never_load(*, entity_type: str | None = None) -> None:
     """Show permanently suppressed skills/agents."""
     suppressed: list[str] = []
-    entity_dirs = [SKILL_ENTITIES, AGENT_ENTITIES]
-    if entity_type == "skill":
-        entity_dirs = [SKILL_ENTITIES]
-    elif entity_type == "agent":
-        entity_dirs = [AGENT_ENTITIES]
-    for entity_dir in entity_dirs:
-        if not entity_dir.exists():
-            continue
-        for page in entity_dir.glob("*.md"):
-            content = page.read_text(encoding="utf-8", errors="replace")
-            if re.search(r"^never_load:\s*true", content, re.MULTILINE):
-                suppressed.append(page.stem)
+    for page in _iter_entity_page_refs(entity_type=entity_type):
+        if re.search(r"^never_load:\s*true", page.content, re.MULTILINE):
+            suppressed.append(page.name)
     if not suppressed:
         print("No skills/agents are permanently suppressed.")
         return
@@ -411,9 +573,9 @@ def main(argv: list[str] | None = None, *, default_entity_type: str | None = Non
     not_removed = [n for n in names if n not in removed]
     if not_removed:
         for name in not_removed:
-            page = find_entity_page(name, entity_type=entity_type)
+            page = _find_entity_page_ref(name, entity_type=entity_type)
             if page:
-                set_frontmatter_field(page, "status", "stale")
+                _set_entity_frontmatter_field(page, "status", "stale")
                 print(f"  {name}: marked stale (lower priority next session)")
 
     # Always clear from pending-unload

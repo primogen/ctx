@@ -13,9 +13,11 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import shutil
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +28,12 @@ from networkx.algorithms.community import (
     louvain_communities,
 )
 
+from ctx.core.graph.graph_packs import (
+    GraphPackManifestError,
+    load_merged_pack_graph,
+    promote_graph_pack_set,
+    write_base_pack,
+)
 from ctx.core.graph.edge_scoring import (
     SLUG_STOP as _EDGE_SLUG_STOP,
     adamic_adar_scores as _shared_adamic_adar_scores,
@@ -44,6 +52,11 @@ from ctx.core.wiki.artifact_promotion import (
     ArtifactValidator,
     promote_staged_artifact,
     validate_json_artifact,
+)
+from ctx.core.wiki.wiki_packs import (
+    WikiPackManifestError,
+    promote_wiki_pack_set,
+    write_wiki_base_pack,
 )
 from ctx.core.wiki.wiki_utils import parse_frontmatter as _parse_fm
 from ctx.utils._fs_utils import safe_atomic_write_text
@@ -78,6 +91,15 @@ DEFAULT_WIKI_DIR = Path(os.path.expanduser("~/.claude/skill-wiki")).resolve()
 DEFAULT_GRAPH_SEMANTIC_CACHE_DIR = (
     DEFAULT_WIKI_DIR / ".embedding-cache" / "graph"
 ).resolve()
+WIKI_PACK_EXCLUDED_DIRS = frozenset({
+    ".ctx",
+    ".embedding-cache",
+    ".obsidian",
+    "graphify-out",
+    "wiki-packs",
+    "wiki-packs.staged",
+    "wiki-packs.rollback",
+})
 
 
 def configure_wiki_dir(wiki_dir: Path) -> None:
@@ -835,12 +857,13 @@ def _metadata_affected_nodes(
 
 
 def load_prior_graph() -> nx.Graph | None:
-    """Load the previous run's graph from ``graph.json``, or None on any issue.
+    """Load the previous run's graph for incremental graphify.
 
-    The canonical on-disk artifact is ``graph.json`` (node-link format).
+    Legacy installs read ``graph.json`` (node-link format). Pack-native
+    installs can omit ``graph.json`` and resume from ``graphify-out/packs``.
     ``patch_graph`` uses the loaded graph as the starting point for an
-    incremental update; callers that can't load (missing file, corrupt
-    JSON, wrong schema, first run) just build from scratch instead.
+    incremental update; callers that can't load a trusted prior graph just
+    build from scratch instead.
 
     SECURITY NOTE: earlier revisions of this function read a
     ``graph.pickle`` sidecar via ``pickle.loads``, which is an RCE
@@ -853,7 +876,7 @@ def load_prior_graph() -> nx.Graph | None:
     """
     path = GRAPH_OUT / "graph.json"
     if not path.is_file():
-        return None
+        return _load_prior_graph_pack()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -954,9 +977,121 @@ def load_prior_graph() -> nx.Graph | None:
     return graph
 
 
+def _load_prior_graph_pack() -> nx.Graph | None:
+    """Load prior graph from active graph packs when legacy graph.json is absent."""
+    packs_dir = GRAPH_OUT / "packs"
+    if not packs_dir.is_dir():
+        return None
+    try:
+        graph = load_merged_pack_graph(packs_dir)
+    except GraphPackManifestError as exc:
+        print(
+            f"wiki_graphify: prior graph packs invalid ({exc}); full rebuild",
+            flush=True,
+        )
+        return None
+    if graph.number_of_nodes() == 0:
+        return None
+    return graph
+
+
 def _new_graph_export_id() -> str:
     """Return a per-export ID used to detect mixed graph artifacts."""
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+
+
+def _write_export_base_pack(G: nx.Graph, export_id: str) -> None:
+    """Write the exported graph as the active immutable base pack."""
+    pack_id = f"base-{export_id}"
+    staged_packs_dir = GRAPH_OUT / "packs.staged"
+    active_packs_dir = GRAPH_OUT / "packs"
+    backup_packs_dir = GRAPH_OUT / "packs.rollback"
+    shutil.rmtree(staged_packs_dir, ignore_errors=True)
+    shutil.rmtree(backup_packs_dir, ignore_errors=True)
+    try:
+        write_base_pack(
+            pack_dir=staged_packs_dir / pack_id,
+            pack_id=pack_id,
+            base_export_id=export_id,
+            config_hash=_graph_pack_config_hash(G),
+            model_id=_graph_pack_model_id(G),
+            graph=G,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        promote_graph_pack_set(
+            staged_packs_dir=staged_packs_dir,
+            active_packs_dir=active_packs_dir,
+            backup_packs_dir=backup_packs_dir if active_packs_dir.exists() else None,
+        )
+    except GraphPackManifestError as exc:
+        raise RuntimeError(f"graph base pack export failed: {exc}") from exc
+    finally:
+        shutil.rmtree(staged_packs_dir, ignore_errors=True)
+
+
+def _write_export_wiki_base_pack(export_id: str) -> None:
+    """Write the current wiki markdown tree as the active immutable base pack."""
+    pack_id = f"base-{export_id}"
+    staged_packs_dir = WIKI_DIR / "wiki-packs.staged"
+    active_packs_dir = WIKI_DIR / "wiki-packs"
+    backup_packs_dir = WIKI_DIR / "wiki-packs.rollback"
+    shutil.rmtree(staged_packs_dir, ignore_errors=True)
+    shutil.rmtree(backup_packs_dir, ignore_errors=True)
+    try:
+        write_wiki_base_pack(
+            pack_dir=staged_packs_dir / pack_id,
+            pack_id=pack_id,
+            base_export_id=export_id,
+            pages=_collect_wiki_markdown_pages(),
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        promote_wiki_pack_set(
+            staged_packs_dir=staged_packs_dir,
+            active_packs_dir=active_packs_dir,
+            backup_packs_dir=backup_packs_dir if active_packs_dir.exists() else None,
+        )
+    except WikiPackManifestError as exc:
+        raise RuntimeError(f"wiki base pack export failed: {exc}") from exc
+    finally:
+        shutil.rmtree(staged_packs_dir, ignore_errors=True)
+
+
+def _collect_wiki_markdown_pages() -> dict[str, str]:
+    if not WIKI_DIR.is_dir():
+        return {}
+    pages: dict[str, str] = {}
+    for path in sorted(WIKI_DIR.rglob("*.md")):
+        if not path.is_file() or _is_excluded_wiki_pack_source(path):
+            continue
+        relpath = path.relative_to(WIKI_DIR).as_posix()
+        pages[relpath] = path.read_text(encoding="utf-8", errors="replace")
+    return pages
+
+
+def _is_excluded_wiki_pack_source(path: Path) -> bool:
+    try:
+        rel_parts = path.relative_to(WIKI_DIR).parts
+    except ValueError:
+        return True
+    return any(
+        part in WIKI_PACK_EXCLUDED_DIRS or part.startswith("wiki-packs.rollback-")
+        for part in rel_parts[:-1]
+    )
+
+
+def _graph_pack_config_hash(G: nx.Graph) -> str:
+    signature = G.graph.get(GRAPH_SCORING_SIGNATURE_KEY, {})
+    payload = json.dumps(signature, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _graph_pack_model_id(G: nx.Graph) -> str:
+    signature = G.graph.get(GRAPH_SCORING_SIGNATURE_KEY)
+    if isinstance(signature, dict):
+        backend = str(signature.get("intake_backend") or "unknown")
+        model = str(signature.get("intake_model") or "unknown")
+        return f"{backend}:{model}"
+    return "unknown"
 
 
 def patch_graph(
@@ -1502,7 +1637,7 @@ def export_graph(
     communities: dict[int, list[str]],
     *,
     delta_nodes: set[str] | None = None,
-) -> None:
+) -> str:
     """Export graph as JSON and remove obsolete binary sidecars.
 
     ``delta_nodes``, when provided, is the set of node IDs that the
@@ -1536,6 +1671,7 @@ def export_graph(
             required_keys=("nodes", "edges", "graph"),
         ),
     )
+    _write_export_base_pack(G, export_id)
 
     # No binary sidecar. An earlier revision wrote ``graph.pickle`` next
     # to this JSON for faster incremental loads, but pickle.loads is an
@@ -1627,6 +1763,7 @@ def export_graph(
         ),
     )
     print(f"Graph exported to {GRAPH_OUT}/")
+    return export_id
 
 
 def _stage_and_promote_graph_artifact(
@@ -1697,14 +1834,19 @@ def main() -> None:
     communities = detect_communities(G)
     if args.dry_run:
         print(f"  [DRY RUN] Would export graph artifacts to {GRAPH_OUT}/")
+        export_id = None
     else:
-        export_graph(G, communities, delta_nodes=affected)
+        export_id = export_graph(G, communities, delta_nodes=affected)
 
     if args.graph_only:
+        if export_id is not None:
+            _write_export_wiki_base_pack(export_id)
         return
 
     generate_concept_pages(G, communities, args.dry_run)
     inject_community_links(G, communities, args.dry_run)
+    if export_id is not None:
+        _write_export_wiki_base_pack(export_id)
 
     print("\nDone. Open wiki in Obsidian to see the graph visualization.")
 

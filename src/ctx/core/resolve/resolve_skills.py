@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages
 from ctx.core.wiki.wiki_utils import parse_frontmatter as _parse_fm
 
 # Graph-walk augmentation. Lazy-imported so the module still works when the
@@ -89,19 +90,17 @@ def discover_available_skills(skills_dir: str) -> dict[str, dict]:
 def read_wiki_overrides(wiki_path: str) -> dict[str, dict]:
     """Read entity pages from the wiki for always_load/never_load overrides."""
     overrides: dict[str, dict[str, Any]] = {}
-    entities_dir = Path(wiki_path) / "entities" / "skills"
 
-    if not entities_dir.exists():
+    pages = _iter_skill_override_pages(Path(wiki_path))
+    if not pages:
         return overrides
 
-    for page in entities_dir.glob("*.md"):
+    for skill_name, content in pages:
         try:
-            content = page.read_text(encoding="utf-8", errors="replace")
             meta = _parse_fm(content)
             if not meta:
                 continue
 
-            skill_name = page.stem
             use_count_val = int(str(meta.get("use_count", "0")))
             overrides[skill_name] = {
                 "always_load": str(meta.get("always_load", "false")).lower() == "true",
@@ -111,10 +110,38 @@ def read_wiki_overrides(wiki_path: str) -> dict[str, dict]:
                 "status": str(meta.get("status", "unknown")),
             }
         except Exception as exc:
-            print(f"Warning: wiki override parse error for {page.stem}: {exc}", file=sys.stderr)
+            print(f"Warning: wiki override parse error for {skill_name}: {exc}", file=sys.stderr)
             continue
 
     return overrides
+
+
+def _iter_skill_override_pages(wiki: Path) -> list[tuple[str, str]]:
+    packs_dir = wiki / "wiki-packs"
+    if packs_dir.is_dir():
+        rows: list[tuple[str, str]] = []
+        for relpath, content in sorted(load_merged_wiki_pages(packs_dir).items()):
+            path = Path(relpath)
+            if (
+                len(path.parts) == 3
+                and path.parts[0] == "entities"
+                and path.parts[1] == "skills"
+                and path.suffix == ".md"
+            ):
+                rows.append((path.stem, content))
+        return rows
+
+    entities_dir = wiki / "entities" / "skills"
+    if not entities_dir.exists():
+        return []
+
+    rows = []
+    for page in entities_dir.glob("*.md"):
+        try:
+            rows.append((page.stem, page.read_text(encoding="utf-8", errors="replace")))
+        except OSError as exc:
+            print(f"Warning: wiki override read error for {page.stem}: {exc}", file=sys.stderr)
+    return rows
 
 
 # Stack-to-skill mapping lives in ``stack_skill_map`` as the single

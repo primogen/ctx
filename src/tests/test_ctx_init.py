@@ -16,6 +16,9 @@ from types import SimpleNamespace
 import networkx as nx
 import pytest
 import ctx_init as ci
+from ctx.core.graph.graph_packs import write_base_pack
+from ctx.core.graph.graph_store import validate_graph_store
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack
 
 
 def _write_dashboard_index(path: Path, *, export_id: str = "test-export") -> None:
@@ -303,7 +306,14 @@ def test_main_with_hooks_flag_invokes_inject(tmp_path: Path, monkeypatch) -> Non
     assert not any(c == "inject_hooks" for call in calls for c in call)
 
 
-def _write_graph_archive(tmp_path: Path) -> Path:
+def _write_graph_archive(
+    tmp_path: Path,
+    *,
+    include_graph_pack: bool = False,
+    graph_pack_export_id: str = "test-export",
+    include_wiki_pack: bool = False,
+    wiki_pack_export_id: str = "test-export",
+) -> Path:
     source = tmp_path / "archive-source"
     graph_out = source / "graphify-out"
     graph_out.mkdir(parents=True)
@@ -344,6 +354,27 @@ def _write_graph_archive(tmp_path: Path) -> Path:
     entities.mkdir(parents=True)
     (entities / "current.md").write_text("# Current\n", encoding="utf-8")
     (source / "index.md").write_text("# Wiki\n", encoding="utf-8")
+    if include_graph_pack:
+        graph = nx.Graph()
+        graph.add_node("skill:current", label="current", type="skill")
+        write_base_pack(
+            pack_dir=graph_out / "packs" / f"base-{graph_pack_export_id}",
+            pack_id=f"base-{graph_pack_export_id}",
+            base_export_id=graph_pack_export_id,
+            config_hash="config-1",
+            model_id="model-1",
+            graph=graph,
+        )
+    if include_wiki_pack:
+        write_wiki_base_pack(
+            pack_dir=source / "wiki-packs" / f"base-{wiki_pack_export_id}",
+            pack_id=f"base-{wiki_pack_export_id}",
+            base_export_id=wiki_pack_export_id,
+            pages={
+                "index.md": "# Wiki\n",
+                "entities/skills/current.md": "# Current\n",
+            },
+        )
     archive = tmp_path / "wiki-graph.tar.gz"
     with tarfile.open(archive, "w:gz") as tf:
         for path in sorted(source.rglob("*")):
@@ -819,6 +850,146 @@ def test_graph_install_validation_does_not_parse_full_graph_json(
     monkeypatch.setattr(ci, "_read_json_file", guarded_read)
 
     ci._validate_graph_install_tree(wiki)
+
+
+def test_graph_install_validation_accepts_base_pack_without_graph_json(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph_out = wiki / "graphify-out"
+    graph_out.mkdir(parents=True)
+    (wiki / "index.md").write_text("# Wiki\n", encoding="utf-8")
+    graph = nx.Graph()
+    graph.add_node("skill:pack-only", label="pack-only", type="skill")
+    write_base_pack(
+        pack_dir=graph_out / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="test-export",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=graph,
+    )
+    (graph_out / "graph-delta.json").write_text(
+        json.dumps({"export_id": "test-export", "nodes": [], "edges": []}),
+        encoding="utf-8",
+    )
+    (graph_out / "communities.json").write_text(
+        json.dumps({"export_id": "test-export", "total_communities": 0}),
+        encoding="utf-8",
+    )
+    (graph_out / "graph-report.md").write_text(
+        "# Graph Report\n\n> Export ID: test-export\n",
+        encoding="utf-8",
+    )
+    (graph_out / "graph-export-manifest.json").write_text(
+        json.dumps({
+            "version": 1,
+            "export_id": "test-export",
+            "artifacts": {
+                "graph": "graph.json",
+                "delta": "graph-delta.json",
+                "communities": "communities.json",
+                "report": "graph-report.md",
+            },
+        }),
+        encoding="utf-8",
+    )
+    _write_dashboard_index(graph_out / "dashboard-neighborhoods.sqlite3")
+    external = wiki / "external-catalogs" / "skills-sh"
+    external.mkdir(parents=True)
+    (external / "catalog.json").write_text("{}", encoding="utf-8")
+
+    ci._validate_graph_install_tree(wiki)
+
+
+def test_runtime_graph_install_extracts_and_validates_wiki_packs(
+    tmp_path: Path,
+) -> None:
+    archive = _write_graph_archive(tmp_path, include_wiki_pack=True)
+    wiki = tmp_path / "installed-wiki"
+
+    ci._extract_graph_archive(archive, wiki, install_mode="runtime")
+
+    assert (wiki / "wiki-packs" / "base-test-export" / "wiki-pack-manifest.json").is_file()
+    assert not (wiki / "entities" / "skills" / "current.md").exists()
+    ci._validate_graph_install_tree(wiki)
+    assert ci._graph_full_install_complete(wiki) is True
+
+
+def test_runtime_graph_install_extracts_and_validates_graph_packs(
+    tmp_path: Path,
+) -> None:
+    archive = _write_graph_archive(tmp_path, include_graph_pack=True)
+    wiki = tmp_path / "installed-wiki"
+
+    ci._extract_graph_archive(archive, wiki, install_mode="runtime")
+
+    assert (
+        wiki / "graphify-out" / "packs" / "base-test-export" / "graph-pack-manifest.json"
+    ).is_file()
+    ci._validate_graph_install_tree(wiki)
+
+
+def test_build_graph_refreshes_operational_graph_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = _write_graph_archive(tmp_path, include_graph_pack=True)
+    claude = tmp_path / "home"
+    monkeypatch.setattr(
+        ci,
+        "_find_local_graph_archive",
+        lambda _install_mode="runtime": archive,
+    )
+    monkeypatch.setattr(ci, "_verify_local_graph_archive", lambda *_a, **_k: None)
+    monkeypatch.setattr(ci, "_install_graph_entity_overlay", lambda *_a, **_k: None)
+
+    assert ci.build_graph(claude) == 0
+    graph_dir = claude / "skill-wiki" / "graphify-out"
+    store = graph_dir / "graph-store.sqlite3"
+    assert validate_graph_store(store, graph_dir)["ok"] is True
+
+    store.unlink()
+    assert ci.build_graph(claude) == 0
+    assert validate_graph_store(store, graph_dir)["ok"] is True
+
+
+def test_graph_install_rejects_mismatched_graph_pack_export_id(
+    tmp_path: Path,
+) -> None:
+    archive = _write_graph_archive(
+        tmp_path,
+        include_graph_pack=True,
+        graph_pack_export_id="wrong-export",
+    )
+
+    with pytest.raises(ValueError, match="graphify-out/packs export_id mismatch"):
+        ci._extract_graph_archive(archive, tmp_path / "installed-wiki", install_mode="runtime")
+
+
+def test_graph_install_rejects_mismatched_wiki_pack_export_id(
+    tmp_path: Path,
+) -> None:
+    archive = _write_graph_archive(
+        tmp_path,
+        include_wiki_pack=True,
+        wiki_pack_export_id="wrong-export",
+    )
+
+    with pytest.raises(ValueError, match="wiki-packs export_id mismatch"):
+        ci._extract_graph_archive(archive, tmp_path / "installed-wiki", install_mode="runtime")
+
+
+def test_runtime_graph_install_without_full_entities_is_not_full_install(
+    tmp_path: Path,
+) -> None:
+    archive = _write_graph_archive(tmp_path)
+    wiki = tmp_path / "installed-wiki"
+
+    ci._extract_graph_archive(archive, wiki, install_mode="runtime")
+
+    assert ci._graph_install_complete(wiki) is True
+    assert ci._graph_full_install_complete(wiki) is False
 
 
 def test_graph_install_force_prunes_stale_generated_files(

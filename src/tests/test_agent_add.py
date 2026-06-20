@@ -14,6 +14,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import agent_add  # noqa: E402
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack  # noqa: E402
 
 
 class _Decision:
@@ -212,11 +213,20 @@ def test_existing_agent_update_refreshes_converted_agent_mirror(
     wiki, agents_dir, source = _setup_paths(tmp_path)
     installed = agents_dir / "reviewer-agent.md"
     installed.write_text(_agent_text(), encoding="utf-8")
+    packs_dir = wiki / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={
+            "entities/agents/reviewer-agent.md": (
+                "# reviewer-agent\n\nExisting packed agent page.\n"
+            )
+        },
+    )
     mirror = wiki / "converted-agents" / "reviewer-agent.md"
     mirror.parent.mkdir(parents=True)
     mirror.write_text("old mirror\n", encoding="utf-8")
-    entity = wiki / "entities" / "agents" / "reviewer-agent.md"
-    entity.write_text("# existing entity\n", encoding="utf-8")
     updated_text = _agent_text(description="Updated mirrored agent.")
     source.write_text(updated_text, encoding="utf-8")
     _patch_side_effects(monkeypatch)
@@ -232,6 +242,10 @@ def test_existing_agent_update_refreshes_converted_agent_mirror(
 
     assert result["is_new_page"] is False
     assert mirror.read_text(encoding="utf-8") == updated_text
+    entity = wiki / "entities" / "agents" / "reviewer-agent.md"
+    merged = load_merged_wiki_pages(packs_dir)
+    assert not entity.exists()
+    assert "Updated mirrored agent." in merged["entities/agents/reviewer-agent.md"]
 
 
 def test_main_existing_agent_prints_update_review(

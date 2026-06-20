@@ -22,9 +22,41 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_active_wiki_overlay_pack
 from ctx_config import cfg
 
 TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _read_wiki_page(wiki_dir: Path, relpath: str) -> str | None:
+    """Read a wiki page from active packs when installed, else from disk."""
+    packs_dir = wiki_dir / "wiki-packs"
+    path = wiki_dir / relpath
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+        if path.exists():
+            return path.read_text(encoding="utf-8", errors="replace")
+        return None
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _write_wiki_page(wiki_dir: Path, relpath: str, content: str) -> None:
+    """Write a wiki page, mirroring into overlay packs when installed."""
+    packs_dir = wiki_dir / "wiki-packs"
+    path = wiki_dir / relpath
+    if path.exists() or not packs_dir.is_dir():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: content},
+            tombstones=[],
+        )
 
 
 def scan_skills_dir(skills_dir: Path) -> list[dict]:
@@ -133,7 +165,7 @@ def build_catalog(
         )
 
     catalog_path = wiki_dir / "catalog.md"
-    catalog_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_wiki_page(wiki_dir, "catalog.md", "\n".join(lines) + "\n")
 
     return {
         "total": total,
@@ -146,11 +178,9 @@ def build_catalog(
 
 def update_wiki_index(wiki_dir: Path, stats: dict) -> None:
     """Update index.md with catalog reference."""
-    index_path = wiki_dir / "index.md"
-    if not index_path.exists():
+    content = _read_wiki_page(wiki_dir, "index.md")
+    if content is None:
         return
-
-    content = index_path.read_text(encoding="utf-8")
     catalog_ref = "- [[catalog]] - Full skill catalog (all installed items)"
 
     if "[[catalog]]" not in content:
@@ -175,13 +205,13 @@ def update_wiki_index(wiki_dir: Path, stats: dict) -> None:
         f"Last updated: {TODAY}",
         content,
     )
-    index_path.write_text(content, encoding="utf-8")
+    _write_wiki_page(wiki_dir, "index.md", content)
 
 
 def append_log(wiki_dir: Path, stats: dict) -> None:
     """Append catalog build entry to log.md."""
-    log_path = wiki_dir / "log.md"
-    if not log_path.exists():
+    content = _read_wiki_page(wiki_dir, "log.md")
+    if content is None:
         return
 
     entry = (
@@ -191,8 +221,7 @@ def append_log(wiki_dir: Path, stats: dict) -> None:
         f"- Over 180 lines (micro-skill candidates): {stats['over_180']}\n"
         f"- Catalog written to: {stats['catalog_path']}\n"
     )
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(entry)
+    _write_wiki_page(wiki_dir, "log.md", content + entry)
 
 
 def main() -> None:

@@ -48,7 +48,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from ctx.utils._fs_utils import atomic_write_json, atomic_write_text
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_active_wiki_overlay_pack
+from ctx.utils._fs_utils import atomic_write_json, reject_symlink_path, safe_atomic_write_text
 from ctx_config import cfg
 from mcp_sources import SOURCES
 
@@ -183,6 +184,15 @@ def _iter_entities(wiki_path: Path) -> Iterable[Path]:
     at entity #5,000 might skip ahead or rewind depending on platform
     shard-iteration order.
     """
+    packs_dir = wiki_path / "wiki-packs"
+    if packs_dir.is_dir():
+        prefix = f"{_MCP_ENTITY_SUBDIR.as_posix()}/"
+        return [
+            wiki_path / relpath
+            for relpath in sorted(load_merged_wiki_pages(packs_dir))
+            if relpath.startswith(prefix) and relpath.endswith(".md")
+        ]
+
     root = wiki_path / _MCP_ENTITY_SUBDIR
     if not root.is_dir():
         return []
@@ -211,8 +221,62 @@ _SOURCE_SLUG_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 
+def _entity_relpath(wiki_path: Path, entity_path: Path) -> str:
+    return entity_path.relative_to(wiki_path).as_posix()
+
+
+def _load_active_wiki_pack_pages(wiki_path: Path) -> dict[str, str] | None:
+    packs_dir = wiki_path / "wiki-packs"
+    if not packs_dir.is_dir():
+        return None
+    return load_merged_wiki_pages(packs_dir)
+
+
+def _read_entity_text(
+    wiki_path: Path,
+    entity_path: Path,
+    *,
+    pages: dict[str, str] | None = None,
+) -> str | None:
+    relpath = _entity_relpath(wiki_path, entity_path)
+    packs_dir = wiki_path / "wiki-packs"
+    if packs_dir.is_dir():
+        page_map = pages if pages is not None else load_merged_wiki_pages(packs_dir)
+        if relpath in page_map:
+            return page_map[relpath]
+    if entity_path.exists():
+        reject_symlink_path(entity_path)
+        return entity_path.read_text(encoding="utf-8", errors="replace")
+    return None
+
+
+def _write_entity_text(
+    wiki_path: Path,
+    entity_path: Path,
+    text: str,
+    *,
+    pages: dict[str, str] | None = None,
+) -> None:
+    relpath = _entity_relpath(wiki_path, entity_path)
+    packs_dir = wiki_path / "wiki-packs"
+    if entity_path.exists() or not packs_dir.is_dir():
+        safe_atomic_write_text(entity_path, text, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: text},
+            tombstones=[],
+        )
+        if pages is not None:
+            pages[relpath] = text
+
+
 def _source_slug_from_entity(
-    entity_path: Path, source_name: str
+    entity_path: Path,
+    source_name: str,
+    *,
+    wiki_path: Path | None = None,
+    pages: dict[str, str] | None = None,
 ) -> str | None:
     """Pull the upstream slug out of the entity's frontmatter.
 
@@ -228,9 +292,16 @@ def _source_slug_from_entity(
     pattern = _SOURCE_SLUG_PATTERNS.get(source_name)
     if pattern is None:
         return None
-    try:
-        text = entity_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    text: str | None
+    if wiki_path is None:
+        try:
+            reject_symlink_path(entity_path)
+            text = entity_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+    else:
+        text = _read_entity_text(wiki_path, entity_path, pages=pages)
+    if text is None:
         return None
     fm_match = _FRONTMATTER_RE.match(text)
     if fm_match is None:
@@ -343,7 +414,12 @@ def _render_scalar(value: Any) -> str:
 
 
 def apply_enrichment(
-    entity_path: Path, enrichment: dict, *, dry_run: bool
+    entity_path: Path,
+    enrichment: dict,
+    *,
+    dry_run: bool,
+    wiki_path: Path | None = None,
+    pages: dict[str, str] | None = None,
 ) -> dict:
     """Write ``enrichment`` fields into the entity's frontmatter.
 
@@ -355,7 +431,14 @@ def apply_enrichment(
     if not enrichment:
         return {}
 
-    text = entity_path.read_text(encoding="utf-8", errors="replace")
+    if wiki_path is None:
+        reject_symlink_path(entity_path)
+        text = entity_path.read_text(encoding="utf-8", errors="replace")
+    else:
+        read_text = _read_entity_text(wiki_path, entity_path, pages=pages)
+        if read_text is None:
+            return {}
+        text = read_text
     fm_match = _FRONTMATTER_RE.match(text)
     if fm_match is None:
         return {}
@@ -382,7 +465,10 @@ def apply_enrichment(
     if diff and not dry_run:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         text = _set_frontmatter_field(text, "updated", today)
-        atomic_write_text(entity_path, text)
+        if wiki_path is None:
+            safe_atomic_write_text(entity_path, text, encoding="utf-8")
+        else:
+            _write_entity_text(wiki_path, entity_path, text, pages=pages)
     return diff
 
 
@@ -420,6 +506,7 @@ def enrich_entities(
 
     processed = checkpoint["processed"]
     failures = checkpoint["failures"]
+    pages = _load_active_wiki_pack_pages(wiki_path)
 
     attempted = enriched = unchanged = failed = skipped = 0
     for path in entity_paths:
@@ -439,7 +526,12 @@ def enrich_entities(
         attempted += 1
         checkpoint["total_seen"] += 1
 
-        source_slug = _source_slug_from_entity(path, source_name)
+        source_slug = _source_slug_from_entity(
+            path,
+            source_name,
+            wiki_path=wiki_path,
+            pages=pages,
+        )
         if source_slug is None:
             # Entity has no homepage_url for this source (e.g. ingested
             # from a different source). Record a skip so we don't
@@ -478,7 +570,13 @@ def enrich_entities(
             continue
 
         try:
-            diff = apply_enrichment(path, enrichment, dry_run=dry_run)
+            diff = apply_enrichment(
+                path,
+                enrichment,
+                dry_run=dry_run,
+                wiki_path=wiki_path,
+                pages=pages,
+            )
         except Exception as exc:  # noqa: BLE001
             failed += 1
             failures[wiki_slug] = {
@@ -647,7 +745,7 @@ def main() -> None:
         # Shard lookup mirrors McpRecord.entity_relpath.
         shard = args.slug[0] if args.slug and args.slug[0].isalpha() else "0-9"
         entity_paths = [root / shard / f"{args.slug}.md"]
-        if not entity_paths[0].is_file():
+        if _read_entity_text(wiki_path, entity_paths[0]) is None:
             print(
                 f"Error: no entity at {entity_paths[0]} — has it been ingested?",
                 file=sys.stderr,

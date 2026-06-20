@@ -25,6 +25,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 import link_conversions as _lc
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack
 from link_conversions import (
     ConvertedSkill,
     _build_new_entity_page,
@@ -503,6 +504,31 @@ class TestRun:
         run(wiki, tmp_path / "skills")
         log_content = (wiki / "log.md").read_text()
         assert "link-conversions" in log_content
+
+    def test_pack_only_wiki_is_updated_through_overlays(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        (wiki / "converted").mkdir(parents=True)
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="export-1",
+            pages={
+                "index.md": "# Index\n\n## Skills\n\n## Total pages: 0 | Last updated: 2024-01-01\n",
+                "log.md": "# Log\n",
+            },
+        )
+        _make_converted_skill(wiki, "react")
+
+        result = run(wiki, tmp_path / "skills")
+
+        assert result.created == ["react"]
+        assert result.errors == []
+        assert not (wiki / "entities" / "skills" / "react.md").exists()
+        merged = load_merged_wiki_pages(wiki / "wiki-packs")
+        assert "has_pipeline: true" in merged["entities/skills/react.md"]
+        assert "[[entities/skills/react]]" in merged["index.md"]
+        assert "link-conversions" in merged["log.md"]
+        assert "react" in merged["converted-index.md"]
 
 
 # ---------------------------------------------------------------------------

@@ -55,10 +55,7 @@ from typing import Any
 
 from ctx.adapters.generic.ctx_core_tools import CtxCoreToolbox
 from ctx.adapters.generic.providers import ToolCall
-from ctx.core.entity_types import (
-    RECOMMENDABLE_ENTITY_TYPES,
-    SUBJECT_TYPE_FOR_ENTITY_TYPE,
-)
+from ctx.core.entity_types import RECOMMENDABLE_ENTITY_TYPES
 
 
 __all__ = [
@@ -197,20 +194,13 @@ def list_all_entities(
     if entity_type is not None and entity_type not in RECOMMENDABLE_ENTITY_TYPES:
         return []
 
-    slugs: list[str] = []
-    for current_type in RECOMMENDABLE_ENTITY_TYPES:
-        if entity_type is not None and entity_type != current_type:
-            continue
-        subject_type = SUBJECT_TYPE_FOR_ENTITY_TYPE[current_type]
-        root = wiki / "entities" / subject_type
-        if current_type == "mcp-server":
-            if root.is_dir():
-                for shard in root.iterdir():
-                    if shard.is_dir():
-                        slugs.extend(p.stem for p in shard.glob("*.md"))
-        else:
-            slugs.extend(p.stem for p in root.glob("*.md"))
-    return sorted(set(slugs))
+    from ctx.core.wiki.wiki_query import load_all_pages  # noqa: PLC0415
+
+    return sorted({
+        page.name
+        for page in load_all_pages(wiki)
+        if entity_type is None or page.entity_type == entity_type
+    })
 
 
 def default_wiki_dir() -> Path | None:

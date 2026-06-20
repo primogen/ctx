@@ -5,9 +5,11 @@ import pytest
 
 from ctx.core.graph import vector_index
 from ctx.core.graph.vector_index import (
+    MergedVectorIndex,
     VectorIndexUnavailable,
     build_vector_index,
     load_vector_index,
+    upsert_numpy_flat_index_entry,
 )
 
 
@@ -80,6 +82,84 @@ def test_numpy_flat_query_rejects_wrong_dimension() -> None:
             top_k=1,
             min_score=0.0,
         )
+
+
+def test_merged_vector_index_queries_base_and_delta_topk() -> None:
+    base = build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["base-a", "base-b"],
+        content_hashes=["ha", "hb"],
+        vectors=np.asarray([[1.0, 0.0], [0.6, 0.4]], dtype=np.float32),
+    )
+    delta = build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["delta-a", "delta-b"],
+        content_hashes=["hda", "hdb"],
+        vectors=np.asarray([[0.9, 0.1], [0.0, 1.0]], dtype=np.float32),
+    )
+
+    rows = MergedVectorIndex([base, delta]).query(
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
+        top_k=3,
+        min_score=0.0,
+    )
+
+    assert [neighbor.node_id for neighbor in rows[0]] == [
+        "base-a",
+        "delta-a",
+        "base-b",
+    ]
+
+
+def test_merged_vector_index_deduplicates_by_best_score_and_excludes() -> None:
+    base = build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["shared", "base-only"],
+        content_hashes=["ha", "hb"],
+        vectors=np.asarray([[0.7, 0.3], [0.0, 1.0]], dtype=np.float32),
+    )
+    delta = build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["shared", "delta-only"],
+        content_hashes=["hda", "hdb"],
+        vectors=np.asarray([[1.0, 0.0], [0.8, 0.2]], dtype=np.float32),
+    )
+
+    rows = MergedVectorIndex([base, delta]).query(
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
+        top_k=3,
+        min_score=0.0,
+        exclude_node_ids={"delta-only"},
+    )
+
+    assert [(neighbor.node_id, round(neighbor.score, 3)) for neighbor in rows[0]] == [
+        ("shared", 1.0),
+        ("base-only", 0.0),
+    ]
+
+
+def test_merged_vector_index_rejects_incompatible_indexes() -> None:
+    base = build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["a"],
+        content_hashes=["ha"],
+        vectors=np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+    other_model = build_vector_index(
+        kind="numpy-flat",
+        model_id="model-b",
+        node_ids=["b"],
+        content_hashes=["hb"],
+        vectors=np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="incompatible"):
+        MergedVectorIndex([base, other_model])
 
 
 def test_numpy_flat_round_trip_validates_model_and_fingerprint(tmp_path) -> None:
@@ -160,6 +240,73 @@ def test_build_vector_index_rejects_duplicate_node_ids() -> None:
             node_ids=["a", "a"],
             content_hashes=["ha", "hb"],
             vectors=_vectors()[:2],
+        )
+
+
+def test_upsert_numpy_flat_index_entry_creates_appends_and_replaces(tmp_path) -> None:
+    first = upsert_numpy_flat_index_entry(
+        tmp_path,
+        model_id="model-a",
+        node_id="a",
+        content_hash="ha",
+        vector=np.asarray([1.0, 0.0], dtype=np.float32),
+    )
+    assert first.node_ids == ["a"]
+    assert first.content_hashes == ["ha"]
+
+    second = upsert_numpy_flat_index_entry(
+        tmp_path,
+        model_id="model-a",
+        node_id="b",
+        content_hash="hb",
+        vector=np.asarray([[0.0, 1.0]], dtype=np.float32),
+    )
+    assert second.node_ids == ["a", "b"]
+    assert second.content_hashes == ["ha", "hb"]
+
+    third = upsert_numpy_flat_index_entry(
+        tmp_path,
+        model_id="model-a",
+        node_id="a",
+        content_hash="ha2",
+        vector=np.asarray([0.6, 0.8], dtype=np.float32),
+    )
+
+    loaded = load_vector_index(
+        tmp_path,
+        expected_model_id="model-a",
+        expected_content_fingerprint=third.meta.content_fingerprint,
+    )
+    assert loaded is not None
+    assert loaded.meta.index_kind == "numpy-flat"
+    assert loaded.node_ids == ["a", "b"]
+    assert loaded.content_hashes == ["ha2", "hb"]
+    rows = loaded.query(
+        np.asarray([[0.6, 0.8]], dtype=np.float32),
+        top_k=1,
+        min_score=0.0,
+    )
+    assert [neighbor.node_id for neighbor in rows[0]] == ["a"]
+
+
+def test_upsert_numpy_flat_index_entry_rejects_incompatible_existing_index(
+    tmp_path,
+) -> None:
+    upsert_numpy_flat_index_entry(
+        tmp_path,
+        model_id="model-a",
+        node_id="a",
+        content_hash="ha",
+        vector=np.asarray([1.0, 0.0], dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="incompatible"):
+        upsert_numpy_flat_index_entry(
+            tmp_path,
+            model_id="model-b",
+            node_id="b",
+            content_hash="hb",
+            vector=np.asarray([0.0, 1.0], dtype=np.float32),
         )
 
 

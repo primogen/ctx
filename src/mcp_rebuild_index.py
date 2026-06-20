@@ -1,25 +1,19 @@
 #!/usr/bin/env python3
 """
-mcp_rebuild_index.py -- Rebuild the canonical-key sidecar index from disk.
+mcp_rebuild_index.py -- Rebuild the canonical-key sidecar index for MCP entities.
 
 Usage
 -----
     ctx-mcp-rebuild-index [--wiki PATH] [--dry-run]
 
-Reads every ``*.md`` under ``<wiki>/entities/mcp-servers/``, parses its
-YAML frontmatter, and writes
-``<wiki>/entities/mcp-servers/.canonical-index.json`` with a fresh
-``github_url -> {slug, relpath}`` map.
+Reads MCP entity markdown from either:
 
-Intended to be run:
+- ``<wiki>/wiki-packs`` when modular wiki packs are active, or
+- ``<wiki>/entities/mcp-servers/`` for an extracted/editable wiki tree.
 
-- Once, to backfill the sidecar for the entities that existed before
-  Phase 6b (the ``add_mcp`` hot-path upsert only covers records added
-  after the feature landed).
-- Any time the index is suspected stale (manual edits, restored from
-  backup, cross-wiki merge). The normal scan-and-repair fallback in
-  ``_find_existing_by_github_url`` handles one-off drift, but a full
-  rebuild is cheap (~1 s at 15k entities) and gives a clean baseline.
+It writes ``<wiki>/entities/mcp-servers/.canonical-index.json`` with a fresh
+``github_url -> {slug, relpath}`` map. The sidecar is a cache; the merged wiki
+page set remains authoritative.
 
 Exit codes: 0 on success, 2 on missing wiki path, 1 on unexpected error.
 """
@@ -60,52 +54,31 @@ def main() -> None:
 
     wiki_path = Path(os.path.expanduser(args.wiki))
     mcp_dir = wiki_path / _MCP_ENTITY_SUBDIR
+    packs_dir = wiki_path / "wiki-packs"
 
-    if not mcp_dir.is_dir():
+    if not mcp_dir.is_dir() and not packs_dir.is_dir():
         print(
-            f"Error: MCP entity directory does not exist: {mcp_dir}",
+            f"Error: MCP entity directory or wiki-packs do not exist under: {wiki_path}",
             file=sys.stderr,
         )
         sys.exit(2)
 
+    try:
+        _, indexed, skipped = rebuild_from_scan(mcp_dir, persist=not args.dry_run)
+    except Exception as exc:  # noqa: BLE001 - surface any failure to operator.
+        print(f"Error: rebuild failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     if args.dry_run:
-        # Dry-run uses the same traversal but discards the write. Easiest
-        # way is to call the real rebuild, then overwrite the file back
-        # — but that's still a write. Instead, walk inline and count.
-        indexed = 0
-        skipped = 0
-        for page in mcp_dir.rglob("*.md"):
-            if page.name.startswith("."):
-                skipped += 1
-                continue
-            # Lazy import to match the module pattern.
-            from mcp_add import _normalize_github_url, _parse_frontmatter  # noqa: PLC0415
-            try:
-                text = page.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                skipped += 1
-                continue
-            fm = _parse_frontmatter(text)
-            if _normalize_github_url(fm.get("github_url")) is None:
-                skipped += 1
-            else:
-                indexed += 1
         print(
             f"[dry-run] would index {indexed} entities, "
             f"skip {skipped} (no github_url or unreadable)."
         )
-        sys.exit(0)
-
-    try:
-        _, indexed, skipped = rebuild_from_scan(mcp_dir)
-    except Exception as exc:  # noqa: BLE001 — surface any failure to operator
-        print(f"Error: rebuild failed: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    print(
-        f"Canonical index rebuilt: {indexed} entities indexed, "
-        f"{skipped} skipped (no github_url)."
-    )
+    else:
+        print(
+            f"Canonical index rebuilt: {indexed} entities indexed, "
+            f"{skipped} skipped (no github_url)."
+        )
     sys.exit(0)
 
 

@@ -106,6 +106,8 @@ _SIDECAR_FILTER_CACHE_VALUE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
 _KPI_SUMMARY_CACHE_KEY: tuple[Any, ...] | None = None
 _KPI_SUMMARY_CACHE_VALUE: Any | None = None
 _KPI_SUMMARY_CACHE_AT = 0.0
+_WIKI_PACK_CACHE_KEY: tuple[tuple[str, float, int], ...] | None = None
+_WIKI_PACK_CACHE_VALUE: dict[str, str] | None = None
 _WIKI_RENDER_CACHE_KEY: tuple[Any, ...] | None = None
 _WIKI_RENDER_CACHE_VALUE: str | None = None
 _WIKI_INDEX_LIMIT_PER_TYPE = 500
@@ -199,25 +201,52 @@ def _user_config_path() -> Path:
     return _claude_dir() / "skill-system-config.json"
 
 
+def _wiki_pack_pages() -> dict[str, str] | None:
+    """Return merged wiki-pack pages, or None when packs are not installed."""
+    global _WIKI_PACK_CACHE_KEY, _WIKI_PACK_CACHE_VALUE
+
+    packs_dir = _wiki_dir() / "wiki-packs"
+    if not packs_dir.is_dir():
+        _WIKI_PACK_CACHE_KEY = None
+        _WIKI_PACK_CACHE_VALUE = None
+        return None
+    key: list[tuple[str, float, int]] = []
+    for path in sorted(packs_dir.rglob("*")):
+        if not path.is_file() or path.name not in {
+            "wiki-pack-manifest.json",
+            "pages.jsonl",
+            "tombstones.jsonl",
+        }:
+            continue
+        stat = path.stat()
+        key.append((path.relative_to(packs_dir).as_posix(), stat.st_mtime, stat.st_size))
+    cache_key = tuple(key)
+    if _WIKI_PACK_CACHE_KEY == cache_key and _WIKI_PACK_CACHE_VALUE is not None:
+        return _WIKI_PACK_CACHE_VALUE
+
+    from ctx.core.wiki.wiki_packs import load_merged_wiki_pages  # noqa: PLC0415
+
+    pages = load_merged_wiki_pages(packs_dir)
+    _WIKI_PACK_CACHE_KEY = cache_key
+    _WIKI_PACK_CACHE_VALUE = pages
+    return pages
+
+
 def _load_dashboard_graph() -> Any:
-    """Load the wiki graph once per graph.json file version."""
+    """Load the wiki graph once per graph artifact version."""
     global _GRAPH_CACHE_KEY, _GRAPH_CACHE_VALUE
 
     graph_path = _wiki_dir() / "graphify-out" / "graph.json"
     overlay_path = graph_path.with_name("entity-overlays.jsonl")
     from ctx.core.graph.resolve_graph import load_graph as _lg  # type: ignore
 
-    if not graph_path.exists():
+    source_key = _dashboard_graph_source_cache_key(graph_path, overlay_path)
+    if source_key is None:
         _GRAPH_CACHE_KEY = None
         _GRAPH_CACHE_VALUE = None
         return _lg(graph_path)
 
-    stat = graph_path.stat()
-    overlay_key = None
-    if overlay_path.exists():
-        overlay_stat = overlay_path.stat()
-        overlay_key = (overlay_stat.st_mtime, overlay_stat.st_size)
-    cache_key = (graph_path.resolve(), stat.st_mtime, stat.st_size, id(_lg), overlay_key)
+    cache_key = (id(_lg), source_key)
     if _GRAPH_CACHE_KEY == cache_key and _GRAPH_CACHE_VALUE is not None:
         return _GRAPH_CACHE_VALUE
 
@@ -228,6 +257,45 @@ def _load_dashboard_graph() -> Any:
     _GRAPH_CACHE_KEY = cache_key
     _GRAPH_CACHE_VALUE = graph
     return graph
+
+
+def _dashboard_graph_source_cache_key(
+    graph_path: Path,
+    overlay_path: Path,
+) -> tuple[Any, ...] | None:
+    graph_key = _dashboard_file_cache_key(graph_path)
+    overlay_key = _dashboard_file_cache_key(overlay_path)
+    pack_key = _dashboard_graph_pack_cache_key(graph_path.parent / "packs")
+    if graph_key is None and not pack_key:
+        return None
+    return (graph_key, overlay_key, pack_key)
+
+
+def _dashboard_file_cache_key(path: Path) -> tuple[str, float, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (str(path.resolve()), stat.st_mtime, stat.st_size)
+
+
+def _dashboard_graph_pack_cache_key(packs_dir: Path) -> tuple[tuple[str, float, int], ...]:
+    if not packs_dir.is_dir():
+        return ()
+    try:
+        files = sorted(path for path in packs_dir.rglob("*") if path.is_file())
+    except OSError:
+        return (("<unreadable>", 0.0, 0),)
+    rows: list[tuple[str, float, int]] = []
+    for path in files:
+        try:
+            stat = path.stat()
+            relpath = path.relative_to(packs_dir).as_posix()
+        except OSError:
+            rows.append((path.name, 0.0, 0))
+            continue
+        rows.append((relpath, stat.st_mtime, stat.st_size))
+    return tuple(rows)
 
 
 def _mcp_shard(slug: str) -> str:
@@ -276,11 +344,17 @@ def _wiki_entity_path(slug: str, entity_type: str | None = None) -> Path | None:
     # Validate slug so a crafted request can't escape the wiki tree.
     if not _is_safe_slug(slug):
         return None
+    pack_pages = _wiki_pack_pages()
     for _sub, current_type, _recursive in _DASHBOARD_ENTITY_SOURCES:
         if entity_type is not None and entity_type != current_type:
             continue
         p = core_entity_types.entity_page_path(_wiki_dir(), current_type, slug)
         if p is None:
+            continue
+        if pack_pages is not None:
+            relpath = core_entity_types.entity_relpath(current_type, slug)
+            if relpath is not None and relpath.as_posix() in pack_pages:
+                return p
             continue
         if p.exists():
             return p
@@ -306,10 +380,24 @@ def _iter_wiki_entity_paths(
     normalized = _normalize_dashboard_entity_type(entity_type) if entity_type else None
     if entity_type is not None and normalized is None:
         raise ValueError(f"unsupported entity_type: {entity_type!r}")
+    pack_pages = _wiki_pack_pages()
+    if pack_pages is not None:
+        pack_rows: list[tuple[str, str, Path]] = []
+        for relpath in sorted(pack_pages):
+            parsed = _wiki_pack_entity_from_relpath(relpath)
+            if parsed is None:
+                continue
+            slug, current_type = parsed
+            if normalized is not None and normalized != current_type:
+                continue
+            path = core_entity_types.entity_page_path(_wiki_dir(), current_type, slug)
+            if path is not None:
+                pack_rows.append((slug, current_type, path))
+        return sorted(pack_rows, key=lambda row: (row[1], row[0].lower(), row[2].as_posix()))
     base = _wiki_dir() / "entities"
     if not base.is_dir():
         return []
-    rows: list[tuple[str, str, Path]] = []
+    file_rows: list[tuple[str, str, Path]] = []
     for sub, current_type, recursive in _DASHBOARD_ENTITY_SOURCES:
         if normalized is not None and normalized != current_type:
             continue
@@ -320,8 +408,8 @@ def _iter_wiki_entity_paths(
         for path in paths:
             slug = path.stem
             if _is_safe_slug(slug):
-                rows.append((slug, current_type, path))
-    return sorted(rows, key=lambda row: (row[1], row[0].lower(), row[2].as_posix()))
+                file_rows.append((slug, current_type, path))
+    return sorted(file_rows, key=lambda row: (row[1], row[0].lower(), row[2].as_posix()))
 
 
 def _wiki_entity_detail(slug: str, entity_type: str | None = None) -> dict[str, Any] | None:
@@ -331,7 +419,9 @@ def _wiki_entity_detail(slug: str, entity_type: str | None = None) -> dict[str, 
     path = _wiki_entity_path(slug, entity_type=normalized)
     if path is None:
         return None
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = _read_wiki_entity_text(slug, normalized, path)
+    if text is None:
+        return None
     frontmatter, body = _parse_frontmatter(text)
     detected_type = normalized or _normalize_dashboard_entity_type(frontmatter.get("type")) or "skill"
     return {
@@ -341,6 +431,44 @@ def _wiki_entity_detail(slug: str, entity_type: str | None = None) -> dict[str, 
         "frontmatter": frontmatter,
         "body": body,
     }
+
+
+def _wiki_pack_entity_from_relpath(relpath: str) -> tuple[str, str] | None:
+    path = Path(relpath)
+    parts = path.parts
+    if len(parts) < 3 or parts[0] != "entities" or path.suffix != ".md":
+        return None
+    entity_type = core_entity_types.ENTITY_TYPE_FOR_SUBJECT_TYPE.get(parts[1])
+    if entity_type not in _DASHBOARD_ENTITY_TYPES:
+        return None
+    slug = path.stem
+    if not _is_safe_slug(slug):
+        return None
+    if entity_type == "mcp-server":
+        if len(parts) != 4 or parts[2] != core_entity_types.mcp_shard(slug):
+            return None
+    elif len(parts) != 3:
+        return None
+    return slug, entity_type
+
+
+def _read_wiki_entity_text(
+    slug: str,
+    entity_type: str | None,
+    path: Path,
+) -> str | None:
+    pack_pages = _wiki_pack_pages()
+    if pack_pages is not None:
+        entity_types = [entity_type] if entity_type is not None else list(_DASHBOARD_ENTITY_TYPES)
+        for current_type in entity_types:
+            relpath = core_entity_types.entity_relpath(current_type, slug)
+            if relpath is not None and relpath.as_posix() in pack_pages:
+                return pack_pages[relpath.as_posix()]
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def _search_wiki_entities(
@@ -1431,6 +1559,149 @@ def _file_status(path: Path) -> dict[str, Any]:
     }
 
 
+def _pack_dir_status(packs_dir: Path, *, manifest_name: str) -> dict[str, Any]:
+    """Return summary state for a modular base/overlay pack directory."""
+    if not packs_dir.exists():
+        return {
+            "path": str(packs_dir),
+            "exists": False,
+            "size": 0,
+            "mtime": None,
+            "pack_count": 0,
+            "base_count": 0,
+            "overlay_count": 0,
+            "pack_ids": [],
+        }
+    if not packs_dir.is_dir():
+        return {
+            "path": str(packs_dir),
+            "exists": False,
+            "size": 0,
+            "mtime": None,
+            "pack_count": 0,
+            "base_count": 0,
+            "overlay_count": 0,
+            "pack_ids": [],
+            "error": "pack path is not a directory",
+        }
+    total_size = 0
+    newest = 0.0
+    pack_ids: list[str] = []
+    base_count = 0
+    overlay_count = 0
+    errors: list[str] = []
+    try:
+        files = [path for path in packs_dir.rglob("*") if path.is_file()]
+    except OSError as exc:
+        return {
+            "path": str(packs_dir),
+            "exists": False,
+            "size": 0,
+            "mtime": None,
+            "pack_count": 0,
+            "base_count": 0,
+            "overlay_count": 0,
+            "pack_ids": [],
+            "error": str(exc),
+        }
+    for path in files:
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        total_size += stat.st_size
+        newest = max(newest, stat.st_mtime)
+        if path.name != manifest_name:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        if not isinstance(payload, dict):
+            errors.append(f"{path.name}: manifest is not an object")
+            continue
+        pack_id = str(payload.get("pack_id") or path.parent.name)
+        pack_ids.append(pack_id)
+        pack_type = payload.get("pack_type")
+        if pack_type == "base":
+            base_count += 1
+        elif pack_type == "overlay":
+            overlay_count += 1
+        else:
+            errors.append(f"{pack_id}: unknown pack_type {pack_type!r}")
+    status: dict[str, Any] = {
+        "path": str(packs_dir),
+        "exists": True,
+        "size": total_size,
+        "mtime": newest or None,
+        "pack_count": len(pack_ids),
+        "base_count": base_count,
+        "overlay_count": overlay_count,
+        "pack_ids": sorted(pack_ids)[:25],
+    }
+    if errors:
+        status["error"] = "; ".join(errors[:5])
+    return status
+
+
+def _graph_store_status(graph_dir: Path) -> dict[str, Any]:
+    """Return SQLite operational-store state for the active graph directory."""
+    db_path = graph_dir / "graph-store.sqlite3"
+    status = _file_status(db_path)
+    try:
+        from ctx.core.graph.graph_store import validate_graph_store  # noqa: PLC0415
+
+        validation = validate_graph_store(db_path, graph_dir)
+    except (OSError, ValueError) as exc:
+        validation = {
+            "ok": False,
+            "fresh": False,
+            "nodes": 0,
+            "edges": 0,
+            "errors": [str(exc)],
+        }
+    node_count = validation.get("nodes")
+    edge_count = validation.get("edges")
+    status.update({
+        "ok": bool(validation.get("ok")),
+        "fresh": bool(validation.get("fresh")),
+        "nodes": node_count if isinstance(node_count, int) else 0,
+        "edges": edge_count if isinstance(edge_count, int) else 0,
+        "errors": validation.get("errors") if isinstance(validation.get("errors"), list) else [],
+    })
+    return status
+
+
+def _pack_compaction_artifact_status(wiki: Path) -> dict[str, Any]:
+    """Return coordinated graph/wiki pack compaction state for /status."""
+    try:
+        from ctx.core.wiki.pack_compaction import pack_compaction_status  # noqa: PLC0415
+
+        status = pack_compaction_status(wiki_path=wiki, validate=False)
+    except Exception as exc:  # noqa: BLE001 - status should render degraded state.
+        return {
+            "path": str(wiki),
+            "exists": False,
+            "size": 0,
+            "mtime": None,
+            "error": str(exc),
+        }
+    graph_pack_count = status.get("graph_pack_count")
+    wiki_pack_count = status.get("wiki_pack_count")
+    return {
+        "path": str(wiki),
+        "exists": bool(
+            (graph_pack_count if isinstance(graph_pack_count, int) else 0)
+            or (wiki_pack_count if isinstance(wiki_pack_count, int) else 0)
+        ),
+        "size": 0,
+        "mtime": None,
+        **status,
+    }
+
+
 def _repo_graph_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "graph"
 
@@ -1558,8 +1829,18 @@ def _artifact_status() -> dict[str, Any]:
     ]
     return {
         "graph_json": _file_status(graph_dir / "graph.json"),
+        "graph_packs": _pack_dir_status(
+            graph_dir / "packs",
+            manifest_name="graph-pack-manifest.json",
+        ),
         "graph_delta_json": _file_status(graph_dir / "graph-delta.json"),
         "communities_json": _file_status(graph_dir / "communities.json"),
+        "graph_store": _graph_store_status(graph_dir),
+        "wiki_packs": _pack_dir_status(
+            wiki / "wiki-packs",
+            manifest_name="wiki-pack-manifest.json",
+        ),
+        "pack_compaction": _pack_compaction_artifact_status(wiki),
         "wiki_graph_tar": _first_existing_file_status(
             claude_graph_dir / "wiki-graph.tar.gz",
             repo_graph_dir / "wiki-graph.tar.gz",
@@ -3030,6 +3311,215 @@ def _graph_neighborhood_from_index(
         conn.close()
 
 
+def _graph_neighborhood_from_store(
+    slug: str,
+    *,
+    hops: int,
+    limit: int,
+    entity_type: str | None,
+) -> dict | None:
+    if hops > 1:
+        return None
+    graph_dir = _wiki_dir() / "graphify-out"
+    store_path = graph_dir / "graph-store.sqlite3"
+    if not store_path.is_file():
+        return None
+    try:
+        from ctx.core.graph.graph_store import (  # noqa: PLC0415
+            graph_store_is_fresh,
+            load_neighborhood,
+            search_nodes,
+        )
+    except ImportError:
+        return None
+    try:
+        if not graph_store_is_fresh(store_path, graph_dir):
+            return None
+        center, resolved, suggestions = _resolve_graph_store_center(
+            store_path,
+            slug,
+            entity_type,
+            search_nodes,
+        )
+        if center is None:
+            return {"nodes": [], "edges": [], "center": None, "suggestions": suggestions}
+        neighborhood = load_neighborhood(store_path, center, limit=max(1, limit - 1))
+    except (OSError, sqlite3.DatabaseError, ValueError, TypeError):
+        return None
+    return _dashboard_payload_from_graph_store(
+        center=center,
+        resolved=resolved or {"source": "graph-store"},
+        suggestions=suggestions,
+        neighborhood=neighborhood,
+    )
+
+
+def _resolve_graph_store_center(
+    store_path: Path,
+    raw_query: str,
+    entity_type: str | None,
+    search_nodes: Any,
+) -> tuple[str | None, dict[str, str] | None, list[str]]:
+    raw_query = str(raw_query or "").strip()
+    if not raw_query or "/" in raw_query or "\\" in raw_query or ".." in raw_query:
+        return None, None, []
+    normalized_query = _slugish(raw_query)
+    if not normalized_query or not _is_safe_slug(normalized_query):
+        return None, None, []
+
+    entity_types = (
+        (entity_type,)
+        if entity_type is not None
+        else _DASHBOARD_ENTITY_TYPES
+    )
+    rows: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for query in (raw_query, normalized_query):
+        for row in search_nodes(store_path, query, limit=25):
+            node_id = str(row.get("id") or "")
+            if not node_id or node_id in seen_ids:
+                continue
+            seen_ids.add(node_id)
+            rows.append(row)
+
+    suggestions: list[str] = []
+    for row in rows[:8]:
+        node_id = str(row.get("id") or "")
+        node_slug = _graph_slug_from_node_id(node_id)
+        display_suggestion = _display_slug(node_slug)
+        if display_suggestion not in suggestions:
+            suggestions.append(display_suggestion)
+
+    matches: list[tuple[tuple[int, int], str, str]] = []
+    for row in rows:
+        node_id = str(row.get("id") or "")
+        node_type = str(row.get("type") or _graph_type_from_node_id(node_id))
+        if node_type not in entity_types:
+            continue
+        node_slug = _graph_slug_from_node_id(node_id)
+        label = _display_label(row.get("label"), fallback_slug=node_slug)
+        haystacks = {_slugish(node_slug), _slugish(_display_slug(node_slug)), _slugish(label)}
+        for tag in row.get("tags") or []:
+            haystacks.add(_slugish(str(tag)))
+        if normalized_query in haystacks:
+            rank = 0
+        elif any(h.startswith(normalized_query) for h in haystacks):
+            rank = 1
+        elif any(normalized_query in h for h in haystacks):
+            rank = 2
+        else:
+            continue
+        matches.append(((rank, len(node_slug)), node_id, node_slug))
+
+    matches.sort(key=lambda item: item[0])
+    if not matches:
+        return None, None, suggestions
+    center = matches[0][1]
+    resolved_slug = _graph_slug_from_node_id(center)
+    return center, {"query": raw_query, "slug": resolved_slug, "id": center}, suggestions
+
+
+def _dashboard_payload_from_graph_store(
+    *,
+    center: str,
+    resolved: dict[str, str],
+    suggestions: list[str],
+    neighborhood: dict[str, list[dict[str, Any]]],
+) -> dict:
+    raw_nodes = neighborhood.get("nodes", [])
+    raw_edges = neighborhood.get("edges", [])
+    degree_by_node: dict[str, int] = {str(node.get("id") or ""): 0 for node in raw_nodes}
+    for edge in raw_edges:
+        source = str(edge.get("source") or "")
+        target = str(edge.get("target") or "")
+        if source in degree_by_node:
+            degree_by_node[source] += 1
+        if target in degree_by_node:
+            degree_by_node[target] += 1
+    max_degree = max(degree_by_node.values(), default=1)
+
+    nodes_out: list[dict[str, Any]] = []
+    for node in raw_nodes:
+        node_id = str(node.get("id") or "")
+        if not node_id:
+            continue
+        node_slug = _graph_slug_from_node_id(node_id)
+        node_type = str(node.get("type") or _graph_type_from_node_id(node_id))
+        tags = [str(tag) for tag in node.get("tags", []) if isinstance(tag, str)]
+        label = _display_label(node.get("label"), fallback_slug=node_slug)
+        degree = degree_by_node.get(node_id, 0)
+        size_data = _graph_node_size(
+            node_id,
+            {},
+            entity_type=node_type,
+            degree=degree,
+            max_degree=max_degree,
+        )
+        nodes_out.append({
+            "data": {
+                "id": node_id,
+                "label": label,
+                "type": node_type,
+                "depth": 0 if node_id == center else 1,
+                "degree": degree,
+                "tags": tags[:6],
+                "description": "",
+                **_dashboard_score_payload("quality_score", None),
+                **_dashboard_score_payload("usage_score", None),
+                "filter_tokens": [
+                    node_id,
+                    label,
+                    node_slug,
+                    _display_slug(node_slug),
+                    *tags,
+                ],
+                **size_data,
+            },
+        })
+
+    edges_out: list[dict[str, Any]] = []
+    for edge in raw_edges:
+        source = str(edge.get("source") or "")
+        target = str(edge.get("target") or "")
+        raw_attrs = edge.get("attrs")
+        attrs: dict[str, Any] = raw_attrs if isinstance(raw_attrs, dict) else {}
+        edge_key = tuple(sorted((source, target)))
+        raw_shared_tags = attrs.get("shared_tags")
+        shared_tags = (
+            [str(tag) for tag in raw_shared_tags[:4]]
+            if isinstance(raw_shared_tags, list)
+            else []
+        )
+        raw_reasons = attrs.get("reasons")
+        reasons = (
+            [str(reason) for reason in raw_reasons]
+            if isinstance(raw_reasons, list)
+            else []
+        )
+        edges_out.append({
+            "data": {
+                "id": f"{edge_key[0]}__{edge_key[1]}",
+                "source": source,
+                "target": target,
+                "weight": edge.get("weight", attrs.get("weight", 1)),
+                "shared_tags": shared_tags,
+                "reasons": reasons,
+                "semantic": attrs.get("semantic", attrs.get("semantic_sim")),
+                "tag_sim": attrs.get("tag_sim"),
+                "slug_token_sim": attrs.get("slug_token_sim"),
+                "source_overlap": attrs.get("source_overlap"),
+            },
+        })
+
+    return dashboard_graph.enrich_neighborhood({
+        "nodes": nodes_out,
+        "edges": edges_out,
+        "center": center,
+        "resolved": resolved,
+        "suggestions": suggestions,
+    }, source="graph-store")
+
+
 def _graph_neighborhood(
     slug: str,
     hops: int = 1,
@@ -3045,6 +3535,14 @@ def _graph_neighborhood(
     if "/" in slug or "\\" in slug or ".." in slug:
         return {"nodes": [], "edges": [], "center": None}
     normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
+    stored = _graph_neighborhood_from_store(
+        slug,
+        hops=hops,
+        limit=limit,
+        entity_type=normalized_entity_type,
+    )
+    if stored is not None:
+        return stored
     index_path = _dashboard_graph_index_path()
     has_runtime_overlays = _dashboard_graph_has_runtime_overlays()
     index_covers_overlays = (
@@ -3279,6 +3777,21 @@ def _wiki_stats() -> dict:
     indexed = _wiki_stats_from_dashboard_index()
     if indexed is not None:
         return indexed
+
+    if _wiki_pack_pages() is not None:
+        stats = {"skills": 0, "agents": 0, "mcps": 0, "harnesses": 0}
+        for _slug, entity_type, _path in _iter_wiki_entity_paths():
+            if entity_type == "skill":
+                stats["skills"] += 1
+            elif entity_type == "agent":
+                stats["agents"] += 1
+            elif entity_type == "mcp-server":
+                stats["mcps"] += 1
+            elif entity_type == "harness":
+                stats["harnesses"] += 1
+        stats["total"] = sum(stats.values())
+        stats["split_known"] = True
+        return stats
 
     base = _wiki_dir() / "entities"
     graph_out = _wiki_dir() / "graphify-out"
@@ -5257,12 +5770,11 @@ def _render_wiki_entity(
             f"<p class='muted'>No wiki page found for <code>{html.escape(slug)}</code>. "
             f"Try <a href='/skills'>the skills index</a>.</p>",
         )
-    try:
-        raw = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
+    raw = _read_wiki_entity_text(slug, entity_type, path)
+    if raw is None:
         return _layout(
             slug,
-            f"<h1>{html.escape(slug)}</h1><p class='muted'>read error: {html.escape(str(exc))}</p>",
+            f"<h1>{html.escape(slug)}</h1><p class='muted'>read error: page unavailable</p>",
         )
     meta, md_body = _parse_frontmatter(raw)
     sidecar = _load_sidecar(slug, entity_type=entity_type)
@@ -5345,33 +5857,24 @@ def _wiki_index_entries(
     if indexed is not None:
         return indexed
 
-    base = _wiki_dir() / "entities"
-    if not base.is_dir():
+    paths = _iter_wiki_entity_paths()
+    if not paths:
         return []
-    # MCPs are sharded (one dir per first-char) so we glob recursively;
-    # all other dashboard entity types are flat.
+    # Preserve per-type sampling order while reading from the merged wiki view.
     sources = _DASHBOARD_ENTITY_SOURCES
     out: list[dict] = []
-    for sub, entity_type, recursive in sources:
-        d = base / sub
-        if not d.is_dir():
-            continue
-        paths = sorted(
-            d.rglob("*.md") if recursive else d.glob("*.md"),
-            key=lambda path: (path.stem.lower(), path.relative_to(d).as_posix().lower()),
-        )
+    for _sub, entity_type, _recursive in sources:
         seen_for_type = 0
-        for path in paths:
+        for slug, current_type, path in paths:
+            if current_type != entity_type:
+                continue
             if limit_per_type is not None and seen_for_type >= limit_per_type:
                 break
-            slug = path.stem
-            if not _is_safe_slug(slug):
+            text = _read_wiki_entity_text(slug, current_type, path)
+            if text is None:
                 continue
-            try:
-                # Read only the first ~2 KB — enough for frontmatter.
-                head = path.read_text(encoding="utf-8", errors="replace")[:2048]
-            except OSError:
-                continue
+            # Read only the first ~2 KB - enough for frontmatter.
+            head = text[:2048]
             meta, _ = _parse_frontmatter(head)
             all_tags = _frontmatter_tags(meta.get("tags", ""), limit=None)
             description, _truncated = _truncate_text(
@@ -6433,8 +6936,12 @@ def _render_status() -> str:
 
     artifact_keys = (
         ("graph_json", "graph.json"),
+        ("graph_packs", "graph packs"),
         ("graph_delta_json", "graph-delta.json"),
         ("communities_json", "communities.json"),
+        ("graph_store", "graph-store.sqlite3"),
+        ("wiki_packs", "wiki packs"),
+        ("pack_compaction", "pack compaction"),
         ("wiki_graph_tar", "wiki-graph.tar.gz"),
         ("skills_sh_catalog", "skill-index.json.gz"),
     )
@@ -6443,6 +6950,7 @@ def _render_status() -> str:
         f"<td><code>{label}</code></td>"
         f"<td>{'yes' if artifacts[key].get('exists') else 'no'}</td>"
         f"<td>{int(artifacts[key].get('size') or 0):,}</td>"
+        f"<td class='muted'>{_artifact_detail(artifacts[key])}</td>"
         f"<td class='muted'>{html.escape(str(artifacts[key].get('path') or ''))}</td>"
         "</tr>"
         for key, label in artifact_keys
@@ -6487,7 +6995,7 @@ def _render_status() -> str:
         + job_rows
         + "</table></div>"
         "<div class='card'><strong>Artifact versions</strong>"
-        "<table><tr><th>Artifact</th><th>Exists</th><th>Bytes</th><th>Path</th></tr>"
+        "<table><tr><th>Artifact</th><th>Exists</th><th>Bytes</th><th>Details</th><th>Path</th></tr>"
         + artifact_rows
         + "</table></div>"
         f"<div class='card'><strong>Artifact promotions ({artifacts.get('promotion_count', 0)})</strong>"
@@ -6496,6 +7004,40 @@ def _render_status() -> str:
         + "</table></div>"
     )
     return _layout("Status", body)
+
+
+def _artifact_detail(status: dict[str, Any]) -> str:
+    if "needs_compaction" in status:
+        need = "needed" if status.get("needs_compaction") else "not needed"
+        readiness = "ready" if status.get("can_compact_now") else "not ready"
+        detail = (
+            f"compaction: {need}, "
+            f"{int(status.get('max_overlay_count') or 0)} overlays / "
+            f"threshold {int(status.get('overlay_threshold') or 0)}, "
+            f"{readiness}"
+        )
+    elif "pack_count" in status:
+        detail = (
+            f"packs: {int(status.get('pack_count') or 0)} "
+            f"(base {int(status.get('base_count') or 0)}, "
+            f"overlay {int(status.get('overlay_count') or 0)})"
+        )
+    elif {"fresh", "nodes", "edges"} <= set(status):
+        freshness = "fresh" if status.get("fresh") else "stale or missing"
+        detail = (
+            f"store: {freshness}, "
+            f"{int(status.get('nodes') or 0)} nodes, "
+            f"{int(status.get('edges') or 0)} edges"
+        )
+    else:
+        return ""
+    error = status.get("error")
+    if error:
+        detail += f" - {error}"
+    errors = status.get("errors")
+    if isinstance(errors, list) and errors:
+        detail += f" - {'; '.join(str(item) for item in errors[:3])}"
+    return html.escape(detail)
 
 
 def _render_events() -> str:

@@ -11,7 +11,10 @@ from typing import Any
 
 import pytest
 import yaml  # type: ignore[import-untyped]
+import networkx as nx
 
+from ctx.core.graph.graph_packs import build_pack_manifest, write_base_pack, write_pack_manifest
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack
 from scripts.ci_preflight import GRAPH_VALIDATE_ARGS
 from validate_graph_artifacts import (
     DEFAULT_HARNESSES,
@@ -44,6 +47,22 @@ def _add_bytes(tf: tarfile.TarFile, name: str, payload: bytes) -> None:
     info.size = len(payload)
     info.mode = 0o644
     tf.addfile(info, BytesIO(payload))
+
+
+def _write_test_wiki_pack(graph_dir: Path, *, export_id: str) -> Path:
+    pack_root = graph_dir / f"wiki-pack-source-{export_id}"
+    write_wiki_base_pack(
+        pack_dir=pack_root / f"base-{export_id}",
+        pack_id=f"base-{export_id}",
+        base_export_id=export_id,
+        pages={
+            "index.md": "# Wiki\n",
+            "entities/skills/skills-sh-example-skill.md": "# Example\n",
+            "entities/harnesses/langgraph.md": "# LangGraph\n",
+            "converted/skills-sh-example-skill/SKILL.md": "# Example\n",
+        },
+    )
+    return pack_root
 
 
 def _dashboard_index_bytes(graph_dir: Path, *, export_id: str) -> bytes:
@@ -145,10 +164,38 @@ def _write_entity_overlay(graph_dir: Path) -> None:
     )
 
 
+def _write_test_graph_pack(graph_dir: Path, *, export_id: str) -> Path:
+    graph = nx.Graph()
+    graph.add_node(
+        "skill:skills-sh-example-skill",
+        type="skill",
+        source_catalog="skills.sh",
+    )
+    graph.add_node("harness:langgraph", type="harness")
+    graph.add_edge(
+        "skill:skills-sh-example-skill",
+        "harness:langgraph",
+        semantic_sim=0.91,
+    )
+    pack_root = graph_dir / f"graph-pack-source-{export_id}"
+    write_base_pack(
+        pack_dir=pack_root / f"base-{export_id}",
+        pack_id=f"base-{export_id}",
+        base_export_id=export_id,
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=graph,
+    )
+    return pack_root
+
+
 def _write_runtime_archive(
     graph_dir: Path,
     *,
     graph: dict[str, Any],
+    include_graph: bool = True,
+    graph_artifact: str = "graph.json",
+    graph_pack_dir: Path | None = None,
     include_queue: bool = False,
     include_delta: bool = True,
     include_report: bool = True,
@@ -160,7 +207,15 @@ def _write_runtime_archive(
 ) -> None:
     with tarfile.open(graph_dir / "wiki-graph-runtime.tar.gz", "w:gz") as tf:
         _add_text(tf, "index.md", "# Wiki\n")
-        _add_text(tf, "graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
+        if include_graph:
+            _add_text(tf, "graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
+        if graph_pack_dir is not None:
+            for path in sorted(graph_pack_dir.rglob("*")):
+                if path.is_file():
+                    tf.add(
+                        path,
+                        arcname=f"graphify-out/packs/{path.relative_to(graph_pack_dir).as_posix()}",
+                    )
         if include_delta:
             _add_text(
                 tf,
@@ -186,7 +241,7 @@ def _write_runtime_archive(
                     "version": 1,
                     "export_id": manifest_export_id,
                     "artifacts": {
-                        "graph": "graph.json",
+                        "graph": graph_artifact,
                         "delta": "graph-delta.json",
                         "communities": "communities.json",
                         "report": "graph-report.md",
@@ -211,6 +266,12 @@ def _write_archive(
     *,
     include_converted: bool = True,
     converted_skill_text: str = "# Example\n",
+    include_graph: bool = True,
+    graph_artifact: str = "graph.json",
+    graph_pack_dir: Path | None = None,
+    include_expanded_entity_pages: bool = True,
+    include_wiki_pack: bool = True,
+    wiki_pack_dir: Path | None = None,
     include_original: bool = False,
     include_lock: bool = False,
     include_queue: bool = False,
@@ -245,9 +306,26 @@ def _write_archive(
             },
         ],
     }
+    if include_wiki_pack and wiki_pack_dir is None:
+        wiki_pack_dir = _write_test_wiki_pack(graph_dir, export_id=manifest_export_id)
     with tarfile.open(graph_dir / "wiki-graph.tar.gz", "w:gz") as tf:
         _add_text(tf, "./index.md", "# Wiki\n")
-        _add_text(tf, "./graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
+        if include_wiki_pack and wiki_pack_dir is not None:
+            for path in sorted(wiki_pack_dir.rglob("*")):
+                if path.is_file():
+                    tf.add(
+                        path,
+                        arcname=f"./wiki-packs/{path.relative_to(wiki_pack_dir).as_posix()}",
+                    )
+        if include_graph:
+            _add_text(tf, "./graphify-out/graph.json", json.dumps(graph, separators=(",", ":")))
+        if graph_pack_dir is not None:
+            for path in sorted(graph_pack_dir.rglob("*")):
+                if path.is_file():
+                    tf.add(
+                        path,
+                        arcname=f"./graphify-out/packs/{path.relative_to(graph_pack_dir).as_posix()}",
+                    )
         if include_delta:
             _add_text(
                 tf,
@@ -273,7 +351,7 @@ def _write_archive(
                     "version": 1,
                     "export_id": manifest_export_id,
                     "artifacts": {
-                        "graph": "graph.json",
+                        "graph": graph_artifact,
                         "delta": "graph-delta.json",
                         "communities": "communities.json",
                         "report": "graph-report.md",
@@ -287,8 +365,9 @@ def _write_archive(
             _dashboard_index_bytes(graph_dir, export_id=manifest_export_id),
         )
         _add_text(tf, "./external-catalogs/skills-sh/catalog.json", "{}")
-        _add_text(tf, "./entities/skills/skills-sh-example-skill.md", "# Example\n")
-        _add_text(tf, "./entities/harnesses/langgraph.md", "# LangGraph\n")
+        if include_expanded_entity_pages:
+            _add_text(tf, "./entities/skills/skills-sh-example-skill.md", "# Example\n")
+            _add_text(tf, "./entities/harnesses/langgraph.md", "# LangGraph\n")
         if include_converted:
             _add_text(tf, "./converted/skills-sh-example-skill/SKILL.md", converted_skill_text)
             _add_text(tf, "./converted/skills-sh-example-skill/references/01-scope.md", "# Scope\n")
@@ -393,6 +472,205 @@ def test_validate_graph_artifacts_checks_catalog_paths_and_deep_graph_stats(
             expected_harnesses={"langgraph"},
             expected_nodes=2,
         )
+
+
+def test_validate_graph_artifacts_rejects_mismatched_wiki_pack_export_id(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    bad_pack = _write_test_wiki_pack(tmp_path, export_id="wrong-export")
+    _write_archive(tmp_path, wiki_pack_dir=bad_pack)
+
+    with pytest.raises(GraphArtifactError, match="wiki pack export_id mismatch"):
+        validate_graph_artifacts(
+            tmp_path,
+            deep=True,
+            min_nodes=2,
+            min_edges=1,
+            min_skills_sh_nodes=1,
+            min_semantic_edges=1,
+            expected_harnesses={"langgraph"},
+        )
+
+
+def test_validate_graph_artifacts_accepts_pack_native_full_wiki_pages(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(
+        tmp_path,
+        include_expanded_entity_pages=False,
+        include_converted=False,
+    )
+
+    stats = validate_graph_artifacts(
+        tmp_path,
+        deep=True,
+        min_nodes=2,
+        min_edges=1,
+        min_skills_sh_nodes=1,
+        min_semantic_edges=1,
+        expected_harnesses={"langgraph"},
+        expected_skills_sh_converted=1,
+        expected_skill_pages=1,
+        expected_agent_pages=0,
+        expected_mcp_pages=0,
+        expected_harness_pages=1,
+    )
+
+    assert stats.skill_pages == 1
+    assert stats.harness_pages == 1
+    assert stats.skills_sh_converted == 1
+
+
+def test_validate_graph_artifacts_accepts_runtime_graph_pack_payload(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    graph = nx.Graph()
+    graph.add_node(
+        "skill:skills-sh-example-skill",
+        type="skill",
+        source_catalog="skills.sh",
+    )
+    graph.add_node("harness:langgraph", type="harness")
+    graph.add_edge(
+        "skill:skills-sh-example-skill",
+        "harness:langgraph",
+        semantic_sim=0.91,
+    )
+    pack_root = tmp_path / "runtime-pack-source"
+    write_base_pack(
+        pack_dir=pack_root / "base-export-test",
+        pack_id="base-export-test",
+        base_export_id="export-test",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=graph,
+    )
+    _write_runtime_archive(
+        tmp_path,
+        graph={"graph": {"export_id": "unused"}, "nodes": [], "edges": []},
+        include_graph=False,
+        graph_artifact="packs",
+        graph_pack_dir=pack_root,
+    )
+
+    stats = validate_graph_artifacts(
+        tmp_path,
+        deep=True,
+        min_nodes=2,
+        min_edges=1,
+        min_skills_sh_nodes=1,
+        min_semantic_edges=1,
+        expected_harnesses={"langgraph"},
+    )
+
+    assert stats.graph_nodes == 2
+    assert stats.graph_edges == 1
+
+
+def test_validate_graph_artifacts_accepts_full_graph_pack_payload(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    graph = nx.Graph()
+    graph.add_node(
+        "skill:skills-sh-example-skill",
+        type="skill",
+        source_catalog="skills.sh",
+    )
+    graph.add_node("harness:langgraph", type="harness")
+    graph.add_edge(
+        "skill:skills-sh-example-skill",
+        "harness:langgraph",
+        semantic_sim=0.91,
+    )
+    pack_root = tmp_path / "full-pack-source"
+    write_base_pack(
+        pack_dir=pack_root / "base-export-test",
+        pack_id="base-export-test",
+        base_export_id="export-test",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=graph,
+    )
+    _write_archive(
+        tmp_path,
+        include_graph=False,
+        graph_artifact="packs",
+        graph_pack_dir=pack_root,
+    )
+
+    stats = validate_graph_artifacts(
+        tmp_path,
+        deep=True,
+        min_nodes=2,
+        min_edges=1,
+        min_skills_sh_nodes=1,
+        min_semantic_edges=1,
+        expected_harnesses={"langgraph"},
+        expected_nodes=2,
+        expected_edges=1,
+        expected_semantic_edges=1,
+        expected_harness_nodes=1,
+        expected_skills_sh_nodes=1,
+    )
+
+    assert stats.graph_nodes == 2
+    assert stats.graph_edges == 1
+    assert stats.graph_semantic_edges == 1
+
+
+def test_validate_graph_artifacts_rejects_runtime_graph_pack_export_id_drift(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    _write_runtime_archive(
+        tmp_path,
+        graph={"graph": {"export_id": "export-test"}, "nodes": [], "edges": []},
+        graph_pack_dir=_write_test_graph_pack(tmp_path, export_id="wrong-export"),
+    )
+
+    with pytest.raises(GraphArtifactError, match="graph export_id mismatch"):
+        validate_graph_artifacts(tmp_path, expected_harnesses={"langgraph"})
+
+
+def test_validate_graph_artifacts_rejects_full_graph_pack_export_id_drift(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(
+        tmp_path,
+        graph_pack_dir=_write_test_graph_pack(tmp_path, export_id="wrong-export"),
+    )
+    _write_runtime_archive(
+        tmp_path,
+        graph={"graph": {"export_id": "export-test"}, "nodes": [], "edges": []},
+    )
+
+    with pytest.raises(GraphArtifactError, match="graph export_id mismatch"):
+        validate_graph_artifacts(tmp_path, expected_harnesses={"langgraph"})
 
 
 def test_validate_graph_artifacts_rejects_mixed_export_generation(
@@ -680,7 +958,7 @@ def test_validate_graph_artifacts_rejects_missing_converted_catalog_path(
         converted_path="converted/skills-sh-example-skill/SKILL.md",
     )
     (tmp_path / "communities.json").write_text("{}", encoding="utf-8")
-    _write_archive(tmp_path, include_converted=False)
+    _write_archive(tmp_path, include_converted=False, include_wiki_pack=False)
 
     with pytest.raises(GraphArtifactError, match="missing converted Skills.sh body"):
         validate_graph_artifacts(tmp_path)
@@ -747,6 +1025,37 @@ def test_validate_graph_artifacts_rejects_invalid_entity_overlay(tmp_path: Path)
 
     with pytest.raises(GraphArtifactError, match="weight must be 0..1"):
         validate_graph_artifacts(tmp_path)
+
+
+def test_validate_graph_artifacts_rejects_corrupt_graph_pack(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        converted_path="converted/skills-sh-example-skill/SKILL.md",
+    )
+    _write_archive(tmp_path)
+    pack_dir = tmp_path / "packs" / "base-export-test"
+    pack_dir.mkdir(parents=True)
+    graph_path = pack_dir / "graph.json"
+    graph_path.write_text('{"nodes":[],"edges":[]}\n', encoding="utf-8")
+    write_pack_manifest(
+        pack_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=pack_dir,
+            pack_id="base-export-test",
+            pack_type="base",
+            base_export_id="export-test",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            node_count=0,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+    graph_path.write_text('{"nodes":[{"id":"skill:changed"}],"edges":[]}\n', encoding="utf-8")
+
+    with pytest.raises(GraphArtifactError, match="graph pack"):
+        validate_graph_artifacts(tmp_path, expected_harnesses={"langgraph"})
 
 
 def test_validate_graph_artifacts_rejects_original_backup_members(tmp_path: Path) -> None:

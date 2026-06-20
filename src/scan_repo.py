@@ -588,8 +588,6 @@ def _shared_recommendations(profile: dict) -> list[dict[str, Any]] | None:
     from ctx_config import cfg  # noqa: PLC0415
 
     graph_path = cfg.wiki_dir / "graphify-out" / "graph.json"
-    if not graph_path.is_file():
-        return None
     graph = load_graph(graph_path)
     if graph.number_of_nodes() == 0:
         return None

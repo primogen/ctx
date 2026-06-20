@@ -12,6 +12,12 @@ from ctx.core.graph.incremental_attach import (
     main,
     render_calibration_markdown,
 )
+from ctx.core.graph.graph_packs import (
+    build_pack_manifest,
+    load_merged_pack_graph,
+    write_base_pack,
+    write_pack_manifest,
+)
 from ctx.core.graph.resolve_graph import load_graph
 from ctx.core.graph.vector_index import build_vector_index
 
@@ -102,6 +108,28 @@ def test_main_calibrate_outputs_json(tmp_path, capsys) -> None:
     assert '"recommended_min_semantic_score": 0.8' in output
 
 
+def test_main_calibrate_accepts_pack_only_graph_dir(tmp_path, capsys) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    G = nx.Graph()
+    G.add_node("skill:a", type="skill")
+    G.add_node("skill:b", type="skill")
+    G.add_edge("skill:a", "skill:b", semantic_sim=0.8, final_weight=0.4)
+    write_base_pack(
+        pack_dir=graph_dir / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=G,
+    )
+
+    assert main(["calibrate", "--graph-dir", str(graph_dir), "--json"]) == 0
+
+    output = capsys.readouterr().out
+    assert '"node_count": 2' in output
+    assert '"recommended_min_semantic_score": 0.8' in output
+
+
 def test_main_attach_dry_run_outputs_overlay_without_writing(tmp_path, capsys) -> None:
     index_dir = tmp_path / "vector-index"
     build_vector_index(
@@ -136,6 +164,113 @@ def test_main_attach_dry_run_outputs_overlay_without_writing(tmp_path, capsys) -
     output = capsys.readouterr().out
     assert '"attach_key": "ann:v1:model-a:skill:new-python:' in output
     assert '"target": "skill:python-testing"' in output
+
+
+def test_main_attach_queries_delta_vector_indexes(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "base-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:base-ruby"],
+        content_hashes=["hb"],
+        vectors=np.asarray([[0.0, 1.0]], dtype="float32"),
+    ).save(index_dir)
+    delta_index_dir = tmp_path / "delta-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:delta-python"],
+        content_hashes=["hd"],
+        vectors=np.asarray([[1.0, 0.0]], dtype="float32"),
+    ).save(delta_index_dir)
+    overlay = tmp_path / "entity-overlays.jsonl"
+
+    rc = main([
+        "attach",
+        "--index-dir", str(index_dir),
+        "--delta-index-dir", str(delta_index_dir),
+        "--overlay", str(overlay),
+        "--node-id", "skill:new-python",
+        "--label", "new-python",
+        "--type", "skill",
+        "--text", "new python testing helper",
+        "--model-id", "model-a",
+        "--vector-json", "[1.0, 0.0]",
+        "--top-k", "1",
+        "--min-score", "0.5",
+        "--dry-run",
+    ])
+
+    assert rc == 0
+    assert not overlay.exists()
+    output = capsys.readouterr().out
+    assert '"target": "skill:delta-python"' in output
+    assert '"target": "skill:base-ruby"' not in output
+
+
+def test_main_validate_indexes_reports_base_and_delta(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "base-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:base-python"],
+        content_hashes=["hb"],
+        vectors=np.asarray([[1.0, 0.0]], dtype="float32"),
+    ).save(index_dir)
+    delta_index_dir = tmp_path / "delta-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:delta-python"],
+        content_hashes=["hd"],
+        vectors=np.asarray([[0.9, 0.1]], dtype="float32"),
+    ).save(delta_index_dir)
+
+    rc = main([
+        "validate-indexes",
+        "--index-dir", str(index_dir),
+        "--delta-index-dir", str(delta_index_dir),
+        "--json",
+    ])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["model_id"] == "model-a"
+    assert payload["index_count"] == 2
+    assert payload["node_count"] == 2
+    assert [item["role"] for item in payload["indexes"]] == ["base", "delta"]
+
+
+def test_main_validate_indexes_rejects_incompatible_delta(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "base-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:base-python"],
+        content_hashes=["hb"],
+        vectors=np.asarray([[1.0, 0.0]], dtype="float32"),
+    ).save(index_dir)
+    delta_index_dir = tmp_path / "delta-vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-b",
+        node_ids=["skill:delta-python"],
+        content_hashes=["hd"],
+        vectors=np.asarray([[0.9, 0.1]], dtype="float32"),
+    ).save(delta_index_dir)
+
+    rc = main([
+        "validate-indexes",
+        "--index-dir", str(index_dir),
+        "--delta-index-dir", str(delta_index_dir),
+        "--json",
+    ])
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "delta vector index is unreadable or stale" in payload["error"]
 
 
 def test_main_attach_writes_idempotent_overlay_used_by_resolver(tmp_path) -> None:
@@ -203,6 +338,123 @@ def test_main_attach_writes_idempotent_overlay_used_by_resolver(tmp_path) -> Non
     assert overlay.read_text(encoding="utf-8").count("\n") == 2
     assert loaded_after_change.has_edge("skill:new-python", "skill:ruby-testing")
     assert not loaded_after_change.has_edge("skill:new-python", "skill:python-testing")
+
+
+def test_main_attach_writes_idempotent_overlay_pack(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:python-testing"],
+        content_hashes=["ha"],
+        vectors=np.asarray([[1.0, 0.0]], dtype="float32"),
+    ).save(index_dir)
+
+    packs_dir = tmp_path / "packs"
+    base_dir = packs_dir / "base-export-1"
+    base_dir.mkdir(parents=True)
+    graph_json = base_dir / "graph.json"
+    graph_json.write_text(
+        json.dumps({
+            "graph": {"export_id": "export-1"},
+            "nodes": [{"id": "skill:python-testing", "type": "skill"}],
+            "edges": [],
+        }),
+        encoding="utf-8",
+    )
+    write_pack_manifest(
+        base_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=base_dir,
+            pack_id="base-export-1",
+            pack_type="base",
+            base_export_id="export-1",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="model-a",
+            node_count=1,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+    overlay = tmp_path / "entity-overlays.jsonl"
+    args = [
+        "attach",
+        "--index-dir", str(index_dir),
+        "--overlay", str(overlay),
+        "--pack-root", str(packs_dir),
+        "--base-export-id", "export-1",
+        "--config-hash", "config-sha",
+        "--node-id", "skill:new-python",
+        "--label", "new-python",
+        "--type", "skill",
+        "--tag", "python",
+        "--text", "new python testing helper",
+        "--model-id", "model-a",
+        "--vector-json", "[1.0, 0.0]",
+        "--top-k", "1",
+        "--min-score", "0.5",
+        "--json",
+    ]
+
+    assert main(args) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["overlay_pack"]["status"] == "inserted"
+    assert main(args) == 0
+    second = json.loads(capsys.readouterr().out)
+
+    assert second["status"] == "unchanged"
+    assert second["overlay_pack"]["status"] == "unchanged"
+    assert len([path for path in packs_dir.iterdir() if path.name.startswith("overlay-")]) == 1
+    graph = load_merged_pack_graph(packs_dir)
+    assert graph.has_edge("skill:new-python", "skill:python-testing")
+
+
+def test_main_attach_overlay_pack_replaces_stale_incident_edges(tmp_path, capsys) -> None:
+    index_dir = tmp_path / "vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:old-target", "skill:new-target"],
+        content_hashes=["ha", "hb"],
+        vectors=np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype="float32"),
+    ).save(index_dir)
+    packs_dir = tmp_path / "packs"
+    base_graph = nx.Graph()
+    base_graph.add_node("skill:old-target", type="skill")
+    base_graph.add_node("skill:new-target", type="skill")
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="model-a",
+        graph=base_graph,
+    )
+    overlay = tmp_path / "entity-overlays.jsonl"
+    common = [
+        "attach",
+        "--index-dir", str(index_dir),
+        "--overlay", str(overlay),
+        "--pack-root", str(packs_dir),
+        "--base-export-id", "export-1",
+        "--config-hash", "config-sha",
+        "--node-id", "skill:changing",
+        "--label", "changing",
+        "--type", "skill",
+        "--model-id", "model-a",
+        "--top-k", "1",
+        "--min-score", "0.5",
+        "--json",
+    ]
+
+    assert main([*common, "--text", "old body", "--vector-json", "[1.0, 0.0]"]) == 0
+    capsys.readouterr()
+    assert main([*common, "--text", "new body", "--vector-json", "[0.0, 1.0]"]) == 0
+
+    graph = load_merged_pack_graph(packs_dir)
+    assert not graph.has_edge("skill:changing", "skill:old-target")
+    assert graph.has_edge("skill:changing", "skill:new-target")
 
 
 def test_main_attach_default_min_score_matches_build_floor(tmp_path) -> None:

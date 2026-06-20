@@ -423,10 +423,52 @@ def test_artifact_status_reads_promotion_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import networkx as nx
+
+    from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack
+    from ctx.core.graph.graph_store import ensure_graph_store
+    from ctx.core.wiki.wiki_packs import write_wiki_base_pack, write_wiki_overlay_pack
+
     graph_dir = fake_claude / "skill-wiki" / "graphify-out"
     graph_dir.mkdir(parents=True)
     graph = graph_dir / "graph.json"
     graph.write_text('{"nodes":[],"edges":[]}', encoding="utf-8")
+    pack_graph = nx.Graph()
+    pack_graph.add_node("skill:pack-skill", label="pack-skill", type="skill")
+    write_base_pack(
+        pack_dir=graph_dir / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=pack_graph,
+    )
+    write_overlay_pack(
+        pack_dir=graph_dir / "packs" / "overlay-pack-skill",
+        pack_id="overlay-pack-skill",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        nodes=[{"id": "skill:pack-skill", "label": "pack-skill", "type": "skill"}],
+        edges=[],
+        tombstones=[],
+    )
+    write_wiki_base_pack(
+        pack_dir=fake_claude / "skill-wiki" / "wiki-packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        pages={"entities/skills/pack-skill.md": "# Pack Skill\n"},
+    )
+    write_wiki_overlay_pack(
+        pack_dir=fake_claude / "skill-wiki" / "wiki-packs" / "overlay-pack-skill",
+        pack_id="overlay-pack-skill",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        pages={"entities/skills/pack-skill.md": "# Pack Skill\n\nUpdated.\n"},
+        tombstones=[],
+    )
+    ensure_graph_store(graph_dir, graph_dir / "graph-store.sqlite3")
     repo_graph = tmp_path / "repo-graph"
     repo_graph.mkdir()
     (repo_graph / "wiki-graph.tar.gz").write_bytes(b"tar")
@@ -451,6 +493,21 @@ def test_artifact_status_reads_promotion_metadata(
 
     assert status["graph_json"]["exists"] is True
     assert status["graph_json"]["size"] == graph.stat().st_size
+    assert status["graph_packs"]["exists"] is True
+    assert status["graph_packs"]["pack_count"] == 2
+    assert status["graph_packs"]["base_count"] == 1
+    assert status["graph_packs"]["overlay_count"] == 1
+    assert status["wiki_packs"]["pack_count"] == 2
+    assert status["wiki_packs"]["base_count"] == 1
+    assert status["wiki_packs"]["overlay_count"] == 1
+    assert status["pack_compaction"]["needs_compaction"] is False
+    assert status["pack_compaction"]["can_compact_now"] is True
+    assert status["pack_compaction"]["max_overlay_count"] == 1
+    assert status["graph_store"]["exists"] is True
+    assert status["graph_store"]["fresh"] is True
+    assert status["graph_store"]["ok"] is True
+    assert status["graph_store"]["nodes"] == 1
+    assert status["graph_store"]["edges"] == 0
     assert status["wiki_graph_tar"]["path"] == str(repo_graph / "wiki-graph.tar.gz")
     assert status["skills_sh_catalog"]["path"] == str(runtime_catalog)
     assert status["promotion_count"] == 1
@@ -473,6 +530,13 @@ def test_status_page_and_api_show_queue_and_artifacts(
     html_out = cm._render_status()
     assert "Queue state" in html_out
     assert "Artifact versions" in html_out
+    assert "graph packs" in html_out
+    assert "graph-store.sqlite3" in html_out
+    assert "wiki packs" in html_out
+    assert "pack compaction" in html_out
+    assert "packs: 0 (base 0, overlay 0)" in html_out
+    assert "compaction: not needed, 0 overlays / threshold" in html_out
+    assert "store: stale or missing, 0 nodes, 0 edges" in html_out
     assert wiki_queue.GRAPH_EXPORT_JOB in html_out
 
     server, _thread, port = _serve_monitor(monkeypatch)
@@ -1846,6 +1910,65 @@ def test_graph_helpers_reuse_graph_loaded_from_same_file(
     assert calls == [graph_file]
 
 
+def test_dashboard_graph_cache_reuses_pack_only_graph(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import networkx as nx
+    import sys
+
+    from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack
+
+    graph_out = fake_claude / "skill-wiki" / "graphify-out"
+    graph_file = graph_out / "graph.json"
+    pack_graph = nx.Graph()
+    pack_graph.add_node("skill:python-patterns", label="python-patterns", type="skill")
+    write_base_pack(
+        pack_dir=graph_out / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=pack_graph,
+    )
+    assert not graph_file.exists()
+
+    G = nx.Graph()
+    G.add_node("skill:python-patterns", label="python-patterns", type="skill")
+    calls: list[tuple[Path | None, dict[str, object]]] = []
+
+    def _load_graph(path: Path | None = None, **kwargs: object):
+        calls.append((path, kwargs))
+        return G
+
+    fake = type("M", (), {"load_graph": staticmethod(_load_graph)})
+    monkeypatch.setitem(sys.modules, "ctx.core.graph.resolve_graph", fake)
+    monkeypatch.setattr(cm, "_GRAPH_CACHE_KEY", None)
+    monkeypatch.setattr(cm, "_GRAPH_CACHE_VALUE", None)
+
+    assert cm._load_dashboard_graph() is G
+    assert cm._load_dashboard_graph() is G
+    assert calls == [(graph_file, {"apply_runtime_filter": False})]
+
+    write_overlay_pack(
+        pack_dir=graph_out / "packs" / "overlay-pack-target",
+        pack_id="overlay-pack-target",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        nodes=[{"id": "skill:pack-target", "label": "pack-target", "type": "skill"}],
+        edges=[],
+        tombstones=[],
+    )
+
+    assert cm._load_dashboard_graph() is G
+    assert calls == [
+        (graph_file, {"apply_runtime_filter": False}),
+        (graph_file, {"apply_runtime_filter": False}),
+    ]
+
+
 def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1947,6 +2070,59 @@ def test_graph_neighborhood_uses_dashboard_index_without_full_graph_load(
         "total": 2,
         "split_known": True,
     }
+
+
+def test_graph_neighborhood_uses_fresh_graph_store_without_full_graph_load(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import networkx as nx
+    from networkx.readwrite import node_link_data
+
+    from ctx.core.graph.graph_store import ensure_graph_store
+
+    graph_dir = fake_claude / "skill-wiki" / "graphify-out"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    graph = nx.Graph()
+    graph.add_node(
+        "skill:python-patterns",
+        label="python-patterns",
+        type="skill",
+        tags=["python"],
+    )
+    graph.add_node(
+        "skill:fastapi-pro",
+        label="fastapi-pro",
+        type="skill",
+        tags=["python", "api"],
+    )
+    graph.add_edge(
+        "skill:python-patterns",
+        "skill:fastapi-pro",
+        weight=0.8,
+        shared_tags=["python"],
+        reasons=["semantic"],
+    )
+    (graph_dir / "graph.json").write_text(
+        json.dumps(node_link_data(graph, edges="edges")),
+        encoding="utf-8",
+    )
+    ensure_graph_store(graph_dir, graph_dir / "graph-store.sqlite3")
+    monkeypatch.setattr(
+        cm,
+        "_load_dashboard_graph",
+        lambda: (_ for _ in ()).throw(AssertionError("full graph loaded")),
+    )
+
+    result = cm._graph_neighborhood("python-patterns", entity_type="skill")
+
+    assert result["center"] == "skill:python-patterns"
+    assert result["insights"]["source"] == "graph-store"
+    assert [node["data"]["id"] for node in result["nodes"]] == [
+        "skill:python-patterns",
+        "skill:fastapi-pro",
+    ]
+    assert result["edges"][0]["data"]["shared_tags"] == ["python"]
 
 
 def test_skillspector_payload_filters_by_tag_and_graph_family(

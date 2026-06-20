@@ -56,6 +56,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages
 from ctx.utils._fs_utils import atomic_write_json
 
 __all__ = [
@@ -253,7 +254,37 @@ def remove(
     return idx
 
 
-def rebuild_from_scan(mcp_dir: Path) -> tuple[CanonicalIndex, int, int]:
+def _wiki_packs_dir_for_mcp_dir(mcp_dir: Path) -> Path:
+    if mcp_dir.name != "mcp-servers" or mcp_dir.parent.name != "entities":
+        return mcp_dir / ".no-wiki-packs"
+    return mcp_dir.parent.parent / "wiki-packs"
+
+
+def _iter_entity_pages(mcp_dir: Path) -> list[tuple[str, str, str | None]]:
+    packs_dir = _wiki_packs_dir_for_mcp_dir(mcp_dir)
+    if packs_dir.is_dir():
+        prefix = "entities/mcp-servers/"
+        rows: list[tuple[str, str, str | None]] = []
+        for full_relpath, text in sorted(load_merged_wiki_pages(packs_dir).items()):
+            if not full_relpath.startswith(prefix) or not full_relpath.endswith(".md"):
+                continue
+            relpath = full_relpath[len(prefix):]
+            rows.append((relpath, Path(relpath).stem, text))
+        return rows
+
+    if not mcp_dir.is_dir():
+        return []
+    rows = []
+    for page in sorted(mcp_dir.rglob("*.md")):
+        rows.append((page.relative_to(mcp_dir).as_posix(), page.stem, None))
+    return rows
+
+
+def rebuild_from_scan(
+    mcp_dir: Path,
+    *,
+    persist: bool = True,
+) -> tuple[CanonicalIndex, int, int]:
     """Scan every entity page, rebuild the index from scratch.
 
     Returns ``(index, indexed, skipped)`` where *indexed* counts pages
@@ -273,19 +304,22 @@ def rebuild_from_scan(mcp_dir: Path) -> tuple[CanonicalIndex, int, int]:
     indexed = 0
     skipped = 0
 
-    if not mcp_dir.is_dir():
+    rows = _iter_entity_pages(mcp_dir)
+    if not rows:
         return index, indexed, skipped
 
-    for page in mcp_dir.rglob("*.md"):
+    for relpath, slug, text in rows:
         # Skip non-entity files that might land under the tree later.
-        if page.name.startswith("."):
+        if Path(relpath).name.startswith("."):
             skipped += 1
             continue
-        try:
-            text = page.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            skipped += 1
-            continue
+        if text is None:
+            page = mcp_dir / relpath
+            try:
+                text = page.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                skipped += 1
+                continue
         fm = _parse_frontmatter(text)
         normalized = _normalize_github_url(fm.get("github_url"))
         if normalized is None:
@@ -296,8 +330,6 @@ def rebuild_from_scan(mcp_dir: Path) -> tuple[CanonicalIndex, int, int]:
         # ``McpRecord.slug``, whereas the ``name`` field may store the
         # original upstream display name (e.g. ``1mcp/agent`` for a
         # file at ``0-9/1mcp-agent.md``).
-        slug = page.stem
-        relpath = page.relative_to(mcp_dir).as_posix()
         upsert(
             mcp_dir,
             normalized,
@@ -308,5 +340,6 @@ def rebuild_from_scan(mcp_dir: Path) -> tuple[CanonicalIndex, int, int]:
         )
         indexed += 1
 
-    save_index(mcp_dir, index)
+    if persist:
+        save_index(mcp_dir, index)
     return index, indexed, skipped

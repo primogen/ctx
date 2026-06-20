@@ -254,6 +254,30 @@ def test_load_prior_graph_returns_none_on_missing_json(graphify_out: Path) -> No
     assert wiki_graphify.load_prior_graph() is None
 
 
+def test_load_prior_graph_uses_active_packs_when_graph_json_is_absent(
+    graphify_out: Path,
+) -> None:
+    from ctx.core.graph.graph_packs import write_base_pack
+    from ctx.core.wiki import wiki_graphify
+
+    graph = _make_sample_graph()
+    write_base_pack(
+        pack_dir=graphify_out / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=graph,
+    )
+
+    loaded = wiki_graphify.load_prior_graph()
+
+    assert loaded is not None
+    assert loaded.number_of_nodes() == graph.number_of_nodes()
+    assert loaded.number_of_edges() == graph.number_of_edges()
+    assert loaded.graph["ctx_pack_base_export_id"] == "export-1"
+
+
 def test_load_prior_graph_returns_none_on_malformed_json(graphify_out: Path) -> None:
     from ctx.core.wiki import wiki_graphify
 
@@ -293,6 +317,38 @@ def test_export_graph_does_not_write_pickle(graphify_out: Path) -> None:
     assert not (graphify_out / "graph.pickle").exists(), (
         "export_graph left graph.pickle behind, preserving the old RCE artifact"
     )
+
+
+def test_export_graph_writes_active_base_pack(graphify_out: Path) -> None:
+    """export_graph writes a modular base pack beside graph.json."""
+    from ctx.core.graph.graph_packs import discover_pack_manifests, load_merged_pack_graph
+    from ctx.core.wiki import wiki_graphify
+
+    first = _make_sample_graph()
+    first.graph[wiki_graphify.GRAPH_SCORING_SIGNATURE_KEY] = {
+        "intake_backend": "local",
+        "intake_model": "test-model",
+    }
+    wiki_graphify.export_graph(first, communities={})
+
+    packs_dir = graphify_out / "packs"
+    entries = discover_pack_manifests(packs_dir)
+    graph_json = json.loads((graphify_out / "graph.json").read_text(encoding="utf-8"))
+    export_id = graph_json["graph"]["export_id"]
+    assert [entry.manifest.pack_id for entry in entries] == [f"base-{export_id}"]
+    assert entries[0].manifest.base_export_id == export_id
+    assert entries[0].manifest.model_id == "local:test-model"
+    assert load_merged_pack_graph(packs_dir).number_of_nodes() == first.number_of_nodes()
+
+    second = _make_sample_graph()
+    second.add_node("skill:new", label="new", type="skill", tags=["python"])
+    wiki_graphify.export_graph(second, communities={})
+
+    entries = discover_pack_manifests(packs_dir)
+    graph_json = json.loads((graphify_out / "graph.json").read_text(encoding="utf-8"))
+    export_id = graph_json["graph"]["export_id"]
+    assert [entry.manifest.pack_id for entry in entries] == [f"base-{export_id}"]
+    assert load_merged_pack_graph(packs_dir).number_of_nodes() == second.number_of_nodes()
 
 
 def test_export_graph_supports_networkx_without_edges_kwarg(
@@ -473,6 +529,60 @@ def test_main_dry_run_does_not_write_graph_or_concepts(
 
     assert not (tmp_path / "wiki" / "graphify-out").exists()
     assert not (tmp_path / "wiki" / "concepts").exists()
+
+
+def test_main_writes_wiki_base_pack_after_page_updates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ctx.core.wiki import wiki_graphify
+    from ctx.core.wiki.wiki_packs import discover_wiki_pack_manifests, load_merged_wiki_pages
+
+    wiki = tmp_path / "wiki"
+    skill_pages = wiki / "entities" / "skills"
+    skill_pages.mkdir(parents=True)
+    (skill_pages / "a.md").write_text("# a\n", encoding="utf-8")
+    (skill_pages / "b.md").write_text("# b\n", encoding="utf-8")
+    original_wiki = wiki_graphify.WIKI_DIR
+    graph = _make_sample_graph()
+
+    monkeypatch.setattr(sys, "argv", [
+        "ctx-wiki-graphify",
+        "--wiki-dir",
+        str(wiki),
+    ])
+    monkeypatch.setattr(wiki_graphify, "build_graph", lambda **_kwargs: (graph, {}))
+    monkeypatch.setattr(wiki_graphify, "detect_communities", lambda _graph: {
+        0: ["skill:a", "skill:b", "mcp-server:c"],
+    })
+
+    try:
+        wiki_graphify.main()
+        graph_manifest = json.loads(
+            (wiki / "graphify-out" / "graph-export-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        entries = discover_wiki_pack_manifests(wiki / "wiki-packs")
+        assert [entry.manifest.pack_id for entry in entries] == [
+            f"base-{graph_manifest['export_id']}"
+        ]
+        assert entries[0].manifest.base_export_id == graph_manifest["export_id"]
+
+        pages = load_merged_wiki_pages(wiki / "wiki-packs")
+        assert "[[entities/skills/b]]" in pages["entities/skills/a.md"]
+        assert any(path.startswith("concepts/community-") for path in pages)
+
+        (skill_pages / "a.md").write_text("# a v2\n", encoding="utf-8")
+        wiki_graphify.main()
+        pages = load_merged_wiki_pages(wiki / "wiki-packs")
+    finally:
+        wiki_graphify.configure_wiki_dir(original_wiki)
+
+    entries = discover_wiki_pack_manifests(wiki / "wiki-packs")
+    assert len(entries) == 1
+    assert "# a v2" in pages["entities/skills/a.md"]
+    assert (wiki / "wiki-packs.rollback").is_dir()
 
 
 def test_generate_concept_pages_reconciles_generated_pages(

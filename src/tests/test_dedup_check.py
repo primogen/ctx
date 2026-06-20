@@ -21,6 +21,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from ctx.core.quality import dedup_check as dc  # noqa: E402
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack  # noqa: E402
 
 
 # ── Allowlist ──────────────────────────────────────────────────────────
@@ -56,6 +57,56 @@ def test_allowlist_skips_malformed_lines(tmp_path: Path) -> None:
     p = tmp_path / "allow.txt"
     p.write_text("only-one-token\n", encoding="utf-8")
     assert dc.load_allowlist(p) == set()
+
+
+def test_discover_entities_reads_wiki_packs_before_physical_pages(tmp_path: Path) -> None:
+    stale_dir = tmp_path / "entities" / "skills"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "stale.md").write_text(
+        "---\n"
+        "description: stale physical page\n"
+        "---\n"
+        "# stale\n",
+        encoding="utf-8",
+    )
+    write_wiki_base_pack(
+        pack_dir=tmp_path / "wiki-packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        pages={
+            "entities/skills/pack-skill.md": (
+                "---\n"
+                "description: pack skill description\n"
+                "tags:\n"
+                "  - pack\n"
+                "---\n"
+                "# pack skill\n"
+            ),
+            "entities/agents/reviewer.md": (
+                "---\n"
+                "description: review agent\n"
+                "---\n"
+                "# reviewer\n"
+            ),
+            "entities/mcp-servers/g/github.md": (
+                "---\n"
+                "description: github mcp\n"
+                "---\n"
+                "# github\n"
+            ),
+        },
+    )
+
+    entities = dc.discover_entities(tmp_path)
+
+    assert [entity.node_id for entity in entities] == [
+        "agent:reviewer",
+        "mcp-server:github",
+        "skill:pack-skill",
+    ]
+    pack_skill = next(entity for entity in entities if entity.node_id == "skill:pack-skill")
+    assert pack_skill.description == "pack skill description"
+    assert pack_skill.tags == ("pack",)
 
 
 # ── State ──────────────────────────────────────────────────────────────

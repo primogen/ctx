@@ -16,6 +16,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
+from ctx.core.graph.graph_packs import (
+    GraphPackManifestError,
+    discover_pack_manifests,
+    load_merged_pack_graph,
+)
+from ctx.core.wiki.wiki_packs import (
+    WikiPackManifestError,
+    discover_wiki_pack_manifests,
+    load_merged_wiki_pages,
+)
+
 GIT_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 DEFAULT_HARNESSES = {
     "agentops",
@@ -102,6 +113,9 @@ _GRAPH_RUNTIME_REQUIRED_NAMES = {
     "graphify-out/dashboard-neighborhoods.sqlite3",
     "external-catalogs/skills-sh/catalog.json",
 }
+_GRAPH_PAYLOAD_NAME = "graphify-out/graph.json"
+_GRAPH_PACK_PREFIX = "graphify-out/packs/"
+_WIKI_PACK_PREFIX = "wiki-packs/"
 _DASHBOARD_INDEX_REQUIRED_TABLES = {"meta", "nodes", "slug_index", "neighbors"}
 _DASHBOARD_INDEX_REQUIRED_META = {
     "export_id",
@@ -257,6 +271,174 @@ def _copy_tar_member_to_path(
         source.close()
 
 
+def _copy_graph_pack_tar_member(
+    tf: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    name: str,
+    packs_dir: Path,
+) -> None:
+    if not member.isfile() or not name.startswith(_GRAPH_PACK_PREFIX):
+        return
+    relative_name = name.removeprefix(_GRAPH_PACK_PREFIX)
+    if not relative_name:
+        return
+    target = packs_dir / relative_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _copy_tar_member_to_path(tf, member, target)
+
+
+def _copy_wiki_pack_tar_member(
+    tf: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    name: str,
+    packs_dir: Path,
+) -> None:
+    if not member.isfile() or not name.startswith(_WIKI_PACK_PREFIX):
+        return
+    relative_name = name.removeprefix(_WIKI_PACK_PREFIX)
+    if not relative_name:
+        return
+    target = packs_dir / relative_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _copy_tar_member_to_path(tf, member, target)
+
+
+def _validate_wiki_pack_payload(
+    names: set[str],
+    packs_dir: Path,
+    *,
+    expected_export_id: str,
+) -> dict[str, str]:
+    if not any(name.startswith(_WIKI_PACK_PREFIX) for name in names):
+        return {}
+    try:
+        entries = discover_wiki_pack_manifests(packs_dir)
+        pages = load_merged_wiki_pages(packs_dir)
+    except WikiPackManifestError as exc:
+        raise GraphArtifactError(f"wiki pack validation failed: {exc}") from exc
+    if not entries:
+        raise GraphArtifactError("wiki graph archive is missing wiki-packs/")
+    base_export_id = entries[0].manifest.base_export_id
+    if base_export_id != expected_export_id:
+        raise GraphArtifactError(
+            "wiki pack export_id mismatch: expected "
+            f"{expected_export_id}, got {base_export_id}",
+        )
+    if "index.md" not in pages:
+        raise GraphArtifactError("wiki pack payload is missing index.md")
+    return pages
+
+
+def _record_graph_pack_export_id(
+    export_ids: dict[str, str],
+    names: set[str],
+    packs_dir: Path,
+    *,
+    context: str,
+) -> None:
+    if not any(name.startswith(_GRAPH_PACK_PREFIX) for name in names):
+        if _GRAPH_PAYLOAD_NAME in export_ids:
+            return
+        raise GraphArtifactError(
+            f"{context} is missing graph payload: graphify-out/graph.json or graphify-out/packs",
+        )
+    *_, export_id = _scan_graph_pack_payload(
+        names,
+        packs_dir,
+        deep=False,
+        context=context,
+    )
+    if export_id is None:
+        return
+    _record_export_id(export_ids, "graphify-out/packs", export_id)
+
+
+def _scan_graph_pack_payload(
+    names: set[str],
+    packs_dir: Path,
+    *,
+    deep: bool,
+    context: str,
+) -> tuple[int, int, int, int, int, str | None]:
+    if not any(name.startswith(_GRAPH_PACK_PREFIX) for name in names):
+        raise GraphArtifactError(
+            f"{context} is missing graph payload: graphify-out/graph.json or graphify-out/packs",
+        )
+    try:
+        graph = load_merged_pack_graph(packs_dir)
+    except GraphPackManifestError as exc:
+        raise GraphArtifactError(f"{context} graph pack validation failed: {exc}") from exc
+    if graph.number_of_nodes() == 0:
+        raise GraphArtifactError(
+            f"{context} is missing graph payload: graphify-out/graph.json or graphify-out/packs",
+        )
+    export_id = graph.graph.get("export_id") or graph.graph.get("ctx_pack_base_export_id")
+    if not isinstance(export_id, str) or not export_id.strip():
+        export_id = None
+    if not deep:
+        return 0, 0, 0, 0, 0, export_id
+    return _scan_graph_object(graph, export_id=export_id)
+
+
+def _scan_graph_object(
+    graph: Any,
+    *,
+    export_id: str | None,
+) -> tuple[int, int, int, int, int, str | None]:
+    semantic_edges = skills_sh_nodes = harness_nodes = 0
+    for _, attrs in graph.nodes(data=True):
+        if not isinstance(attrs, dict):
+            continue
+        if attrs.get("source_catalog") == "skills.sh":
+            skills_sh_nodes += 1
+        if attrs.get("type") == "harness":
+            harness_nodes += 1
+    for source, target, attrs in graph.edges(data=True):
+        if not isinstance(attrs, dict):
+            continue
+        context = f"graph pack edge {source!r}->{target!r}"
+        _validate_graph_edge_score_mapping(attrs, context=context)
+        semantic = attrs.get("semantic_sim")
+        if isinstance(semantic, int | float) and float(semantic) != 0.0:
+            semantic_edges += 1
+    return (
+        int(graph.number_of_nodes()),
+        int(graph.number_of_edges()),
+        semantic_edges,
+        skills_sh_nodes,
+        harness_nodes,
+        export_id,
+    )
+
+
+def _validate_graph_edge_score_mapping(edge: dict[str, Any], *, context: str) -> None:
+    numeric_scores: dict[str, float] = {}
+    for field in _EDGE_SCORE_FIELDS:
+        if field not in edge:
+            continue
+        value = edge[field]
+        if not isinstance(value, int | float):
+            raise GraphArtifactError(f"{context} {field} must be numeric")
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise GraphArtifactError(f"{context} {field} must be finite")
+        if not 0 <= numeric <= 1:
+            raise GraphArtifactError(f"{context} {field} must be 0..1")
+        numeric_scores[field] = numeric
+    if (
+        "weight" in numeric_scores
+        and "final_weight" in numeric_scores
+        and abs(numeric_scores["weight"] - numeric_scores["final_weight"]) > 1e-9
+    ):
+        raise GraphArtifactError(f"{context} weight must equal final_weight")
+    if "final_weight" in edge:
+        _validate_score_component_mapping(
+            edge.get("final_weight"),
+            edge.get("score_components"),
+            context=context,
+        )
+
+
 def _validate_dashboard_index(
     path: Path,
     *,
@@ -342,6 +524,27 @@ def _count_lines(payload: bytes) -> int:
 
 def _is_converted_skill_page(name: str) -> bool:
     return name.startswith("converted/") and name.endswith("/SKILL.md")
+
+
+def _count_wiki_page_inventory(names: set[str]) -> tuple[int, int, int, int, int]:
+    skill_pages = sum(
+        1 for name in names if name.startswith("entities/skills/") and name.endswith(".md")
+    )
+    agent_pages = sum(
+        1 for name in names if name.startswith("entities/agents/") and name.endswith(".md")
+    )
+    mcp_pages = sum(
+        1 for name in names if name.startswith("entities/mcp-servers/") and name.endswith(".md")
+    )
+    harness_pages = sum(
+        1 for name in names if name.startswith("entities/harnesses/") and name.endswith(".md")
+    )
+    skills_sh_converted = sum(
+        1
+        for name in names
+        if name.startswith("converted/skills-sh-") and name.endswith("/SKILL.md")
+    )
+    return skill_pages, agent_pages, mcp_pages, harness_pages, skills_sh_converted
 
 
 def _iter_skill_bundle_refs(payload: bytes) -> list[str]:
@@ -622,6 +825,7 @@ def validate_graph_artifacts(
     overlay_path = graph_dir / "entity-overlays.jsonl"
     for path in (tarball, runtime_tarball, catalog_path, communities_path, overlay_path):
         _require_real_file(path)
+    _validate_graph_packs(graph_dir / "packs")
 
     expected_harnesses = DEFAULT_HARNESSES if expected_harnesses is None else expected_harnesses
     runtime_export_id = _validate_runtime_graph_archive(
@@ -658,12 +862,15 @@ def validate_graph_artifacts(
     names: set[str] = set()
     graph_nodes = graph_edges = graph_semantic_edges = skills_sh_nodes = 0
     harness_nodes = 0
-    skill_pages = agent_pages = mcp_pages = harness_pages = skills_sh_converted = 0
     export_ids: dict[str, str] = {}
     manifest: dict[str, Any] | None = None
     archive_communities: dict[str, Any] | None = None
     dashboard_index_path: Path | None = None
     skill_bundle_refs: list[tuple[str, str, str]] = []
+    graph_pack_tmp = tempfile.TemporaryDirectory(prefix="ctx-full-graph-packs-")
+    graph_packs_dir = Path(graph_pack_tmp.name)
+    wiki_pack_tmp = tempfile.TemporaryDirectory(prefix="ctx-full-wiki-packs-")
+    wiki_packs_dir = Path(wiki_pack_tmp.name)
 
     with tarfile.open(tarball, "r:gz") as tf:
         for member in tf:
@@ -679,16 +886,6 @@ def validate_graph_artifacts(
                 raise GraphArtifactError(
                     f"archive contains transient queue state: {member.name}",
                 )
-            if name.startswith("entities/skills/") and name.endswith(".md"):
-                skill_pages += 1
-            elif name.startswith("entities/agents/") and name.endswith(".md"):
-                agent_pages += 1
-            elif name.startswith("entities/mcp-servers/") and name.endswith(".md"):
-                mcp_pages += 1
-            elif name.startswith("entities/harnesses/") and name.endswith(".md"):
-                harness_pages += 1
-            if name.startswith("converted/skills-sh-") and name.endswith("/SKILL.md"):
-                skills_sh_converted += 1
             if member.isfile() and _is_converted_skill_page(name):
                 f = tf.extractfile(member)
                 if f is None:
@@ -747,6 +944,10 @@ def validate_graph_artifacts(
                 tmp.close()
                 dashboard_index_path = Path(tmp.name)
                 _copy_tar_member_to_path(tf, member, dashboard_index_path)
+            elif name.startswith(_GRAPH_PACK_PREFIX):
+                _copy_graph_pack_tar_member(tf, member, name, graph_packs_dir)
+            elif name.startswith(_WIKI_PACK_PREFIX):
+                _copy_wiki_pack_tar_member(tf, member, name, wiki_packs_dir)
             elif member.isfile() and deep and name.startswith("converted/skills-sh-"):
                 if name.endswith("/SKILL.md") or "/references/" in name:
                     f = tf.extractfile(member)
@@ -759,19 +960,7 @@ def validate_graph_artifacts(
                             f"{member.name} has {lines} lines, above limit {limit}",
                         )
 
-    missing_bundle_refs = [
-        (skill_page, ref, target)
-        for skill_page, ref, target in skill_bundle_refs
-        if target not in names
-    ]
-    if missing_bundle_refs:
-        sample = "; ".join(
-            f"{skill_page} references {ref} but {target} is absent"
-            for skill_page, ref, target in missing_bundle_refs[:5]
-        )
-        raise GraphArtifactError(f"missing bundled skill file: {sample}")
-
-    required_names = _GRAPH_RUNTIME_REQUIRED_NAMES
+    required_names = _GRAPH_RUNTIME_REQUIRED_NAMES - {_GRAPH_PAYLOAD_NAME}
     missing_required = sorted(required_names - names)
     if missing_required:
         raise GraphArtifactError(f"wiki graph archive is missing: {missing_required}")
@@ -786,6 +975,75 @@ def validate_graph_artifacts(
         "graphify-out/graph-export-manifest.json",
         manifest_export_id,
     )
+    try:
+        if _GRAPH_PAYLOAD_NAME not in export_ids:
+            (
+                graph_nodes,
+                graph_edges,
+                graph_semantic_edges,
+                skills_sh_nodes,
+                harness_nodes,
+                graph_export_id,
+            ) = _scan_graph_pack_payload(
+                names,
+                graph_packs_dir,
+                deep=deep,
+                context="wiki graph archive",
+            )
+            _record_export_id(export_ids, "graphify-out/packs", graph_export_id)
+        else:
+            _record_graph_pack_export_id(
+                export_ids,
+                names,
+                graph_packs_dir,
+                context="wiki graph archive",
+            )
+    finally:
+        graph_pack_tmp.cleanup()
+    try:
+        wiki_pack_pages = _validate_wiki_pack_payload(
+            names,
+            wiki_packs_dir,
+            expected_export_id=manifest_export_id,
+        )
+    finally:
+        wiki_pack_tmp.cleanup()
+    for page_name, text in wiki_pack_pages.items():
+        payload = text.encode("utf-8")
+        if _is_converted_skill_page(page_name):
+            for ref in _iter_skill_bundle_refs(payload):
+                skill_bundle_refs.append((
+                    page_name,
+                    ref,
+                    _skill_bundle_target_name(page_name, ref),
+                ))
+        if deep and page_name.startswith("converted/skills-sh-"):
+            if page_name.endswith("/SKILL.md") or "/references/" in page_name:
+                lines = _count_lines(payload)
+                limit = line_threshold if page_name.endswith("/SKILL.md") else max_stage_lines
+                if lines > limit:
+                    raise GraphArtifactError(
+                        f"{page_name} has {lines} lines, above limit {limit}",
+                    )
+    all_page_names = names | set(wiki_pack_pages)
+    missing_bundle_refs = [
+        (skill_page, ref, target)
+        for skill_page, ref, target in skill_bundle_refs
+        if target not in all_page_names
+    ]
+    if missing_bundle_refs:
+        sample = "; ".join(
+            f"{skill_page} references {ref} but {target} is absent"
+            for skill_page, ref, target in missing_bundle_refs[:5]
+        )
+        raise GraphArtifactError(f"missing bundled skill file: {sample}")
+    (
+        skill_pages,
+        agent_pages,
+        mcp_pages,
+        harness_pages,
+        skills_sh_converted,
+    ) = _count_wiki_page_inventory(all_page_names)
     if dashboard_index_path is None:
         raise GraphArtifactError("graphify-out/dashboard-neighborhoods.sqlite3 is missing")
     try:
@@ -796,21 +1054,19 @@ def validate_graph_artifacts(
         )
     finally:
         dashboard_index_path.unlink(missing_ok=True)
-    if "graphify-out/graph.json" not in export_ids:
-        raise GraphArtifactError("graphify-out/graph.json is missing export_id")
     _validate_export_ids(export_ids, expected=manifest_export_id)
     _validate_root_communities(root_communities, archive_communities)
     _validate_graph_previews(graph_dir, export_id=manifest_export_id, manifest=manifest)
-    missing_pages = sorted(required_skill_pages - names)
+    missing_pages = sorted(required_skill_pages - all_page_names)
     if missing_pages:
         raise GraphArtifactError(f"missing Skills.sh entity pages: {missing_pages[:5]}")
-    missing_converted = sorted(available_converted_paths - names)
+    missing_converted = sorted(available_converted_paths - all_page_names)
     if missing_converted:
         raise GraphArtifactError(f"missing converted Skills.sh body: {missing_converted[0]}")
     missing_harnesses = sorted(
         f"entities/harnesses/{slug}.md"
         for slug in expected_harnesses
-        if f"entities/harnesses/{slug}.md" not in names
+        if f"entities/harnesses/{slug}.md" not in all_page_names
     )
     if missing_harnesses:
         raise GraphArtifactError(f"missing harness entity pages: {missing_harnesses}")
@@ -878,6 +1134,16 @@ def validate_graph_artifacts(
     return stats
 
 
+def _validate_graph_packs(packs_dir: Path) -> None:
+    """Validate optional modular graph packs when present."""
+    if not packs_dir.exists():
+        return
+    try:
+        discover_pack_manifests(packs_dir)
+    except GraphPackManifestError as exc:
+        raise GraphArtifactError(f"graph pack validation failed: {exc}") from exc
+
+
 def _validate_runtime_graph_archive(
     tarball: Path,
     *,
@@ -888,6 +1154,8 @@ def _validate_runtime_graph_archive(
     export_ids: dict[str, str] = {}
     manifest: dict[str, Any] | None = None
     dashboard_index_path: Path | None = None
+    graph_pack_tmp = tempfile.TemporaryDirectory(prefix="ctx-runtime-graph-packs-")
+    graph_packs_dir = Path(graph_pack_tmp.name)
     with tarfile.open(tarball, "r:gz") as tf:
         for member in tf:
             name = _safe_tar_name(member.name)
@@ -934,8 +1202,10 @@ def _validate_runtime_graph_archive(
                 tmp.close()
                 dashboard_index_path = Path(tmp.name)
                 _copy_tar_member_to_path(tf, member, dashboard_index_path)
+            elif name.startswith(_GRAPH_PACK_PREFIX):
+                _copy_graph_pack_tar_member(tf, member, name, graph_packs_dir)
 
-    missing_required = sorted(_GRAPH_RUNTIME_REQUIRED_NAMES - names)
+    missing_required = sorted((_GRAPH_RUNTIME_REQUIRED_NAMES - {_GRAPH_PAYLOAD_NAME}) - names)
     if missing_required:
         raise GraphArtifactError(
             f"runtime graph archive is missing: {missing_required}",
@@ -955,6 +1225,15 @@ def _validate_runtime_graph_archive(
         "graphify-out/graph-export-manifest.json",
         manifest_export_id,
     )
+    try:
+        _record_graph_pack_export_id(
+            export_ids,
+            names,
+            graph_packs_dir,
+            context="runtime graph archive",
+        )
+    finally:
+        graph_pack_tmp.cleanup()
     if dashboard_index_path is None:
         raise GraphArtifactError(
             "runtime graph archive is missing dashboard-neighborhoods.sqlite3",
@@ -967,8 +1246,6 @@ def _validate_runtime_graph_archive(
         )
     finally:
         dashboard_index_path.unlink(missing_ok=True)
-    if "graphify-out/graph.json" not in export_ids:
-        raise GraphArtifactError("runtime graph.json is missing export_id")
     _validate_export_ids(export_ids, expected=manifest_export_id)
     if expected_export_id is not None and manifest_export_id != expected_export_id:
         raise GraphArtifactError(
@@ -1077,15 +1354,31 @@ def _validate_graph_export_manifest(
     if not isinstance(artifacts, dict):
         raise GraphArtifactError("graph export manifest missing artifacts map")
     expected = {
-        "graph": "graph.json",
         "delta": "graph-delta.json",
         "communities": "communities.json",
         "report": "graph-report.md",
     }
-    if set(artifacts) != set(expected):
+    expected_keys = {"graph", *expected}
+    if set(artifacts) != expected_keys:
         raise GraphArtifactError(
             "graph export manifest artifacts map must contain exactly "
-            f"{sorted(expected)}",
+            f"{sorted(expected_keys)}",
+        )
+    graph_artifact = artifacts.get("graph")
+    if graph_artifact == "graph.json":
+        if _GRAPH_PAYLOAD_NAME not in names:
+            raise GraphArtifactError(
+                f"graph export manifest references missing {_GRAPH_PAYLOAD_NAME}",
+            )
+    elif graph_artifact == "packs":
+        if not any(name.startswith(_GRAPH_PACK_PREFIX) for name in names):
+            raise GraphArtifactError(
+                "graph export manifest references missing graphify-out/packs",
+            )
+    else:
+        raise GraphArtifactError(
+            "graph export manifest artifact 'graph' expected 'graph.json' or "
+            f"'packs', got {graph_artifact!r}",
         )
     for key, filename in expected.items():
         actual = artifacts.get(key)

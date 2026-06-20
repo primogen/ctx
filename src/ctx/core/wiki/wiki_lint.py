@@ -37,6 +37,7 @@ from pathlib import Path
 
 from ctx_config import cfg
 from ctx.core.entity_types import INDEX_SECTION_FOR_SUBJECT
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_active_wiki_overlay_pack
 from ctx.core.wiki.wiki_utils import parse_frontmatter as _parse_frontmatter
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*)?\]\]")
@@ -68,9 +69,50 @@ class AuditResult:
     stats: dict[str, int]
 
 
-def _read(path: Path) -> str:
+@dataclass(frozen=True)
+class WikiPage:
+    relpath: str
+    path: Path
+    text: str
+
+    @property
+    def stem(self) -> str:
+        return self.path.stem
+
+
+def _read(path: Path | WikiPage) -> str:
+    if isinstance(path, WikiPage):
+        return path.text
     return path.read_text(encoding="utf-8", errors="replace")
 
+
+def _read_wiki_page(wiki: Path, relpath: str) -> str | None:
+    packs_dir = wiki / "wiki-packs"
+    path = wiki / relpath
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+        if path.exists():
+            return path.read_text(encoding="utf-8", errors="replace")
+        return None
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _write_wiki_page(wiki: Path, relpath: str, content: str) -> None:
+    packs_dir = wiki / "wiki-packs"
+    path = wiki / relpath
+    if path.exists() or not packs_dir.is_dir():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: content},
+            tombstones=[],
+        )
 
 
 def _parse_date(value: str) -> date | None:
@@ -84,26 +126,42 @@ def _parse_date(value: str) -> date | None:
 def _wikilinks(text: str) -> list[str]:
     return WIKILINK_RE.findall(text)
 
-def _collect_pages(wiki: Path) -> dict[str, Path]:
-    pages: dict[str, Path] = {}
-    for p in wiki.rglob("*.md"):
-        if p.name in ROOT_FILES and p.parent == wiki:
+def _collect_pages(wiki: Path) -> dict[str, WikiPage]:
+    pages: dict[str, WikiPage] = {}
+    packs_dir = wiki / "wiki-packs"
+    if packs_dir.is_dir():
+        source_pages = {
+            relpath: WikiPage(relpath=relpath, path=wiki / relpath, text=text)
+            for relpath, text in load_merged_wiki_pages(packs_dir).items()
+            if relpath.endswith(".md")
+        }
+    else:
+        source_pages = {
+            p.relative_to(wiki).as_posix(): WikiPage(
+                relpath=p.relative_to(wiki).as_posix(),
+                path=p,
+                text=_read(p),
+            )
+            for p in wiki.rglob("*.md")
+        }
+    for relpath, page in source_pages.items():
+        if page.path.name in ROOT_FILES and page.path.parent == wiki:
             continue
-        slug = p.relative_to(wiki).as_posix().removesuffix(".md")
-        pages[slug] = p
-        if p.stem not in pages:
-            pages[p.stem] = p
+        slug = relpath.removesuffix(".md")
+        pages[slug] = page
+        if page.stem not in pages:
+            pages[page.stem] = page
     return pages
 
 def _is_canonical(slug: str) -> bool:
     return "/" in slug
 
 def _schema_tags(wiki: Path) -> set[str]:
-    schema = wiki / "SCHEMA.md"
-    if not schema.exists():
+    schema = _read_wiki_page(wiki, "SCHEMA.md")
+    if schema is None:
         return set()
     tags: set[str] = set()
-    for line in _read(schema).splitlines():
+    for line in schema.splitlines():
         if not line.strip().startswith("-") or ":" not in line:
             continue
         _, _, rest = line.partition(":")
@@ -111,24 +169,24 @@ def _schema_tags(wiki: Path) -> set[str]:
     return tags
 
 def _index_refs(wiki: Path) -> set[str]:
-    idx = wiki / "index.md"
-    if not idx.exists():
+    index = _read_wiki_page(wiki, "index.md")
+    if index is None:
         return set()
     refs: set[str] = set()
-    for link in _wikilinks(_read(idx)):
+    for link in _wikilinks(index):
         refs.add(link.strip().removesuffix(".md"))
         refs.add(Path(link.strip()).stem)
     return refs
 
 def _log_entry_count(wiki: Path) -> int:
-    log = wiki / "log.md"
-    return len(re.findall(r"^##\s+\[", _read(log), re.MULTILINE)) if log.exists() else 0
+    log = _read_wiki_page(wiki, "log.md")
+    return len(re.findall(r"^##\s+\[", log, re.MULTILINE)) if log is not None else 0
 
 def _find(check: str, sev: str, page: str, msg: str) -> Finding:
     return Finding(check=check, severity=sev, page=page, message=msg)
 
 
-def check_broken_wikilinks(pages: dict[str, Path]) -> list[Finding]:
+def check_broken_wikilinks(pages: dict[str, WikiPage]) -> list[Finding]:
     out: list[Finding] = []
     for slug, path in pages.items():
         if not _is_canonical(slug):
@@ -140,7 +198,7 @@ def check_broken_wikilinks(pages: dict[str, Path]) -> list[Finding]:
                                  f"[[{link}]] resolves to no existing page"))
     return out
 
-def check_orphan_pages(pages: dict[str, Path]) -> list[Finding]:
+def check_orphan_pages(pages: dict[str, WikiPage]) -> list[Finding]:
     inbound: dict[str, int] = {s: 0 for s in pages}
     for slug, path in pages.items():
         for link in _wikilinks(_read(path)):
@@ -154,7 +212,7 @@ def check_orphan_pages(pages: dict[str, Path]) -> list[Finding]:
         if count == 0 and _is_canonical(slug)
     ]
 
-def check_missing_frontmatter(pages: dict[str, Path]) -> list[Finding]:
+def check_missing_frontmatter(pages: dict[str, WikiPage]) -> list[Finding]:
     out: list[Finding] = []
     for slug, path in pages.items():
         if not _is_canonical(slug):
@@ -167,7 +225,7 @@ def check_missing_frontmatter(pages: dict[str, Path]) -> list[Finding]:
                              f"Frontmatter missing keys: {sorted(missing)}"))
     return out
 
-def check_stale_content(pages: dict[str, Path]) -> list[Finding]:
+def check_stale_content(pages: dict[str, WikiPage]) -> list[Finding]:
     out: list[Finding] = []
     for slug, path in pages.items():
         if not _is_canonical(slug):
@@ -179,7 +237,7 @@ def check_stale_content(pages: dict[str, Path]) -> list[Finding]:
                              f"updated {age} days ago (threshold: {STALE_DAYS})"))
     return out
 
-def check_index_completeness(pages: dict[str, Path], wiki: Path) -> list[Finding]:
+def check_index_completeness(pages: dict[str, WikiPage], wiki: Path) -> list[Finding]:
     refs = _index_refs(wiki)
     return [
         _find("index_completeness", "warn", slug, "Page not listed in index.md")
@@ -187,7 +245,7 @@ def check_index_completeness(pages: dict[str, Path], wiki: Path) -> list[Finding
         if _is_canonical(slug) and slug not in refs and Path(slug).stem not in refs
     ]
 
-def check_tag_hygiene(pages: dict[str, Path], wiki: Path) -> list[Finding]:
+def check_tag_hygiene(pages: dict[str, WikiPage], wiki: Path) -> list[Finding]:
     allowed = _schema_tags(wiki)
     if not allowed:
         return []
@@ -204,7 +262,7 @@ def check_tag_hygiene(pages: dict[str, Path], wiki: Path) -> list[Finding]:
                                  f"Tag '{t}' not in SCHEMA.md taxonomy"))
     return out
 
-def check_wikilink_minimum(pages: dict[str, Path]) -> list[Finding]:
+def check_wikilink_minimum(pages: dict[str, WikiPage]) -> list[Finding]:
     return [
         _find("wikilink_minimum", "warn", slug,
               f"{n} outbound [[wikilinks]] (minimum: {MIN_OUTBOUND_LINKS})")
@@ -219,14 +277,14 @@ def check_log_rotation(wiki: Path) -> list[Finding]:
                       f"{n} entries (threshold: {LOG_ENTRY_LIMIT}); consider archiving")]
     return []
 
-def check_oversized_pages(pages: dict[str, Path]) -> list[Finding]:
+def check_oversized_pages(pages: dict[str, WikiPage]) -> list[Finding]:
     return [
         _find("oversized_page", "info", slug, f"{n} lines (threshold: {MAX_PAGE_LINES})")
         for slug, path in pages.items()
         if _is_canonical(slug) and (n := len(_read(path).splitlines())) > MAX_PAGE_LINES
     ]
 
-def check_pipeline_linkage(pages: dict[str, Path], wiki: Path) -> list[Finding]:
+def check_pipeline_linkage(pages: dict[str, WikiPage], wiki: Path) -> list[Finding]:
     converted = wiki / "converted"
     out: list[Finding] = []
     for slug, path in pages.items():
@@ -240,7 +298,7 @@ def check_pipeline_linkage(pages: dict[str, Path], wiki: Path) -> list[Finding]:
                              f"has_pipeline: true but converted/{path.stem}/ not found"))
     return out
 
-def check_contradictions(pages: dict[str, Path]) -> list[Finding]:
+def check_contradictions(pages: dict[str, WikiPage]) -> list[Finding]:
     out: list[Finding] = []
     for slug, path in pages.items():
         if not _is_canonical(slug):
@@ -259,10 +317,10 @@ def _index_section_for_slug(slug: str) -> str:
     return INDEX_SECTION_FOR_SUBJECT.get(parts[0], "## Skills")
 
 def fix_index(wiki: Path, missing_slugs: list[str]) -> int:
-    idx = wiki / "index.md"
-    if not idx.exists() or not missing_slugs:
+    text = _read_wiki_page(wiki, "index.md")
+    if text is None or not missing_slugs:
         return 0
-    lines = _read(idx).splitlines()
+    lines = text.splitlines()
     content = "\n".join(lines)
     added = 0
     for slug in sorted(missing_slugs):
@@ -276,22 +334,21 @@ def fix_index(wiki: Path, missing_slugs: list[str]) -> int:
         lines.insert(insert_at, entry)
         content = "\n".join(lines)
         added += 1
-    idx.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_wiki_page(wiki, "index.md", "\n".join(lines) + "\n")
     return added
 
 def fix_log_rotation(wiki: Path) -> bool:
-    log = wiki / "log.md"
-    if not log.exists():
+    text = _read_wiki_page(wiki, "log.md")
+    if text is None:
         return False
-    text = _read(log)
     blocks = re.split(r"(?=^## \[)", text, flags=re.MULTILINE)
     header = blocks[0] if not blocks[0].startswith("## [") else ""
     entries = [b for b in blocks if b.startswith("## [")]
     if len(entries) <= LOG_ENTRY_LIMIT:
         return False
-    archive = wiki / f"log-archive-{TODAY.isoformat()}.md"
-    archive.write_text("# Skill Wiki Log Archive\n\n" + "".join(entries[:-100]), encoding="utf-8")
-    log.write_text(header + "".join(entries[-100:]), encoding="utf-8")
+    archive_relpath = f"log-archive-{TODAY.isoformat()}.md"
+    _write_wiki_page(wiki, archive_relpath, "# Skill Wiki Log Archive\n\n" + "".join(entries[:-100]))
+    _write_wiki_page(wiki, "log.md", header + "".join(entries[-100:]))
     return True
 
 def run_audit(wiki: Path) -> AuditResult:

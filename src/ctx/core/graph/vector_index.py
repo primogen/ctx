@@ -165,6 +165,66 @@ class HnswlibVectorIndex(NumpyFlatVectorIndex):
             atomic_write_json(meta_path, asdict(self.meta))
 
 
+class MergedVectorIndex:
+    """Query several compatible vector indexes as one logical index.
+
+    This is the base+delta primitive: a release can ship an immutable base
+    vector index while local entity upserts append a small delta index. Query
+    callers get one merged top-k result without rebuilding the base.
+    """
+
+    def __init__(self, indexes: list[NumpyFlatVectorIndex]) -> None:
+        if not indexes:
+            raise ValueError("at least one vector index is required")
+        first = indexes[0].meta
+        for index in indexes[1:]:
+            if (
+                index.meta.metric != first.metric
+                or index.meta.model_id != first.model_id
+                or index.meta.dim != first.dim
+                or index.meta.normalized != first.normalized
+            ):
+                raise ValueError("vector indexes are incompatible")
+        self.meta = first
+        self.indexes = list(indexes)
+
+    def query(
+        self,
+        vectors: np.ndarray,
+        *,
+        top_k: int,
+        min_score: float,
+        exclude_node_ids: set[str] | None = None,
+    ) -> list[list[Neighbor]]:
+        queries = _normalize_query_vectors(vectors, expected_dim=self.meta.dim)
+        if top_k <= 0:
+            return [[] for _ in range(len(queries))]
+        merged_rows = [dict[str, float]() for _ in range(len(queries))]
+        for index in self.indexes:
+            rows = index.query(
+                queries,
+                top_k=top_k,
+                min_score=min_score,
+                exclude_node_ids=exclude_node_ids,
+            )
+            for row_index, neighbors in enumerate(rows):
+                merged = merged_rows[row_index]
+                for neighbor in neighbors:
+                    previous = merged.get(neighbor.node_id)
+                    if previous is None or neighbor.score > previous:
+                        merged[neighbor.node_id] = neighbor.score
+        return [
+            [
+                Neighbor(node_id, score)
+                for node_id, score in sorted(
+                    row.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )[:top_k]
+            ]
+            for row in merged_rows
+        ]
+
+
 def build_vector_index(
     *,
     kind: str,
@@ -251,6 +311,83 @@ def load_vector_index(
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return None
     return None
+
+
+def upsert_numpy_flat_index_entry(
+    cache_dir: Path,
+    *,
+    model_id: str,
+    node_id: str,
+    content_hash: str,
+    vector: np.ndarray,
+) -> NumpyFlatVectorIndex:
+    """Create or update one row in a small portable delta vector index."""
+    if not model_id:
+        raise ValueError("model_id must be non-empty")
+    if not node_id:
+        raise ValueError("node_id must be non-empty")
+    if not content_hash:
+        raise ValueError("content_hash must be non-empty")
+    vector_row = _single_vector_row(vector)
+    cache_dir = Path(cache_dir)
+    upsert_lock = cache_dir / ".vector-index-upsert"
+    with file_lock(upsert_lock):
+        existing = _load_existing_delta_index(cache_dir, model_id=model_id)
+        if existing is None:
+            node_ids: list[str] = []
+            content_hashes: list[str] = []
+            vectors = np.empty((0, vector_row.shape[1]), dtype=np.float32)
+        else:
+            if existing.meta.dim != int(vector_row.shape[1]):
+                raise ValueError(
+                    f"vector dim {vector_row.shape[1]} does not match existing "
+                    f"index dim {existing.meta.dim}"
+                )
+            node_ids = list(existing.node_ids)
+            content_hashes = list(existing.content_hashes)
+            vectors = np.asarray(existing.vectors, dtype=np.float32).copy()
+
+        if node_id in node_ids:
+            row_index = node_ids.index(node_id)
+            content_hashes[row_index] = content_hash
+            vectors[row_index] = vector_row[0]
+        else:
+            node_ids.append(node_id)
+            content_hashes.append(content_hash)
+            vectors = np.vstack([vectors, vector_row])
+
+        index = build_vector_index(
+            kind="numpy-flat",
+            model_id=model_id,
+            node_ids=node_ids,
+            content_hashes=content_hashes,
+            vectors=vectors,
+        )
+        index.save(cache_dir)
+        return index
+
+
+def _load_existing_delta_index(
+    cache_dir: Path,
+    *,
+    model_id: str,
+) -> NumpyFlatVectorIndex | None:
+    meta_path = cache_dir / _META_NAME
+    if not meta_path.is_file():
+        return None
+    try:
+        meta_raw = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = VectorIndexMeta(**meta_raw)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"existing vector index metadata is unreadable: {exc}") from exc
+    index = load_vector_index(
+        cache_dir,
+        expected_model_id=model_id,
+        expected_content_fingerprint=meta.content_fingerprint,
+    )
+    if index is None:
+        raise ValueError("existing vector index is incompatible or unreadable")
+    return index
 
 
 def content_fingerprint(node_ids: list[str], content_hashes: list[str]) -> str:
@@ -378,6 +515,15 @@ def _validate_inputs(
         raise ValueError("vectors must be a 2D array")
     if vectors.shape[0] != len(node_ids):
         raise ValueError("vectors row count must match node_ids")
+
+
+def _single_vector_row(vector: np.ndarray) -> np.ndarray:
+    row = np.asarray(vector, dtype=np.float32)
+    if row.ndim == 1:
+        row = row.reshape(1, -1)
+    if row.ndim != 2 or row.shape[0] != 1 or row.shape[1] <= 0:
+        raise ValueError("vector must be a single non-empty row")
+    return row
 
 
 def _normalize(vectors: np.ndarray) -> np.ndarray:

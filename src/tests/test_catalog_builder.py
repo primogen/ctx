@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import catalog_builder
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -519,6 +520,39 @@ class TestBuildCatalog:
             assert f"skill-{i}" in content
         for i in range(3):
             assert f"agent-{i}" in content
+
+    def test_pack_only_wiki_writes_catalog_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patched_cfg(monkeypatch, threshold=180)
+        wiki_dir = tmp_path / "wiki"
+        write_wiki_base_pack(
+            pack_dir=wiki_dir / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={
+                "index.md": "# Index\n\nTotal pages: 0\n\n## Skills\n",
+                "log.md": "# Log\n",
+            },
+        )
+        skills_dir = tmp_path / "skills"
+        agents_dir = tmp_path / "agents"
+        _make_skill(skills_dir, "pack-skill", 12)
+        _make_agent(agents_dir, "pack-agent", 5)
+
+        stats = catalog_builder.build_catalog(wiki_dir, skills_dir, agents_dir, [])
+        catalog_builder.update_wiki_index(wiki_dir, stats)
+        catalog_builder.append_log(wiki_dir, stats)
+
+        assert not (wiki_dir / "catalog.md").exists()
+        assert not (wiki_dir / "index.md").exists()
+        assert not (wiki_dir / "log.md").exists()
+        merged = load_merged_wiki_pages(wiki_dir / "wiki-packs")
+        assert "pack-skill" in merged["catalog.md"]
+        assert "pack-agent" in merged["catalog.md"]
+        assert "[[catalog]]" in merged["index.md"]
+        assert "Total pages: 2" in merged["index.md"]
+        assert "catalog-build" in merged["log.md"]
 
 
 # ── update_wiki_index ─────────────────────────────────────────────────────────

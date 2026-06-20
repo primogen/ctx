@@ -30,6 +30,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import mcp_canonical_index as mci  # noqa: E402
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack  # noqa: E402
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -221,6 +222,42 @@ class TestRebuild:
         assert indexed == 0
         assert skipped == 0
         assert idx["by_github_url"] == {}
+
+    def test_rebuilds_from_pack_only_wiki_pages(self, tmp_path: Path) -> None:
+        wiki = tmp_path / "wiki"
+        mcp_dir = wiki / "entities" / "mcp-servers"
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={
+                "entities/mcp-servers/a/alpha.md": (
+                    "---\n"
+                    "name: alpha\n"
+                    "github_url: https://github.com/Org/Alpha\n"
+                    "---\n"
+                    "# alpha\n"
+                ),
+                "entities/mcp-servers/b/beta.md": (
+                    "---\n"
+                    "name: beta\n"
+                    "---\n"
+                    "# beta\n"
+                ),
+            },
+        )
+
+        idx, indexed, skipped = mci.rebuild_from_scan(mcp_dir)
+
+        assert indexed == 1
+        assert skipped == 1
+        assert idx["by_github_url"] == {
+            "https://github.com/org/alpha": {
+                "slug": "alpha",
+                "relpath": "a/alpha.md",
+            }
+        }
+        assert (mcp_dir / mci.INDEX_FILENAME).is_file()
 
 
 # ── Integration: mcp_add._find_existing_by_github_url with cache ────────────

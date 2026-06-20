@@ -22,8 +22,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
+from ctx.core.wiki.wiki_packs import (
+    load_merged_wiki_pages,
+    write_active_wiki_overlay_pack,
+)
 from ctx.core.wiki.wiki_utils import SAFE_NAME_RE, parse_frontmatter as _read_frontmatter
+from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
 
 try:
     from ctx_config import cfg as _cfg
@@ -202,6 +206,54 @@ def _set_frontmatter_field(content: str, field: str, value: str) -> str:
 PENDING_UNLOAD = CLAUDE_DIR / "pending-unload.json"
 
 
+def _skill_page_relpath(skill_name: str) -> str:
+    return f"entities/skills/{skill_name}.md"
+
+
+def _wiki_root(wiki_dir: Path | None) -> Path:
+    return wiki_dir if wiki_dir else WIKI_DIR
+
+
+def _read_skill_page(
+    skill_name: str,
+    *,
+    wiki_dir: Path | None = None,
+) -> tuple[Path, str, str] | None:
+    wiki_root = _wiki_root(wiki_dir)
+    relpath = _skill_page_relpath(skill_name)
+    packs_dir = wiki_root / "wiki-packs"
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        content = pages.get(relpath)
+        if content is None:
+            return None
+        return wiki_root / relpath, relpath, content
+
+    entities_dir = (wiki_dir / "entities" / "skills") if wiki_dir else ENTITIES_DIR
+    page_path = entities_dir / f"{skill_name}.md"
+    if not page_path.exists():
+        return None
+    return page_path, relpath, page_path.read_text(encoding="utf-8")
+
+
+def _write_skill_page(
+    page_path: Path,
+    relpath: str,
+    content: str,
+    *,
+    wiki_dir: Path | None = None,
+) -> None:
+    if page_path.exists():
+        _atomic_write_text(page_path, content)
+    packs_dir = _wiki_root(wiki_dir) / "wiki-packs"
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: content},
+            tombstones=[],
+        )
+
+
 def _queue_unload_suggestion(skill_name: str, session_count: int, use_count: int) -> bool:
     """Add a skill to the pending-unload list. Returns True if newly queued."""
     pending: dict = {"suggestions": [], "generated_at": ""}
@@ -247,14 +299,13 @@ def update_skill_page(
     if not SAFE_NAME_RE.match(skill_name):
         print(f"Warning: skipping invalid skill name: {skill_name!r}", file=sys.stderr)
         return False, False
-    entities_dir = (wiki_dir / "entities" / "skills") if wiki_dir else ENTITIES_DIR
-    page_path = entities_dir / f"{skill_name}.md"
-    if not page_path.exists():
+    page = _read_skill_page(skill_name, wiki_dir=wiki_dir)
+    if page is None:
         return False, False
+    page_path, relpath, content = page
 
     queued = False
     try:
-        content = page_path.read_text(encoding="utf-8")
         meta = _read_frontmatter(content)
 
         session_count = int(str(meta.get("session_count", "0")))
@@ -278,7 +329,7 @@ def update_skill_page(
             if session_count >= STALE_THRESHOLD and use_count == 0:
                 queued = _queue_unload_suggestion(skill_name, session_count, use_count)
 
-        _atomic_write_text(page_path, content)
+        _write_skill_page(page_path, relpath, content, wiki_dir=wiki_dir)
         return True, queued
     except Exception as exc:
         print(f"Warning: failed to update skill page {skill_name}: {exc}", file=sys.stderr)
@@ -292,10 +343,6 @@ def append_wiki_log(loaded_count: int, used_skills: set[str], stale_count: int,
     Honors ``wiki_dir`` if provided so Strix vuln-0004 (``--wiki`` flag
     silently ignored) is closed end-to-end.
     """
-    log_path = (wiki_dir / "log.md") if wiki_dir else LOG_PATH
-    if not log_path.exists():
-        return
-
     entry = (
         f"\n## [{_today()}] session-end | usage-sync\n"
         f"- Skills loaded: {loaded_count}\n"
@@ -305,6 +352,27 @@ def append_wiki_log(loaded_count: int, used_skills: set[str], stale_count: int,
     if used_skills:
         entry += f"- Used: {', '.join(sorted(used_skills))}\n"
 
+    wiki_root = _wiki_root(wiki_dir)
+    packs_dir = wiki_root / "wiki-packs"
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        existing = pages.get("log.md")
+        if existing is None:
+            return
+        content = existing + entry
+        log_path = wiki_root / "log.md"
+        if log_path.exists():
+            _atomic_write_text(log_path, content)
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={"log.md": content},
+            tombstones=[],
+        )
+        return
+
+    log_path = (wiki_dir / "log.md") if wiki_dir else LOG_PATH
+    if not log_path.exists():
+        return
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(entry)
 

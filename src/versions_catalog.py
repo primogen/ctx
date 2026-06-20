@@ -22,7 +22,38 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_active_wiki_overlay_pack
+
 TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _read_wiki_page(wiki_dir: Path, relpath: str) -> str | None:
+    packs_dir = wiki_dir / "wiki-packs"
+    path = wiki_dir / relpath
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+        if path.exists():
+            return path.read_text(encoding="utf-8", errors="replace")
+        return None
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _write_wiki_page(wiki_dir: Path, relpath: str, content: str) -> None:
+    packs_dir = wiki_dir / "wiki-packs"
+    path = wiki_dir / relpath
+    if path.exists() or not packs_dir.is_dir():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: content},
+            tombstones=[],
+        )
 
 
 def find_dual_version_skills(skills_dir: Path) -> list[dict]:
@@ -90,16 +121,19 @@ def build_versions_catalog(wiki_dir: Path, dual_version_skills: list[dict]) -> s
             f"| `{skill['transformed_path']}` |"
         )
 
-    catalog_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_wiki_page(wiki_dir, "versions-catalog.md", "\n".join(lines) + "\n")
     return str(catalog_path)
 
 
 def upsert_entity_page_versions(wiki_dir: Path, skill: dict) -> None:
     """Add/update version metadata in the skill's wiki entity page."""
-    page_path = wiki_dir / "entities" / "skills" / f"{skill['name']}.md"
-    if not page_path.exists():
+    relpath = f"entities/skills/{skill['name']}.md"
+    content = _read_wiki_page(wiki_dir, relpath)
+    if content is None:
         # Create minimal entity page if missing
-        page_path.write_text(
+        _write_wiki_page(
+            wiki_dir,
+            relpath,
             f"---\n"
             f"title: {skill['name']}\n"
             f"created: {TODAY}\n"
@@ -119,11 +153,8 @@ def upsert_entity_page_versions(wiki_dir: Path, skill: dict) -> None:
             f"---\n\n"
             f"# {skill['name']}\n\n"
             f"Dual-version skill. Default: transformed (micro-skills pipeline).\n",
-            encoding="utf-8",
         )
         return
-
-    content = page_path.read_text(encoding="utf-8")
 
     # Add version fields if missing
     def ensure_field(text: str, field: str, value: str) -> str:
@@ -143,16 +174,15 @@ def upsert_entity_page_versions(wiki_dir: Path, skill: dict) -> None:
     content = ensure_field(content, "original_lines", str(skill["original_lines"]))
     content = re.sub(r"^updated:.*$", f"updated: {TODAY}", content, flags=re.MULTILINE)
 
-    page_path.write_text(content, encoding="utf-8")
+    _write_wiki_page(wiki_dir, relpath, content)
 
 
 def update_wiki_index(wiki_dir: Path, count: int) -> None:
     """Add versions-catalog reference to index.md."""
-    index_path = wiki_dir / "index.md"
-    if not index_path.exists():
+    content = _read_wiki_page(wiki_dir, "index.md")
+    if content is None:
         return
 
-    content = index_path.read_text(encoding="utf-8")
     ref = "- [[versions-catalog]] - Dual-version skills (original + micro-skills pipeline)"
 
     if "[[versions-catalog]]" not in content:
@@ -162,12 +192,12 @@ def update_wiki_index(wiki_dir: Path, count: int) -> None:
                 lines.insert(i + 1, ref)
                 break
         content = "\n".join(lines)
-        index_path.write_text(content, encoding="utf-8")
+        _write_wiki_page(wiki_dir, "index.md", content)
 
 
 def append_log(wiki_dir: Path, count: int, catalog_path: str) -> None:
-    log_path = wiki_dir / "log.md"
-    if not log_path.exists():
+    content = _read_wiki_page(wiki_dir, "log.md")
+    if content is None:
         return
     entry = (
         f"\n## [{TODAY}] versions-catalog | dual-version-skills\n"
@@ -175,8 +205,7 @@ def append_log(wiki_dir: Path, count: int, catalog_path: str) -> None:
         f"- Versions catalog: {catalog_path}\n"
         f"- Default preference: transformed\n"
     )
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(entry)
+    _write_wiki_page(wiki_dir, "log.md", content + entry)
 
 
 def main() -> None:

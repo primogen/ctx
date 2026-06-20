@@ -263,6 +263,7 @@ _GRAPH_MANAGED_PATHS = (
     "log.md",
     "SCHEMA.md",
     "versions-catalog.md",
+    "wiki-packs",
     ".obsidian",
 )
 _GRAPH_RUNTIME_MANAGED_PATHS = tuple(
@@ -270,7 +271,12 @@ _GRAPH_RUNTIME_MANAGED_PATHS = tuple(
 ) + ("entities/harnesses",)
 _GRAPH_JSON_OUTLINE_BYTES = 1024 * 1024
 _GRAPH_INSTALL_MODES = ("runtime", "full")
-_GRAPH_RUNTIME_PREFIXES = ("graphify-out/", "external-catalogs/", "entities/harnesses/")
+_GRAPH_RUNTIME_PREFIXES = (
+    "graphify-out/",
+    "external-catalogs/",
+    "entities/harnesses/",
+    "wiki-packs/",
+)
 _GRAPH_RUNTIME_ROOT_FILES = frozenset({
     "catalog.md",
     "converted-index.md",
@@ -307,9 +313,10 @@ def build_graph(
                 wiki_dir,
                 allow_release_download=graph_url is None,
             )
+            _refresh_graph_store(wiki_dir)
         except Exception as exc:
             print(
-                f"  [error] graph overlay install failed: {type(exc).__name__}: {exc}",
+                f"  [error] graph overlay/store refresh failed: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             return 1
@@ -351,6 +358,7 @@ def build_graph(
 
     try:
         _validate_graph_install_tree(wiki_dir)
+        _refresh_graph_store(wiki_dir)
     except ValueError as exc:
         print(f"  [error] graph install validation failed: {exc}", file=sys.stderr)
         return 1
@@ -634,20 +642,74 @@ def _graph_install_complete(wiki_dir: Path) -> bool:
 def _graph_full_install_complete(wiki_dir: Path) -> bool:
     if not _graph_install_complete(wiki_dir):
         return False
+    return _expanded_full_wiki_has_entity_pages(wiki_dir) or _wiki_packs_have_full_entities(
+        wiki_dir / "wiki-packs",
+    )
+
+
+def _expanded_full_wiki_has_entity_pages(wiki_dir: Path) -> bool:
     entities = wiki_dir / "entities"
-    return entities.is_dir() and any(entities.iterdir())
+    if not entities.is_dir():
+        return False
+    roots = (
+        entities / "skills",
+        entities / "agents",
+        entities / "mcp-servers",
+    )
+    return any(root.is_dir() and any(root.rglob("*.md")) for root in roots)
+
+
+def _wiki_packs_have_full_entities(packs_dir: Path) -> bool:
+    if not packs_dir.is_dir():
+        return False
+    try:
+        from ctx.core.wiki.wiki_packs import (  # noqa: PLC0415
+            WikiPackManifestError,
+            load_merged_wiki_pages,
+        )
+
+        pages = load_merged_wiki_pages(packs_dir)
+    except WikiPackManifestError:
+        return False
+    full_prefixes = (
+        "entities/skills/",
+        "entities/agents/",
+        "entities/mcp-servers/",
+    )
+    return any(path.startswith(full_prefixes) and path.endswith(".md") for path in pages)
+
+
+def _refresh_graph_store(wiki_dir: Path) -> None:
+    graph_dir = wiki_dir / "graphify-out"
+    db_path = graph_dir / "graph-store.sqlite3"
+    try:
+        from ctx.core.graph.graph_store import (  # noqa: PLC0415
+            ensure_graph_store,
+            validate_graph_store,
+        )
+
+        ensure_graph_store(graph_dir, db_path)
+        report = validate_graph_store(db_path, graph_dir)
+    except Exception as exc:
+        raise ValueError(f"graph-store.sqlite3 refresh failed: {exc}") from exc
+    if not report.get("ok"):
+        raise ValueError(
+            "graph-store.sqlite3 validation failed: "
+            f"{report.get('errors', [])}",
+        )
 
 
 def _validate_graph_install_tree(wiki_dir: Path) -> None:
     missing = [
         name
         for name in sorted(_GRAPH_REQUIRED_FILES)
-        if not (wiki_dir / name).is_file() or (wiki_dir / name).stat().st_size == 0
+        if name != "graphify-out/graph.json"
+        and (not (wiki_dir / name).is_file() or (wiki_dir / name).stat().st_size == 0)
     ]
     if missing:
         raise ValueError(f"graph archive is missing required files: {missing}")
 
-    _validate_graph_json_outline(wiki_dir / "graphify-out" / "graph.json")
+    has_graph_json = _validate_graph_payload_outline(wiki_dir)
 
     manifest = _read_json_file(wiki_dir / "graphify-out" / "graph-export-manifest.json")
     if not isinstance(manifest, dict):
@@ -666,10 +728,85 @@ def _validate_graph_install_tree(wiki_dir: Path) -> None:
     }
     if not isinstance(artifacts, dict) or artifacts != expected_artifacts:
         raise ValueError("graph export manifest artifacts map is incomplete")
+    _validate_graph_pack_outline(
+        wiki_dir / "graphify-out" / "packs",
+        expected_export_id=export_id.strip(),
+        required=not has_graph_json,
+    )
     _validate_dashboard_index_file(
         wiki_dir / "graphify-out" / "dashboard-neighborhoods.sqlite3",
         expected_export_id=export_id.strip(),
     )
+    _validate_wiki_pack_outline(wiki_dir / "wiki-packs", expected_export_id=export_id.strip())
+
+
+def _validate_graph_payload_outline(wiki_dir: Path) -> bool:
+    graph_json = wiki_dir / "graphify-out" / "graph.json"
+    if graph_json.is_file() and graph_json.stat().st_size > 0:
+        _validate_graph_json_outline(graph_json)
+        return True
+    _validate_graph_pack_outline(wiki_dir / "graphify-out" / "packs", required=True)
+    return False
+
+
+def _validate_graph_pack_outline(
+    packs_dir: Path,
+    *,
+    expected_export_id: str | None = None,
+    required: bool,
+) -> None:
+    if not packs_dir.exists():
+        if required:
+            raise ValueError(
+                "graph archive is missing graph payload: "
+                "graphify-out/graph.json or graphify-out/packs"
+            )
+        return
+    try:
+        from ctx.core.graph.graph_packs import (  # noqa: PLC0415
+            GraphPackManifestError,
+            discover_pack_manifests,
+        )
+
+        entries = discover_pack_manifests(packs_dir)
+    except GraphPackManifestError as exc:
+        raise ValueError(f"graphify-out/packs is invalid: {exc}") from exc
+    if not entries:
+        raise ValueError("graphify-out/packs exists but does not contain a valid base pack")
+    base = entries[0].manifest
+    if expected_export_id is not None and base.base_export_id != expected_export_id:
+        raise ValueError(
+            "graphify-out/packs export_id mismatch: expected "
+            f"{expected_export_id}, got {base.base_export_id}",
+        )
+    if "graph.json" not in base.checksums:
+        raise ValueError("graph base pack is missing graph.json artifact")
+
+
+def _validate_wiki_pack_outline(packs_dir: Path, *, expected_export_id: str) -> None:
+    if not packs_dir.exists():
+        return
+    try:
+        from ctx.core.wiki.wiki_packs import (  # noqa: PLC0415
+            WikiPackManifestError,
+            discover_wiki_pack_manifests,
+            load_merged_wiki_pages,
+        )
+
+        entries = discover_wiki_pack_manifests(packs_dir)
+        pages = load_merged_wiki_pages(packs_dir)
+    except WikiPackManifestError as exc:
+        raise ValueError(f"wiki-packs is invalid: {exc}") from exc
+    if not entries:
+        raise ValueError("wiki-packs exists but does not contain a valid base pack")
+    base_export_id = entries[0].manifest.base_export_id
+    if base_export_id != expected_export_id:
+        raise ValueError(
+            "wiki-packs export_id mismatch: expected "
+            f"{expected_export_id}, got {base_export_id}",
+        )
+    if "index.md" not in pages:
+        raise ValueError("wiki-packs payload is missing index.md")
 
 
 def _validate_graph_json_outline(path: Path) -> None:

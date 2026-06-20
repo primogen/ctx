@@ -24,6 +24,7 @@ import pytest
 
 import ctx
 import ctx.api
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack
 
 
 # ── Synthetic wiki + graph fixture ─────────────────────────────────────────
@@ -310,6 +311,48 @@ class TestListAllEntities:
     def test_harness_filter(self, synthetic_home: Path) -> None:
         entities = ctx.list_all_entities(entity_type="harness")
         assert entities == ["fastapi-pro"]
+
+    def test_reads_from_wiki_packs_before_stale_physical_pages(
+        self,
+        synthetic_home: Path,
+    ) -> None:
+        wiki = ctx.default_wiki_dir()
+        assert wiki is not None
+        (wiki / "entities" / "skills" / "python-patterns.md").write_text(
+            "---\n"
+            "name: python-patterns\n"
+            "title: Stale Physical Skill\n"
+            "---\n"
+            "# stale\n",
+            encoding="utf-8",
+        )
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="export-1",
+            pages={
+                "entities/skills/pack-only-skill.md": (
+                    "---\n"
+                    "name: pack-only-skill\n"
+                    "title: Pack Only Skill\n"
+                    "type: skill\n"
+                    "---\n"
+                    "# Pack Only Skill\n"
+                ),
+                "entities/mcp-servers/g/github.md": (
+                    "---\n"
+                    "name: github\n"
+                    "title: GitHub MCP\n"
+                    "type: mcp-server\n"
+                    "---\n"
+                    "# GitHub MCP\n"
+                ),
+            },
+        )
+
+        assert ctx.list_all_entities() == ["github", "pack-only-skill"]
+        assert ctx.list_all_entities(entity_type="skill") == ["pack-only-skill"]
+        assert ctx.list_all_entities(entity_type="mcp-server") == ["github"]
 
     def test_empty_wiki_returns_empty(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

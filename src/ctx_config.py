@@ -313,6 +313,15 @@ class Config:
         se = graph.get("source_edges", {}) if isinstance(graph.get("source_edges"), dict) else {}
         self.graph_dense_source_threshold: int = int(se.get("dense_source_threshold", 50))
 
+        pc = graph.get("pack_compaction", {}) if isinstance(graph.get("pack_compaction"), dict) else {}
+        raw_overlay_threshold = pc.get("overlay_threshold", 25)
+        if isinstance(raw_overlay_threshold, bool) or not isinstance(raw_overlay_threshold, int):
+            raise ValueError(
+                "graph.pack_compaction.overlay_threshold must be an integer >= 1 "
+                f"(got {raw_overlay_threshold!r})"
+            )
+        self.graph_pack_compaction_overlay_threshold = raw_overlay_threshold
+
         boosts = graph.get("edge_boosts", {}) if isinstance(graph.get("edge_boosts"), dict) else {}
         self.graph_edge_boost_direct_link: float = float(boosts.get("direct_link", 0.10))
         self.graph_edge_boost_source_overlap: float = float(boosts.get("source_overlap", 0.05))
@@ -354,6 +363,11 @@ class Config:
             raise ValueError(
                 "graph.source_edges.dense_source_threshold must be >= 1 "
                 f"(got {self.graph_dense_source_threshold})"
+            )
+        if self.graph_pack_compaction_overlay_threshold < 1:
+            raise ValueError(
+                "graph.pack_compaction.overlay_threshold must be an integer >= 1 "
+                f"(got {self.graph_pack_compaction_overlay_threshold})"
             )
         for name, val in (
             ("direct_link", self.graph_edge_boost_direct_link),

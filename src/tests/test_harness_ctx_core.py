@@ -32,6 +32,8 @@ from ctx.adapters.generic.ctx_core_tools import (
     make_tool_executor,
 )
 from ctx.adapters.generic.providers import ToolCall, ToolDefinition
+from ctx.core.graph.graph_packs import write_base_pack, write_overlay_pack
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack, write_wiki_overlay_pack
 
 
 # ── Helpers: build a synthetic wiki + graph for the toolbox ────────────────
@@ -189,6 +191,81 @@ def test_graph_cache_reloads_when_graph_json_changes(tmp_path: Path) -> None:
     assert second["results"][0]["name"] == "new-target"
 
 
+def test_graph_cache_reloads_when_graph_pack_overlay_changes(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphify-out"
+    graph_path = graph_dir / "graph.json"
+    packs_dir = graph_dir / "packs"
+    base = nx.Graph()
+    base.add_node("skill:seed", label="seed", type="skill", tags=[])
+    base.add_node("skill:old-target", label="old-target", type="skill", tags=[])
+    base.add_edge("skill:seed", "skill:old-target", weight=1.0)
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=base,
+    )
+    toolbox = CtxCoreToolbox(wiki_dir=tmp_path / "wiki", graph_path=graph_path)
+
+    first = json.loads(toolbox.dispatch(ToolCall(
+        id="c1",
+        name="ctx__graph_query",
+        arguments={"seeds": ["seed"], "max_hops": 1},
+    )))
+    write_overlay_pack(
+        pack_dir=packs_dir / "overlay-new-target",
+        pack_id="overlay-new-target",
+        base_export_id="export-1",
+        parent_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        nodes=[{"id": "skill:new-target", "label": "new-target", "type": "skill", "tags": []}],
+        edges=[{"source": "skill:seed", "target": "skill:new-target", "weight": 1.0}],
+        tombstones=[],
+    )
+    second = json.loads(toolbox.dispatch(ToolCall(
+        id="c2",
+        name="ctx__graph_query",
+        arguments={"seeds": ["seed"], "max_hops": 1},
+    )))
+
+    first_names = {item["name"] for item in first["results"]}
+    second_names = {item["name"] for item in second["results"]}
+    assert "old-target" in first_names
+    assert "new-target" not in first_names
+    assert "new-target" in second_names
+
+
+def test_graph_cache_uses_wiki_packs_when_explicit_graph_path_is_missing(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    graph = nx.Graph()
+    graph.add_node("skill:seed", label="seed", type="skill", tags=[])
+    graph.add_node("skill:pack-target", label="pack-target", type="skill", tags=[])
+    graph.add_edge("skill:seed", "skill:pack-target", weight=1.0)
+    write_base_pack(
+        pack_dir=wiki / "graphify-out" / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-1",
+        graph=graph,
+    )
+    assert not (wiki / "graphify-out" / "graph.json").exists()
+
+    toolbox = CtxCoreToolbox(wiki_dir=wiki, graph_path=tmp_path / "missing.json")
+    result = json.loads(toolbox.dispatch(ToolCall(
+        id="c1",
+        name="ctx__graph_query",
+        arguments={"seeds": ["seed"], "max_hops": 1},
+    )))
+
+    assert [row["name"] for row in result["results"]] == ["pack-target"]
+
+
 def test_graph_file_signature_detects_same_size_rewrite(
     tmp_path: Path,
 ) -> None:
@@ -231,6 +308,48 @@ def test_wiki_page_cache_reloads_when_entity_page_changes(tmp_path: Path) -> Non
 
     assert first["results"] == []
     assert second["results"][0]["slug"] == "new-skill"
+
+
+def test_wiki_page_cache_reloads_when_wiki_pack_overlay_changes(tmp_path: Path) -> None:
+    wiki = tmp_path / "wiki"
+    packs_dir = wiki / "wiki-packs"
+    write_wiki_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="wiki-export-1",
+        pages={"entities/skills/old-skill.md": "# Old\n"},
+    )
+    toolbox = CtxCoreToolbox(wiki_dir=wiki, graph_path=tmp_path / "missing.json")
+    first = json.loads(toolbox.dispatch(ToolCall(
+        id="c1",
+        name="ctx__wiki_search",
+        arguments={"query": "packunique"},
+    )))
+
+    write_wiki_overlay_pack(
+        pack_dir=packs_dir / "overlay-packunique",
+        pack_id="overlay-packunique",
+        base_export_id="wiki-export-1",
+        parent_export_id="wiki-export-1",
+        pages={
+            "entities/skills/pack-skill.md": (
+                "---\n"
+                "name: pack-skill\n"
+                "tags: [packunique]\n"
+                "---\n"
+                "# Pack Skill\n"
+            ),
+        },
+        tombstones=[],
+    )
+    second = json.loads(toolbox.dispatch(ToolCall(
+        id="c2",
+        name="ctx__wiki_search",
+        arguments={"query": "packunique"},
+    )))
+
+    assert first["results"] == []
+    assert second["results"][0]["slug"] == "pack-skill"
 
 
 def test_semantic_miss_cache_clears_when_embedding_artifacts_change(
@@ -1216,6 +1335,51 @@ class TestWikiGet:
         assert result["entity_type"] == "mcp-server"
         assert result["wikilink"] == "[[entities/mcp-servers/f/filesystem]]"
         assert "Filesystem MCP" in result["body"]
+
+    def test_reads_entity_page_from_wiki_pack_before_stale_file(
+        self, tmp_path: Path
+    ) -> None:
+        wiki = _build_synthetic_wiki(tmp_path)
+        (wiki / "entities" / "skills" / "python-patterns.md").write_text(
+            "---\n"
+            "name: python-patterns\n"
+            "title: Stale Physical Page\n"
+            "tags: [stale]\n"
+            "---\n"
+            "# Stale Physical Page\n",
+            encoding="utf-8",
+        )
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="export-1",
+            pages={
+                "entities/skills/python-patterns.md": (
+                    "---\n"
+                    "name: python-patterns\n"
+                    "title: Fresh Pack Page\n"
+                    "tags: [pack]\n"
+                    "---\n"
+                    "# Fresh Pack Page\n\n"
+                    "This content came from the merged wiki pack.\n"
+                )
+            },
+        )
+        toolbox = CtxCoreToolbox(wiki_dir=wiki, graph_path=tmp_path / "missing.json")
+
+        result = json.loads(
+            toolbox.dispatch(
+                ToolCall(
+                    id="c1",
+                    name="ctx__wiki_get",
+                    arguments={"slug": "python-patterns", "entity_type": "skill"},
+                )
+            )
+        )
+
+        assert "error" not in result
+        assert result["frontmatter"]["title"] == "Fresh Pack Page"
+        assert "merged wiki pack" in result["body"]
 
 
 # ── _query_to_tags ────────────────────────────────────────────────────────

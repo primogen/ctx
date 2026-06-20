@@ -24,6 +24,7 @@ from ctx.core.resolve.resolve_skills import (
     read_wiki_overrides,
     resolve,
 )
+from ctx.core.wiki.wiki_packs import write_wiki_base_pack
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +161,50 @@ class TestReadWikiOverrides:
         (entities / "plain.md").write_text("# plain\nno frontmatter here", encoding="utf-8")
         overrides = read_wiki_overrides(str(tmp_path))
         assert "plain" not in overrides
+
+    def test_wiki_pack_overrides_hide_stale_physical_pages(self, tmp_path):
+        self._make_override_page(
+            tmp_path,
+            "react",
+            {"always_load": "false", "never_load": "true", "use_count": "1"},
+        )
+        write_wiki_base_pack(
+            pack_dir=tmp_path / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="export-1",
+            pages={
+                "entities/skills/react.md": (
+                    "---\n"
+                    "always_load: true\n"
+                    "never_load: false\n"
+                    "use_count: 7\n"
+                    "last_used: 2026-06-19\n"
+                    "status: installed\n"
+                    "---\n"
+                    "# react\n"
+                ),
+                "entities/skills/pack-only.md": (
+                    "---\n"
+                    "always_load: true\n"
+                    "use_count: 2\n"
+                    "---\n"
+                    "# pack-only\n"
+                ),
+            },
+        )
+
+        overrides = read_wiki_overrides(str(tmp_path))
+
+        assert set(overrides) == {"react", "pack-only"}
+        assert overrides["react"] == {
+            "always_load": True,
+            "never_load": False,
+            "last_used": "2026-06-19",
+            "use_count": 7,
+            "status": "installed",
+        }
+        assert overrides["pack-only"]["always_load"] is True
+        assert overrides["pack-only"]["use_count"] == 2
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import networkx as nx
 import numpy as np
 
 from ctx.core.graph.incremental_shadow import main, run_shadow_validation
+from ctx.core.graph.graph_packs import write_base_pack
 from ctx.core.graph.semantic_edges import (
     _l2_normalize,
     _topk_pairs,
@@ -139,6 +140,42 @@ def test_shadow_cli_returns_nonzero_when_gate_fails(tmp_path: Path, capsys) -> N
 
     assert rc == 2
     assert '"gate_passed": false' in capsys.readouterr().out
+
+
+def test_shadow_cli_accepts_pack_only_graph_dir(tmp_path: Path, capsys) -> None:
+    index_dir = tmp_path / "vector-index"
+    build_vector_index(
+        kind="numpy-flat",
+        model_id="model-a",
+        node_ids=["skill:alpha", "skill:beta"],
+        content_hashes=["ha", "hb"],
+        vectors=np.asarray([[1.0, 0.0], [0.95, 0.05]], dtype="float32"),
+    ).save(index_dir)
+    graph_dir = tmp_path / "graphify-out"
+    graph = nx.Graph()
+    graph.add_edge("skill:alpha", "skill:beta", semantic_sim=0.9)
+    write_base_pack(
+        pack_dir=graph_dir / "packs" / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-1",
+        model_id="model-a",
+        graph=graph,
+    )
+
+    rc = main([
+        "--index-dir", str(index_dir),
+        "--graph-dir", str(graph_dir),
+        "--node", "skill:alpha",
+        "--top-k", "1",
+        "--min-score", "0.5",
+        "--json",
+    ])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert '"baseline": "graph-semantic-edges"' in output
+    assert '"gate_passed": true' in output
 
 
 def test_shadow_incremental_graph_matches_full_graph(

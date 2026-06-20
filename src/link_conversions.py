@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_active_wiki_overlay_pack
 from ctx_config import cfg
 from ctx.core.wiki.wiki_utils import get_field as _find_field
 
@@ -57,6 +58,36 @@ class ProcessResult:
 _FM_PATTERN = re.compile(r"^---\r?\n(.*?\r?\n)---\r?\n", re.DOTALL)
 _FIELD_PATTERN_TMPL = r"^{key}:\s*(.+)$"
 
+
+def _read_wiki_page(wiki: Path, relpath: str) -> str | None:
+    """Read a wiki page from active packs when installed, else from disk."""
+    packs_dir = wiki / "wiki-packs"
+    path = wiki / relpath
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+        if path.exists():
+            return path.read_text(encoding="utf-8", errors="replace")
+        return None
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _write_wiki_page(wiki: Path, relpath: str, content: str) -> None:
+    """Write a wiki page, mirroring into overlay packs when installed."""
+    packs_dir = wiki / "wiki-packs"
+    path = wiki / relpath
+    if path.exists() or not packs_dir.is_dir():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: content},
+            tombstones=[],
+        )
 
 
 def _set_field(content: str, key: str, value: str) -> str:
@@ -202,13 +233,15 @@ def upsert_entity_page(
     skills_dir: Path,
 ) -> bool:
     """Create or update a skill entity page. Returns True if a new page was created."""
-    page_path = wiki / "entities" / "skills" / f"{skill.name}.md"
-    is_new = not page_path.exists()
+    relpath = f"entities/skills/{skill.name}.md"
+    existing = _read_wiki_page(wiki, relpath)
 
-    if is_new:
+    if existing is None:
+        is_new = True
         content = _build_new_entity_page(skill, skills_dir)
     else:
-        content = page_path.read_text(encoding="utf-8", errors="replace")
+        is_new = False
+        content = existing
         content = _inject_pipeline_fields(content, skill.pipeline_path)
         # Bump updated date
         old_updated = _find_field(content, "updated")
@@ -220,7 +253,7 @@ def upsert_entity_page(
                 flags=re.MULTILINE,
             )
 
-    page_path.write_text(content, encoding="utf-8")
+    _write_wiki_page(wiki, relpath, content)
     return is_new
 
 
@@ -234,8 +267,9 @@ def update_index(wiki: Path, new_skills: list[str]) -> None:
     if not new_skills:
         return
 
-    index_path = wiki / "index.md"
-    content = index_path.read_text(encoding="utf-8", errors="replace")
+    content = _read_wiki_page(wiki, "index.md")
+    if content is None:
+        return
     lines = content.split("\n")
 
     # Locate the ## Skills insertion point
@@ -273,7 +307,7 @@ def update_index(wiki: Path, new_skills: list[str]) -> None:
             lines[i] = re.sub(r"Last updated: [\d-]+", f"Last updated: {TODAY}", lines[i])
             break
 
-    index_path.write_text("\n".join(lines), encoding="utf-8")
+    _write_wiki_page(wiki, "index.md", "\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -283,13 +317,12 @@ def update_index(wiki: Path, new_skills: list[str]) -> None:
 
 def append_log(wiki: Path, action: str, subject: str, details: list[str]) -> None:
     """Append a structured entry to log.md."""
-    log_path = wiki / "log.md"
     lines = [f"\n## [{TODAY}] {action} | {subject}"]
     lines.extend(f"- {d}" for d in details)
     entry = "\n".join(lines) + "\n"
 
-    with open(log_path, "a", encoding="utf-8") as fh:
-        fh.write(entry)
+    content = _read_wiki_page(wiki, "log.md") or ""
+    _write_wiki_page(wiki, "log.md", content + entry)
 
 
 # ---------------------------------------------------------------------------
@@ -299,8 +332,6 @@ def append_log(wiki: Path, action: str, subject: str, details: list[str]) -> Non
 
 def generate_converted_index(wiki: Path, skills: list[ConvertedSkill]) -> None:
     """Generate converted-index.md listing every converted skill."""
-    out_path = wiki / "converted-index.md"
-
     header = (
         f"# Converted Micro-Skill Pipelines Index\n"
         f"\n"
@@ -320,7 +351,7 @@ def generate_converted_index(wiki: Path, skills: list[ConvertedSkill]) -> None:
         rows.append(f"| {skill.name} | {entity_link} | {pipeline_link} |")
 
     content = header + "\n".join(rows) + "\n"
-    out_path.write_text(content, encoding="utf-8")
+    _write_wiki_page(wiki, "converted-index.md", content)
     print(f"  converted-index.md written ({len(skills)} entries)")
 
 

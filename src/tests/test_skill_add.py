@@ -89,6 +89,7 @@ from skill_add import (  # noqa: E402
     wire_backlinks,
     write_entity_page,
 )
+from ctx.core.wiki.wiki_packs import load_merged_wiki_pages, write_wiki_base_pack  # noqa: E402
 
 # Clean up the sys.modules stubs NOW that skill_add has been imported
 # and its names are bound. skill_add's own reference to (e.g.)
@@ -332,8 +333,6 @@ class TestFindRelatedSkills:
 
     def test_finds_skill_with_ctx_generated_block_list_tags(self, tmp_path):
         wiki = tmp_path / "wiki"
-        skills_dir = wiki / "entities" / "skills"
-        skills_dir.mkdir(parents=True)
         content = build_entity_page(
             name="generated-skill",
             tags=["python", "testing"],
@@ -343,7 +342,12 @@ class TestFindRelatedSkills:
             related=[],
             scan_sources=[],
         )
-        (skills_dir / "generated-skill.md").write_text(content, encoding="utf-8")
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"entities/skills/generated-skill.md": content},
+        )
 
         related = find_related_skills(wiki, "new-skill", ["testing"])
 
@@ -382,10 +386,18 @@ class TestFindRelatedSkills:
 class TestAddBacklink:
     def test_adds_link_under_related_section(self, tmp_path):
         wiki = tmp_path / "wiki"
-        _make_entity_page(wiki, "target", ["python"])
+        content = "---\ntitle: target\ntags: [python]\n---\n# target\n\n## Related Skills\n\n"
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"entities/skills/target.md": content},
+        )
         _add_backlink(wiki, "target", "source-skill")
-        content = (wiki / "entities" / "skills" / "target.md").read_text()
-        assert "[[entities/skills/source-skill]]" in content
+        merged = load_merged_wiki_pages(packs_dir)
+        assert "[[entities/skills/source-skill]]" in merged["entities/skills/target.md"]
+        assert not (wiki / "entities" / "skills" / "target.md").exists()
 
     def test_skips_if_link_already_present(self, tmp_path):
         wiki = tmp_path / "wiki"
@@ -996,7 +1008,23 @@ class TestAddSkill:
         mirror.parent.mkdir(parents=True)
         mirror.write_text("old mirror\n", encoding="utf-8")
         entity = wiki / "entities" / "skills" / "myskill.md"
-        entity.write_text("# existing entity\n", encoding="utf-8")
+        packs_dir = wiki / "wiki-packs"
+        write_wiki_base_pack(
+            pack_dir=packs_dir / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={
+                "entities/skills/myskill.md": build_entity_page(
+                    name="myskill",
+                    tags=["python"],
+                    line_count=20,
+                    has_pipeline=False,
+                    original_path=installed,
+                    related=[],
+                    scan_sources=[],
+                )
+            },
+        )
         source = tmp_path / "SKILL.md"
         updated_text = self._skill_text(
             description="Updated short skill with better guidance.",
@@ -1018,13 +1046,20 @@ class TestAddSkill:
 
         assert result["converted"] is False
         assert mirror.read_text(encoding="utf-8") == updated_text
+        merged = load_merged_wiki_pages(packs_dir)
+        assert not entity.exists()
+        assert "- api" in merged["entities/skills/myskill.md"]
 
     def test_main_with_skip_existing_skips(self, tmp_path, monkeypatch, capsys):
         """--skip-existing skips already-installed skills."""
         skills_dir = tmp_path / "skills"
         wiki = self._setup_wiki(tmp_path)
-        (skills_dir / "my-skill").mkdir(parents=True)
-        (skills_dir / "my-skill" / "SKILL.md").write_text("# pre-existing\n")
+        write_wiki_base_pack(
+            pack_dir=wiki / "wiki-packs" / "base-export-1",
+            pack_id="base-export-1",
+            base_export_id="wiki-export-1",
+            pages={"entities/skills/my-skill.md": "# my-skill\n"},
+        )
         scan_dir = tmp_path / "scan"
         skill_dir = scan_dir / "my-skill"
         skill_dir.mkdir(parents=True)

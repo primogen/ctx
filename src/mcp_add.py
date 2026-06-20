@@ -39,6 +39,10 @@ import mcp_canonical_index
 from mcp_entity import McpRecord
 from wiki_batch_entities import generate_mcp_page
 from ctx.core.wiki.wiki_sync import append_log, ensure_wiki, update_index
+from ctx.core.wiki.wiki_packs import (
+    load_merged_wiki_pages,
+    write_active_wiki_overlay_pack,
+)
 from ctx.core.wiki.wiki_queue import enqueue_entity_upsert
 from ctx.core.wiki.wiki_utils import validate_skill_name
 from ctx.utils._fs_utils import reject_symlink_path, safe_atomic_write_text
@@ -286,6 +290,111 @@ def _find_existing_by_github_url(
     return None
 
 
+def _entity_relpath(entity_rel: Path | str) -> str:
+    return f"{_MCP_ENTITY_SUBDIR}/{Path(entity_rel).as_posix()}"
+
+
+def _read_entity_page(wiki_path: Path, relpath: str) -> str | None:
+    packs_dir = wiki_path / "wiki-packs"
+    if packs_dir.is_dir():
+        pages = load_merged_wiki_pages(packs_dir)
+        if relpath in pages:
+            return pages[relpath]
+    target_path = wiki_path / relpath
+    if target_path.exists():
+        return target_path.read_text(encoding="utf-8", errors="replace")
+    return None
+
+
+def _find_indexed_entity_page_by_github_url(
+    *,
+    wiki_path: Path,
+    target: str,
+    index: mcp_canonical_index.CanonicalIndex,
+) -> Path | None:
+    """Return a canonical-index hit after confirming it in the merged wiki view."""
+    mcp_dir = wiki_path / _MCP_ENTITY_SUBDIR
+    entry = index["by_github_url"].get(target)
+    if entry is None:
+        return None
+
+    relpath = entry["relpath"]
+    text = _read_entity_page(wiki_path, _entity_relpath(relpath))
+    if text is None:
+        return None
+    fm = _parse_frontmatter(text)
+    if _normalize_github_url(fm.get("github_url")) != target:
+        return None
+    return mcp_dir / relpath
+
+
+def _find_existing_by_github_url_in_wiki(
+    wiki_path: Path,
+    target_github_url: str | None,
+) -> Path | None:
+    target = _normalize_github_url(target_github_url)
+    if target is None:
+        return None
+
+    mcp_dir = wiki_path / _MCP_ENTITY_SUBDIR
+    index = mcp_canonical_index.load_index(mcp_dir)
+    indexed_hit = _find_indexed_entity_page_by_github_url(
+        wiki_path=wiki_path,
+        target=target,
+        index=index,
+    )
+    if indexed_hit is not None:
+        return indexed_hit
+
+    physical_hit = _find_existing_by_github_url(mcp_dir, target)
+    if physical_hit is not None:
+        return physical_hit
+
+    packs_dir = wiki_path / "wiki-packs"
+    if not packs_dir.is_dir():
+        return None
+    prefix = f"{_MCP_ENTITY_SUBDIR}/"
+    for relpath, text in sorted(load_merged_wiki_pages(packs_dir).items()):
+        if not relpath.startswith(prefix) or not relpath.endswith(".md"):
+            continue
+        if target not in text.lower():
+            continue
+        fm = _parse_frontmatter(text)
+        if _normalize_github_url(fm.get("github_url")) == target:
+            if mcp_dir.is_dir():
+                try:
+                    entity_relpath = relpath[len(prefix) :]
+                    mcp_canonical_index.upsert(
+                        mcp_dir,
+                        target,
+                        slug=Path(entity_relpath).stem,
+                        relpath=entity_relpath,
+                        index=index,
+                    )
+                except (OSError, ValueError):
+                    pass
+            return wiki_path / relpath
+    return None
+
+
+def _write_entity_page(
+    *,
+    wiki_path: Path,
+    relpath: str,
+    target_path: Path,
+    content: str,
+) -> None:
+    packs_dir = wiki_path / "wiki-packs"
+    if target_path.exists() or not packs_dir.is_dir():
+        safe_atomic_write_text(target_path, content, encoding="utf-8")
+    if packs_dir.is_dir():
+        write_active_wiki_overlay_pack(
+            packs_dir=packs_dir,
+            pages={relpath: content},
+            tombstones=[],
+        )
+
+
 def add_mcp(
     *,
     record: McpRecord,
@@ -328,6 +437,7 @@ def add_mcp(
     entity_rel = record.entity_relpath()  # e.g. "f/fetch-mcp.md"
     mcp_dir = wiki_path / _MCP_ENTITY_SUBDIR
     target_path = mcp_dir / entity_rel
+    target_relpath = _entity_relpath(entity_rel)
 
     # Phase 3.6: cross-source dedup by canonical github_url before the
     # slug-based check. When awesome-mcp and pulsemcp both catalog the
@@ -337,9 +447,10 @@ def add_mcp(
     # listing-page records currently have only homepage_url (Phase 6
     # detail-page enrichment will populate github_url so this dedup
     # path becomes meaningful for them too).
-    canonical_match = _find_existing_by_github_url(mcp_dir, record.github_url)
+    canonical_match = _find_existing_by_github_url_in_wiki(wiki_path, record.github_url)
     if canonical_match is not None and canonical_match != target_path:
         target_path = canonical_match
+        target_relpath = target_path.relative_to(wiki_path).as_posix()
 
     reject_symlink_path(target_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -354,13 +465,13 @@ def add_mcp(
     # Phase 1 of branching: compute the read-side state. No serialization
     # work happens here so dry-run cannot fail on a malformed existing
     # page — that's deferred to the write-gate below.
-    if target_path.exists():
+    existing_text = _read_entity_page(wiki_path, target_relpath)
+    if existing_text is not None:
         # Existing entity → straight to merge. No intake call: the gate
         # would reject this as DUPLICATE against the cached embedding
         # of the original ingest, blocking the source-merge that's the
         # whole point of re-fetching. Phase 3b made this concrete.
         is_new_page = False
-        existing_text = target_path.read_text(encoding="utf-8")
         existing_fm = _parse_frontmatter(existing_text)
         merged_sources = _merge_sources(existing_fm, record.sources)
         kept_description = _keep_longer_description(existing_fm, record)
@@ -411,7 +522,12 @@ def add_mcp(
     if not dry_run:
         # Phase 2 of branching: render and write. Any YAML serialization
         # failure now is a real error, not a dry-run side-effect.
-        safe_atomic_write_text(target_path, final_text, encoding="utf-8")
+        _write_entity_page(
+            wiki_path=wiki_path,
+            relpath=target_relpath,
+            target_path=target_path,
+            content=final_text,
+        )
         queue_job = enqueue_entity_upsert(
             wiki_path=wiki_path,
             entity_type="mcp-server",
@@ -502,7 +618,6 @@ def _process_batch(
     dry_run: bool,
     skip_existing: bool,
     update_existing: bool,
-    mcp_entity_dir: Path,
 ) -> tuple[int, int, int, int, int]:
     """Process records. Returns (added, merged, reviewed, rejected, errors)."""
     added = merged = reviewed = rejected = errors = 0
@@ -518,9 +633,9 @@ def _process_batch(
             continue
 
         entity_rel = record.entity_relpath()
-        target_path = mcp_entity_dir / entity_rel
+        target_relpath = _entity_relpath(entity_rel)
 
-        if skip_existing and target_path.exists():
+        if skip_existing and _read_entity_page(wiki_path, target_relpath) is not None:
             merged += 1
             print(f"  [{i}/{total}] [skipped] {record.slug}")
             continue
@@ -595,7 +710,6 @@ def main() -> None:
 
     wiki_path = Path(os.path.expanduser(args.wiki))
     ensure_wiki(str(wiki_path))
-    mcp_entity_dir = wiki_path / _MCP_ENTITY_SUBDIR
 
     raw_records: list[dict[str, Any]] = []
 
@@ -646,7 +760,6 @@ def main() -> None:
         dry_run=args.dry_run,
         skip_existing=args.skip_existing,
         update_existing=args.update_existing,
-        mcp_entity_dir=mcp_entity_dir,
     )
 
     dry_label = " (dry-run)" if args.dry_run else ""

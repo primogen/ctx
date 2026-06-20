@@ -262,11 +262,18 @@ def search_wiki_entities(
     terms = [term for term in re.split(r"\s+", query.lower().strip()) if term]
     results: list[dict[str, Any]] = []
     for slug, current_type, path in deps.iter_wiki_entity_paths(entity_type):
-        try:
-            head = path.read_text(encoding="utf-8", errors="replace")[:4096]
-        except OSError:
-            continue
-        frontmatter, body = deps.parse_frontmatter(head)
+        detail = deps.wiki_entity_detail(slug, current_type)
+        if isinstance(detail, dict):
+            frontmatter = detail.get("frontmatter")
+            body = str(detail.get("body") or "")[:4096]
+        else:
+            try:
+                head = path.read_text(encoding="utf-8", errors="replace")[:4096]
+            except OSError:
+                continue
+            frontmatter, body = deps.parse_frontmatter(head)
+        if not isinstance(frontmatter, dict):
+            frontmatter = {}
         tags = deps.frontmatter_tags(frontmatter.get("tags", ""))
         description = deps.frontmatter_text(frontmatter.get("description", ""))
         display_slug = deps.display_slug(slug)

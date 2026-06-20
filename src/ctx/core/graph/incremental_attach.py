@@ -9,6 +9,7 @@ import hashlib
 import json
 from math import ceil
 from pathlib import Path
+import re
 import sys
 from typing import Any, Iterable
 
@@ -17,7 +18,12 @@ import numpy as np
 
 from ctx.core.graph.edge_scoring import type_affinity_score
 from ctx.core.graph.entity_overlays import upsert_overlay_record
-from ctx.core.graph.vector_index import load_vector_index
+from ctx.core.graph.graph_packs import GRAPH_PACK_MANIFEST, write_overlay_pack
+from ctx.core.graph.vector_index import (
+    MergedVectorIndex,
+    load_vector_index,
+    upsert_numpy_flat_index_entry,
+)
 
 _PERCENTILES = (50, 60, 75, 90, 95)
 _DEFAULT_MIN_SEMANTIC_SCORE = 0.80
@@ -124,6 +130,55 @@ def render_calibration_markdown(summary: AttachCalibrationSummary) -> str:
     return "\n".join(lines) + "\n"
 
 
+def validate_vector_index_set(
+    *,
+    index_dir: Path,
+    delta_index_dirs: list[Path] | None = None,
+) -> dict[str, Any]:
+    """Validate a base vector index plus optional local delta indexes."""
+    base_meta = _read_index_meta(index_dir)
+    model_id = str(base_meta["model_id"])
+    base_index = load_vector_index(
+        index_dir,
+        expected_model_id=model_id,
+        expected_content_fingerprint=str(base_meta["content_fingerprint"]),
+    )
+    if base_index is None:
+        raise ValueError(f"base vector index is unreadable or stale at {index_dir}")
+    indexes = [base_index]
+    index_reports: list[dict[str, Any]] = [_index_report(index_dir, base_index, "base")]
+    for delta_index_dir in delta_index_dirs or []:
+        delta_meta = _read_index_meta(delta_index_dir)
+        delta_index = load_vector_index(
+            delta_index_dir,
+            expected_model_id=model_id,
+            expected_content_fingerprint=str(delta_meta["content_fingerprint"]),
+        )
+        if delta_index is None:
+            raise ValueError(f"delta vector index is unreadable or stale at {delta_index_dir}")
+        indexes.append(delta_index)
+        index_reports.append(_index_report(delta_index_dir, delta_index, "delta"))
+    MergedVectorIndex(indexes)
+    return {
+        "ok": True,
+        "model_id": model_id,
+        "dim": base_index.meta.dim,
+        "index_count": len(indexes),
+        "node_count": sum(index.meta.node_count for index in indexes),
+        "indexes": index_reports,
+    }
+
+
+def _index_report(index_dir: Path, index: Any, role: str) -> dict[str, Any]:
+    return {
+        "role": role,
+        "path": str(index_dir),
+        "index_kind": index.meta.index_kind,
+        "node_count": index.meta.node_count,
+        "content_fingerprint": index.meta.content_fingerprint,
+    }
+
+
 def attach_entity(
     *,
     index_dir: Path,
@@ -141,6 +196,12 @@ def attach_entity(
     dry_run: bool = False,
     embedding_backend: str = "sentence-transformers",
     embedding_model: str | None = None,
+    pack_root: Path | None = None,
+    base_export_id: str | None = None,
+    parent_export_id: str | None = None,
+    config_hash: str | None = None,
+    delta_index_dirs: list[Path] | None = None,
+    delta_index_write_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Attach one new/updated entity to an existing semantic vector index."""
     meta = _read_index_meta(index_dir)
@@ -162,8 +223,23 @@ def attach_entity(
             "vector index metadata mismatch or index files are unreadable "
             f"for model {resolved_model_id!r}"
         )
+    indexes = [index]
+    for delta_index_dir in delta_index_dirs or []:
+        delta_meta = _read_index_meta(delta_index_dir)
+        delta_index = load_vector_index(
+            delta_index_dir,
+            expected_model_id=resolved_model_id,
+            expected_content_fingerprint=str(delta_meta["content_fingerprint"]),
+        )
+        if delta_index is None:
+            raise ValueError(
+                "delta vector index metadata mismatch or index files are unreadable "
+                f"at {delta_index_dir}"
+            )
+        indexes.append(delta_index)
+    query_index = MergedVectorIndex(indexes) if len(indexes) > 1 else index
 
-    neighbors = index.query(
+    neighbors = query_index.query(
         vector,
         top_k=top_k,
         min_score=min_score,
@@ -190,7 +266,37 @@ def attach_entity(
         ],
     )
     status = "dry-run" if dry_run else upsert_overlay_record(overlay_path, record)
-    return {"status": status, "record": record}
+    result = {"status": status, "record": record}
+    if pack_root is not None and not dry_run:
+        result["overlay_pack"] = _write_attach_pack(
+            pack_root=pack_root,
+            record=record,
+            base_export_id=base_export_id,
+            parent_export_id=parent_export_id,
+            config_hash=config_hash,
+        )
+    if delta_index_write_dir is not None and not dry_run:
+        try:
+            delta_index = upsert_numpy_flat_index_entry(
+                delta_index_write_dir,
+                model_id=resolved_model_id,
+                node_id=node_id,
+                content_hash=content_hash,
+                vector=vector,
+            )
+            result["delta_index"] = {
+                "status": "upserted",
+                "path": str(delta_index_write_dir),
+                "node_count": delta_index.meta.node_count,
+                "content_fingerprint": delta_index.meta.content_fingerprint,
+            }
+        except Exception as exc:  # noqa: BLE001 - delta index is derived data.
+            result["delta_index"] = {
+                "status": "skipped",
+                "path": str(delta_index_write_dir),
+                "error": str(exc),
+            }
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -199,11 +305,41 @@ def main(argv: list[str] | None = None) -> int:
         description="Incremental graph attach utilities.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    calibrate = sub.add_parser("calibrate", help="Calibrate attach defaults from graph.json")
-    calibrate.add_argument("--graph", required=True, help="Path to graphify-out/graph.json")
+    calibrate = sub.add_parser(
+        "calibrate",
+        help="Calibrate attach defaults from graph.json or graph packs",
+    )
+    calibrate_source = calibrate.add_mutually_exclusive_group(required=True)
+    calibrate_source.add_argument("--graph", help="Path to graphify-out/graph.json")
+    calibrate_source.add_argument(
+        "--graph-dir",
+        help="Path to graphify-out; supports active graph packs without graph.json",
+    )
     calibrate.add_argument("--json", action="store_true", help="Emit JSON instead of Markdown")
+    validate_indexes = sub.add_parser(
+        "validate-indexes",
+        help="Validate a base vector index plus optional local delta indexes",
+    )
+    validate_indexes.add_argument("--index-dir", required=True, help="Path to base vector-index")
+    validate_indexes.add_argument(
+        "--delta-index-dir",
+        action="append",
+        default=[],
+        help="Additional local vector-index directory; repeatable",
+    )
+    validate_indexes.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     attach = sub.add_parser("attach", help="Attach one entity through the semantic vector index")
     attach.add_argument("--index-dir", required=True, help="Path to a persisted vector-index directory")
+    attach.add_argument(
+        "--delta-index-dir",
+        action="append",
+        default=[],
+        help="Additional local vector-index directory; repeatable for base+delta queries",
+    )
+    attach.add_argument(
+        "--delta-index-write-dir",
+        help="Optional local vector-index directory to upsert this entity after attach",
+    )
     attach.add_argument("--overlay", required=True, help="Path to graphify-out/entity-overlays.jsonl")
     attach.add_argument("--node-id", required=True, help="Graph node id, e.g. skill:my-skill")
     attach.add_argument("--type", required=True, dest="entity_type", help="Entity type")
@@ -221,18 +357,53 @@ def main(argv: list[str] | None = None) -> int:
     attach.add_argument("--top-k", type=int, default=20)
     attach.add_argument("--min-score", type=float)
     attach.add_argument("--min-final-weight", type=float, default=_DEFAULT_MIN_FINAL_WEIGHT)
+    attach.add_argument(
+        "--pack-root",
+        help="Optional graph packs directory; writes an immutable overlay pack for this attach",
+    )
+    attach.add_argument("--base-export-id", help="Base graph export id for --pack-root")
+    attach.add_argument(
+        "--parent-export-id",
+        help="Parent graph export id for --pack-root; defaults to --base-export-id",
+    )
+    attach.add_argument("--config-hash", help="Graph config hash for --pack-root")
     attach.add_argument("--dry-run", action="store_true", help="Print the overlay record without writing")
     attach.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args(argv)
     if args.command == "calibrate":
         from ctx.core.graph.resolve_graph import load_graph  # noqa: PLC0415
 
-        graph = load_graph(Path(args.graph))
+        graph_path = (
+            Path(args.graph)
+            if args.graph
+            else Path(args.graph_dir) / "graph.json"
+        )
+        graph = load_graph(graph_path)
         summary = calibrate_attach_defaults(graph)
         if args.json:
             print(json.dumps(asdict(summary), indent=2))
         else:
             print(render_calibration_markdown(summary), end="")
+        return 0
+    if args.command == "validate-indexes":
+        try:
+            result = validate_vector_index_set(
+                index_dir=Path(args.index_dir),
+                delta_index_dirs=[Path(path) for path in args.delta_index_dir or []],
+            )
+        except Exception as exc:  # noqa: BLE001 - CLI reports concise validation errors.
+            if args.json:
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            else:
+                print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(
+                "validated vector indexes: "
+                f"{result['index_count']} indexes / {result['node_count']} nodes"
+            )
         return 0
     if args.command == "attach":
         try:
@@ -256,6 +427,16 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 embedding_backend=args.embedding_backend,
                 embedding_model=args.embedding_model,
+                pack_root=Path(args.pack_root) if args.pack_root else None,
+                base_export_id=args.base_export_id,
+                parent_export_id=args.parent_export_id,
+                config_hash=args.config_hash,
+                delta_index_dirs=[Path(path) for path in args.delta_index_dir or []],
+                delta_index_write_dir=(
+                    Path(args.delta_index_write_dir)
+                    if args.delta_index_write_dir
+                    else None
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - CLI reports concise errors.
             print(f"error: {exc}", file=sys.stderr)
@@ -329,6 +510,49 @@ def _resolve_attach_vector(
             f"--model-id {model_id!r} does not match embedder {resolved_model_id!r}"
         )
     return embedder.embed([text]), resolved_model_id, _content_hash(text)
+
+
+def _write_attach_pack(
+    *,
+    pack_root: Path,
+    record: dict[str, Any],
+    base_export_id: str | None,
+    parent_export_id: str | None,
+    config_hash: str | None,
+) -> dict[str, str]:
+    if not base_export_id:
+        raise ValueError("--base-export-id is required when --pack-root is used")
+    if not config_hash:
+        raise ValueError("--config-hash is required when --pack-root is used")
+    pack_id = _attach_pack_id(record)
+    pack_dir = pack_root / pack_id
+    manifest_path = pack_dir / GRAPH_PACK_MANIFEST
+    if manifest_path.exists():
+        return {"status": "unchanged", "pack_id": pack_id, "path": str(pack_dir)}
+
+    created_at = record.get("created_at")
+    write_overlay_pack(
+        pack_dir=pack_dir,
+        pack_id=pack_id,
+        base_export_id=base_export_id,
+        parent_export_id=parent_export_id or base_export_id,
+        config_hash=config_hash,
+        model_id=str(record["model_id"]),
+        nodes=list(record.get("nodes") or []),
+        edges=list(record.get("edges") or []),
+        tombstones=[{"node_id": str(record["node_id"]), "source": "incremental-attach"}],
+        created_at=str(created_at) if created_at else None,
+    )
+    return {"status": "inserted", "pack_id": pack_id, "path": str(pack_dir)}
+
+
+def _attach_pack_id(record: dict[str, Any]) -> str:
+    node_id = str(record.get("node_id") or "entity")
+    content_hash = str(record.get("content_hash") or _content_hash(json.dumps(record, sort_keys=True)))
+    safe_node = re.sub(r"[^A-Za-z0-9._-]+", "-", node_id).strip(".-_").lower()
+    if not safe_node:
+        safe_node = "entity"
+    return f"overlay-{safe_node}-{content_hash[:16]}"
 
 
 def _parse_vector_json(vector_json: str) -> np.ndarray:
