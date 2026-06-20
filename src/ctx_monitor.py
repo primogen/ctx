@@ -88,6 +88,7 @@ from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
 from ctx.monitor.layout import layout as _layout
 from ctx.monitor.layout import monitor_asset_text as _monitor_asset_text
 from ctx.monitor.layout import monitor_inline_script as _monitor_inline_script
+from ctx.monitor import state as _monitor_state
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
 from ctx.utils._fs_utils import safe_atomic_write_text as _safe_atomic_write_text
@@ -168,39 +169,35 @@ def _read_token_cookie(cookie_header: str) -> str:
 
 
 def _claude_dir() -> Path:
-    return Path(os.path.expanduser("~/.claude"))
+    return _monitor_state.claude_dir()
 
 
 def _audit_log_path() -> Path:
-    # Avoid importing ctx_audit_log here so the monitor can run even if
-    # ctx_audit_log is absent for some reason.
-    return _claude_dir() / "ctx-audit.jsonl"
+    return _monitor_state.audit_log_path(_claude_dir())
 
 
 def _events_jsonl_path() -> Path:
-    return _claude_dir() / "skill-events.jsonl"
+    return _monitor_state.events_jsonl_path(_claude_dir())
 
 
 def _runtime_lifecycle_path() -> Path:
-    from ctx.adapters.generic.runtime_lifecycle import RuntimeLifecycleStore
-
-    return RuntimeLifecycleStore().events_path
+    return _monitor_state.runtime_lifecycle_path()
 
 
 def _manifest_path() -> Path:
-    return _claude_dir() / "skill-manifest.json"
+    return _monitor_state.manifest_path(_claude_dir())
 
 
 def _sidecar_dir() -> Path:
-    return _claude_dir() / "skill-quality"
+    return _monitor_state.sidecar_dir(_claude_dir())
 
 
 def _wiki_dir() -> Path:
-    return _claude_dir() / "skill-wiki"
+    return _monitor_state.wiki_dir(_claude_dir())
 
 
 def _user_config_path() -> Path:
-    return _claude_dir() / "skill-system-config.json"
+    return _monitor_state.user_config_path(_claude_dir())
 
 
 def _wiki_pack_pages() -> dict[str, str] | None:
