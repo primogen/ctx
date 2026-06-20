@@ -404,6 +404,75 @@ def test_load_merged_pack_graph_applies_tombstones(tmp_path: Path) -> None:
     assert graph.number_of_edges() == 0
 
 
+def test_load_merged_pack_graph_rejects_base_count_drift(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "packs"
+    base_dir = packs_dir / "base-export-1"
+    base_dir.mkdir(parents=True)
+    (base_dir / "graph.json").write_text(
+        json.dumps({
+            "nodes": [{"id": "skill:python"}],
+            "edges": [],
+        }),
+        encoding="utf-8",
+    )
+    write_pack_manifest(
+        base_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=base_dir,
+            pack_id="base-export-1",
+            pack_type="base",
+            base_export_id="export-1",
+            parent_export_id=None,
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            node_count=2,
+            edge_count=0,
+            artifact_paths=["graph.json"],
+        ),
+    )
+
+    with pytest.raises(GraphPackManifestError, match="node_count mismatch"):
+        load_merged_pack_graph(packs_dir)
+
+
+def test_load_merged_pack_graph_rejects_overlay_count_drift(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "packs"
+    base_graph = nx.Graph()
+    base_graph.add_node("skill:python")
+    write_base_pack(
+        pack_dir=packs_dir / "base-export-1",
+        pack_id="base-export-1",
+        base_export_id="export-1",
+        config_hash="config-sha",
+        model_id="bge-small-en-v1.5",
+        graph=base_graph,
+    )
+    overlay_dir = packs_dir / "overlay-review"
+    overlay_dir.mkdir()
+    (overlay_dir / "nodes.jsonl").write_text(
+        json.dumps({"id": "skill:review"}) + "\n",
+        encoding="utf-8",
+    )
+    write_pack_manifest(
+        overlay_dir / "graph-pack-manifest.json",
+        build_pack_manifest(
+            pack_dir=overlay_dir,
+            pack_id="overlay-review",
+            pack_type="overlay",
+            base_export_id="export-1",
+            parent_export_id="export-1",
+            config_hash="config-sha",
+            model_id="bge-small-en-v1.5",
+            node_count=2,
+            edge_count=0,
+            artifact_paths=["nodes.jsonl"],
+        ),
+    )
+
+    with pytest.raises(GraphPackManifestError, match="node_count mismatch"):
+        load_merged_pack_graph(packs_dir)
+
+
 def test_write_overlay_pack_creates_jsonl_artifacts_and_manifest(tmp_path: Path) -> None:
     pack_dir = tmp_path / "packs" / "overlay-review"
 

@@ -538,10 +538,10 @@ def load_merged_pack_graph(packs_dir: Path) -> nx.Graph:
     if not entries:
         return nx.Graph()
     base = entries[0]
-    graph = _load_base_graph(base.path / "graph.json")
+    graph = _load_base_graph(base.path / "graph.json", base.manifest)
     pack_ids = [base.manifest.pack_id]
     for overlay in entries[1:]:
-        _apply_overlay_pack(graph, overlay.path)
+        _apply_overlay_pack(graph, overlay)
         pack_ids.append(overlay.manifest.pack_id)
     graph.graph["ctx_pack_ids"] = pack_ids
     graph.graph["ctx_pack_base_export_id"] = base.manifest.base_export_id
@@ -590,7 +590,7 @@ def _node_link_payload(graph: nx.Graph) -> dict[str, Any]:
     return payload
 
 
-def _load_base_graph(path: Path) -> nx.Graph:
+def _load_base_graph(path: Path, manifest: GraphPackManifest) -> nx.Graph:
     payload = _read_json_object(path)
     graph = nx.Graph()
     graph_meta = payload.get("graph")
@@ -611,23 +611,71 @@ def _load_base_graph(path: Path) -> nx.Graph:
         raise GraphPackManifestError(f"{path} edges must be a list")
     for raw_edge in raw_edges:
         _add_edge(graph, raw_edge, context=str(path))
+    _validate_pack_count(
+        manifest.pack_id,
+        "node_count",
+        actual=graph.number_of_nodes(),
+        expected=manifest.node_count,
+    )
+    _validate_pack_count(
+        manifest.pack_id,
+        "edge_count",
+        actual=graph.number_of_edges(),
+        expected=manifest.edge_count,
+    )
     return graph
 
 
-def _apply_overlay_pack(graph: nx.Graph, overlay_dir: Path) -> None:
-    for tombstone in _read_jsonl_objects(overlay_dir / "tombstones.jsonl"):
+def _apply_overlay_pack(graph: nx.Graph, overlay: GraphPackEntry) -> None:
+    overlay_dir = overlay.path
+    manifest = overlay.manifest
+    tombstones = _read_jsonl_objects(overlay_dir / "tombstones.jsonl")
+    nodes = _read_jsonl_objects(overlay_dir / "nodes.jsonl")
+    edges = _read_jsonl_objects(overlay_dir / "edges.jsonl")
+    _validate_pack_count(
+        manifest.pack_id,
+        "node_count",
+        actual=len(nodes),
+        expected=manifest.node_count,
+    )
+    _validate_pack_count(
+        manifest.pack_id,
+        "edge_count",
+        actual=len(edges),
+        expected=manifest.edge_count,
+    )
+    _validate_pack_count(
+        manifest.pack_id,
+        "tombstone_count",
+        actual=len(tombstones),
+        expected=manifest.tombstone_count,
+    )
+    for tombstone in tombstones:
         node_id = tombstone.get("node_id", tombstone.get("id"))
         if not isinstance(node_id, str) or not node_id:
             raise GraphPackManifestError(f"{overlay_dir} tombstone missing node_id")
         if node_id in graph:
             graph.remove_node(node_id)
-    for raw_node in _read_jsonl_objects(overlay_dir / "nodes.jsonl"):
+    for raw_node in nodes:
         node_id = raw_node.get("id")
         if not isinstance(node_id, str) or not node_id:
             raise GraphPackManifestError(f"{overlay_dir} node overlay missing id")
         graph.add_node(node_id, **{key: value for key, value in raw_node.items() if key != "id"})
-    for raw_edge in _read_jsonl_objects(overlay_dir / "edges.jsonl"):
+    for raw_edge in edges:
         _add_edge(graph, raw_edge, context=str(overlay_dir))
+
+
+def _validate_pack_count(
+    pack_id: str,
+    field_name: str,
+    *,
+    actual: int,
+    expected: int,
+) -> None:
+    if actual != expected:
+        raise GraphPackManifestError(
+            f"graph pack {pack_id} {field_name} mismatch: expected {expected}, got {actual}"
+        )
 
 
 def _add_edge(graph: nx.Graph, raw_edge: object, *, context: str) -> None:
