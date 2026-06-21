@@ -23,6 +23,7 @@ import ctx_init as ci
 from ctx import dashboard_entities
 from ctx import dashboard_docs
 from ctx.monitor.pages import config as config_page
+from ctx.monitor.pages import harness as harness_page
 from ctx.monitor.pages import home as home_page
 from ctx.monitor.pages import loaded as loaded_page
 from ctx.monitor import routes as monitor_routes
@@ -4514,6 +4515,29 @@ def test_render_harness_wizard_guides_model_choice_and_real_commands(
     assert "--plan-on-no-fit" in html_out
     assert "ctx attachment" in html_out
     assert "data-testid='harness-command-output'" in html_out
+
+
+def test_harness_page_module_renders_catalog_cards_and_commands() -> None:
+    html_out = harness_page.render_harness_wizard(
+        harnesses=[{
+            "slug": "langgraph",
+            "title": "LangGraph harness",
+            "description": "Durable Python agent workflows.",
+            "tags": ["python", "api", "verification"],
+            "score": 0.93,
+            "grade": "A",
+            "repo_url": "https://github.com/langchain-ai/langgraph",
+        }],
+        layout=lambda _title, body: body,
+    )
+
+    assert "<h1>Harness Setup</h1>" in html_out
+    assert "id='harness-wizard-form'" in html_out
+    assert "data-harness-slug='langgraph'" in html_out
+    assert "ctx-harness-install langgraph --dry-run" in html_out
+    assert "ctx-harness-install --recommend" in html_out
+    assert "--plan-on-no-fit" in html_out
+    assert "X-CTX-Monitor-Token" not in html_out
 
 
 def test_harness_wizard_entries_do_not_scan_full_sidecar_tree(
