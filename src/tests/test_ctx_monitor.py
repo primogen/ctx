@@ -26,6 +26,7 @@ from ctx.monitor.pages import config as config_page
 from ctx.monitor.pages import harness as harness_page
 from ctx.monitor.pages import home as home_page
 from ctx.monitor.pages import loaded as loaded_page
+from ctx.monitor.pages import manage as manage_page
 from ctx.monitor.pages import skills as skills_page
 from ctx.monitor.pages import skillspector as skillspector_page
 from ctx.monitor import routes as monitor_routes
@@ -3623,6 +3624,14 @@ def test_render_wiki_index_rejects_unsafe_filenames(fake_claude: Path) -> None:
 
 def test_render_manage_includes_crud_and_upload_wizard(fake_claude: Path) -> None:
     html_out = cm._render_manage(mutations_enabled=True)
+    direct_html = manage_page.render_manage(
+        mutations_enabled=True,
+        token="token",
+        initial_results_json=cm._json_for_script([]),
+        entity_types=("skill", "agent", "mcp-server", "harness"),
+        inline_script=lambda _name: "<script>// manage</script>",
+        layout=lambda _title, body: body,
+    )
 
     assert "<h1>Manage catalog</h1>" in html_out
     assert "id='manage-search'" in html_out
@@ -3631,6 +3640,9 @@ def test_render_manage_includes_crud_and_upload_wizard(fake_claude: Path) -> Non
     assert "Add or update entity" in html_out
     assert "window.CTX_MONITOR_MANAGE" in html_out
     assert cm._monitor_asset_text("monitor-manage.js").strip() in html_out
+    assert "id='manage-search'" in direct_html
+    assert "window.CTX_MONITOR_MANAGE" in direct_html
+    assert "mcp-server" in direct_html
 
 
 def test_entity_search_and_detail_apis_support_edit_flow(
