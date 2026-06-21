@@ -27,6 +27,7 @@ from ctx.monitor.pages import harness as harness_page
 from ctx.monitor.pages import home as home_page
 from ctx.monitor.pages import loaded as loaded_page
 from ctx.monitor.pages import skills as skills_page
+from ctx.monitor.pages import skillspector as skillspector_page
 from ctx.monitor import routes as monitor_routes
 from ctx.core.wiki import wiki_queue
 
@@ -2400,11 +2401,17 @@ def test_skillspector_page_and_api_route_render_audit(
     }])
 
     html_out = cm._render_skillspector({"q": "prompt", "severity": "HIGH"})
+    direct_html = skillspector_page.render_skillspector(
+        cm._skillspector_audit_payload({"q": "prompt", "severity": "HIGH"}),
+        layout=lambda _title, body: body,
+    )
 
     assert "SkillSpector audit" in html_out
     assert "/api/skillspector.json" in html_out
     assert "review-skill" in html_out
     assert "prompt-injection" in html_out
+    assert "review-skill" in direct_html
+    assert "prompt-injection" in direct_html
     assert "/skillspector" in cm._layout("test", "<p>body</p>")
 
     server, _thread, port = _serve_monitor(monkeypatch)
