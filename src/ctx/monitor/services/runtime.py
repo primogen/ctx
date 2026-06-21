@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections import deque
+from collections import defaultdict, deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,141 @@ def lifecycle_events(path: Path, limit: int | None = 200) -> list[dict[str, Any]
         event for event in events
         if event.get("action") in {"validation", "escalation"}
     ]
+
+
+def summarize_sessions(
+    audit: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    *,
+    audit_entity_type: Callable[[dict[str, Any]], str | None],
+) -> list[dict[str, Any]]:
+    by_session: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "session_id": "",
+            "first_seen": None,
+            "last_seen": None,
+            "skills_loaded": set(),
+            "skills_unloaded": set(),
+            "agents_loaded": set(),
+            "agents_unloaded": set(),
+            "mcps_loaded": set(),
+            "mcps_unloaded": set(),
+            "score_updates": 0,
+            "lifecycle_transitions": 0,
+        },
+    )
+
+    for line in audit:
+        sid = line.get("session_id") or "unknown"
+        row = by_session[sid]
+        row["session_id"] = sid
+        ts = line.get("ts")
+        if ts and (row["first_seen"] is None or ts < row["first_seen"]):
+            row["first_seen"] = ts
+        if ts and (row["last_seen"] is None or ts > row["last_seen"]):
+            row["last_seen"] = ts
+        event = line.get("event", "")
+        if event == "skill.loaded":
+            row["skills_loaded"].add(line.get("subject", ""))
+        elif event == "skill.unloaded":
+            row["skills_unloaded"].add(line.get("subject", ""))
+        elif event == "agent.loaded":
+            row["agents_loaded"].add(line.get("subject", ""))
+        elif event == "agent.unloaded":
+            row["agents_unloaded"].add(line.get("subject", ""))
+        elif event == "toolbox.triggered":
+            raw_meta = line.get("meta")
+            meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+            if meta.get("entity_type") == "mcp-server":
+                action = meta.get("action")
+                if action == "loaded":
+                    row["mcps_loaded"].add(line.get("subject", ""))
+                elif action == "unloaded":
+                    row["mcps_unloaded"].add(line.get("subject", ""))
+        elif event.endswith(".score_updated"):
+            row["score_updates"] += 1
+        elif event in (
+            "skill.archived",
+            "skill.demoted",
+            "skill.restored",
+            "skill.deleted",
+            "agent.archived",
+            "agent.demoted",
+            "agent.restored",
+            "agent.deleted",
+        ):
+            row["lifecycle_transitions"] += 1
+
+    for line in events:
+        sid = line.get("session_id") or "unknown"
+        row = by_session[sid]
+        row["session_id"] = sid
+        ts = line.get("timestamp")
+        if ts and (row["first_seen"] is None or ts < row["first_seen"]):
+            row["first_seen"] = ts
+        if ts and (row["last_seen"] is None or ts > row["last_seen"]):
+            row["last_seen"] = ts
+        action = line.get("event")
+        entity_type = (
+            audit_entity_type(line)
+            or ("agent" if line.get("agent") else None)
+            or ("mcp-server" if line.get("mcp") or line.get("mcp_server") else None)
+            or ("skill" if line.get("skill") else None)
+        )
+        if entity_type == "agent":
+            subject = line.get("agent")
+        elif entity_type == "mcp-server":
+            subject = line.get("mcp") or line.get("mcp_server")
+        else:
+            subject = line.get("skill")
+        if action == "load" and subject:
+            if entity_type == "agent":
+                row["agents_loaded"].add(subject)
+            elif entity_type == "mcp-server":
+                row["mcps_loaded"].add(subject)
+            else:
+                row["skills_loaded"].add(subject)
+        elif action == "unload" and subject:
+            if entity_type == "agent":
+                row["agents_unloaded"].add(subject)
+            elif entity_type == "mcp-server":
+                row["mcps_unloaded"].add(subject)
+            else:
+                row["skills_unloaded"].add(subject)
+
+    summaries: list[dict[str, Any]] = []
+    for row in by_session.values():
+        summaries.append({
+            "session_id": row["session_id"],
+            "first_seen": row["first_seen"],
+            "last_seen": row["last_seen"],
+            "skills_loaded": sorted(row["skills_loaded"]),
+            "skills_unloaded": sorted(row["skills_unloaded"]),
+            "agents_loaded": sorted(row["agents_loaded"]),
+            "agents_unloaded": sorted(row["agents_unloaded"]),
+            "mcps_loaded": sorted(row["mcps_loaded"]),
+            "mcps_unloaded": sorted(row["mcps_unloaded"]),
+            "score_updates": row["score_updates"],
+            "lifecycle_transitions": row["lifecycle_transitions"],
+        })
+    summaries.sort(key=lambda r: r.get("last_seen") or "", reverse=True)
+    return summaries
+
+
+def session_detail(
+    session_id: str,
+    audit: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "audit_entries": [
+            record for record in audit if record.get("session_id") == session_id
+        ],
+        "load_events": [
+            event for event in events if event.get("session_id") == session_id
+        ],
+    }
 
 
 def escalation_key(event: dict[str, Any]) -> str:
