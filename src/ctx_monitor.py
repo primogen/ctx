@@ -104,6 +104,7 @@ from ctx.monitor.server import make_monitor_server as _make_server
 from ctx.monitor.services import cache as _cache_service
 from ctx.monitor.services import config as _config_service
 from ctx.monitor.services import graph as _graph_service
+from ctx.monitor.services import harness as _harness_service
 from ctx.monitor.services import kpi as _kpi_service
 from ctx.monitor.services import runtime as _runtime_service
 from ctx.monitor.services import sidecars as _sidecar_service
@@ -1785,63 +1786,15 @@ def _render_manage(mutations_enabled: bool | None = None) -> str:
 
 
 def _harness_wizard_entries(limit: int = 24) -> list[dict[str, Any]]:
-    """Return catalog harness pages for the manual dashboard wizard."""
-    harness_dir = _wiki_dir() / "entities" / "harnesses"
-    if not harness_dir.is_dir():
-        return []
-    rows: list[dict[str, Any]] = []
-    for path in sorted(harness_dir.glob("*.md"), key=lambda p: p.stem.lower()):
-        if len(rows) >= limit:
-            break
-        slug = path.stem
-        if not _is_safe_slug(slug):
-            continue
-        try:
-            head = path.read_text(encoding="utf-8", errors="replace")[:4096]
-        except OSError:
-            continue
-        meta, _body = _parse_frontmatter(head)
-        sidecar = _harness_wizard_sidecar(slug) or {}
-        score = float(sidecar.get("raw_score", sidecar.get("score", 0.0)) or 0.0)
-        tags = _frontmatter_tags(meta.get("tags", ""), limit=None)
-        description, _truncated = _truncate_text(
-            _frontmatter_text(meta.get("description", "")),
-            260,
-        )
-        repo_url = _frontmatter_text(
-            meta.get("repo_url")
-            or meta.get("github_url")
-            or meta.get("homepage_url")
-            or ""
-        )
-        rows.append({
-            "slug": slug,
-            "title": _frontmatter_text(meta.get("title") or meta.get("name") or slug),
-            "description": description,
-            "tags": tags[:12],
-            "score": score,
-            "grade": str(sidecar.get("grade") or ""),
-            "repo_url": repo_url,
-        })
-    return sorted(rows, key=lambda row: (-float(row["score"]), str(row["slug"])))
+    return _harness_service.harness_wizard_entries(
+        _wiki_dir(),
+        _sidecar_dir(),
+        limit=limit,
+    )
 
 
 def _harness_wizard_sidecar(slug: str) -> dict[str, Any] | None:
-    """Load harness sidecar candidates without scanning every sidecar file."""
-    if not _is_safe_slug(slug):
-        return None
-    for path in (
-        _sidecar_dir() / f"{slug}.json",
-        _sidecar_dir() / f"{slug}-harness.json",
-    ):
-        if not path.exists():
-            continue
-        sidecar = _read_sidecar_file(path)
-        if sidecar is None:
-            continue
-        if sidecar.get("slug") == slug and _sidecar_entity_type(sidecar) == "harness":
-            return sidecar
-    return None
+    return _harness_service.harness_wizard_sidecar(_sidecar_dir(), slug)
 
 
 def _render_harness_wizard() -> str:

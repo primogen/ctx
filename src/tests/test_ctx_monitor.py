@@ -36,6 +36,7 @@ from ctx.monitor.api import readonly as readonly_api
 from ctx.monitor import routes as monitor_routes
 from ctx.monitor.services import config as config_service
 from ctx.monitor.services import graph as graph_service
+from ctx.monitor.services import harness as harness_service
 from ctx.monitor.services import kpi as kpi_service
 from ctx.monitor.services import runtime as runtime_service
 from ctx.monitor.services import sidecars as sidecar_service
@@ -5423,9 +5424,14 @@ def test_harness_wizard_entries_do_not_scan_full_sidecar_tree(
     )
 
     entries = cm._harness_wizard_entries()
+    direct_entries = harness_service.harness_wizard_entries(
+        fake_claude / "skill-wiki",
+        fake_claude / "skill-quality",
+    )
 
     assert entries[0]["slug"] == "langgraph"
     assert entries[0]["grade"] == "A"
+    assert entries == direct_entries
 
 
 def test_save_config_updates_casts_values_and_blank_removes_override(
