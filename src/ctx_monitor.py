@@ -112,7 +112,6 @@ from ctx.monitor.services import status as _status_service
 from ctx.monitor.services import wiki as _wiki_service
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import safe_atomic_write_text as _safe_atomic_write_text
-from ctx.utils._safe_name import is_safe_source_name
 
 
 _MONITOR_TOKEN = ""
@@ -141,6 +140,13 @@ def _state_path(factory: Callable[[Path | None], Path]) -> Callable[[], Path]:
         return factory(_claude_dir())
 
     return path
+
+
+def _wiki_call(factory: Callable[..., Any]) -> Callable[..., Any]:
+    def call(*args: Any, **kwargs: Any) -> Any:
+        return factory(_wiki_dir(), *args, **kwargs)
+
+    return call
 
 
 _claude_dir = _monitor_state.claude_dir
@@ -178,8 +184,7 @@ def _dashboard_graph_pack_cache_key(packs_dir: Path) -> tuple[tuple[str, float, 
     return _graph_service.dashboard_graph_pack_cache_key(packs_dir)
 
 
-def _mcp_shard(slug: str) -> str:
-    return core_entity_types.mcp_shard(slug)
+_mcp_shard = core_entity_types.mcp_shard
 
 
 _DASHBOARD_ENTITY_SOURCES: tuple[tuple[str, str, bool], ...] = core_entity_types.entity_source_specs()
@@ -189,11 +194,8 @@ _DASHBOARD_ENTITY_TYPES: tuple[str, ...] = tuple(
 _DEFAULT_GRAPH_FOCUS_SLUG = "github"
 
 
-def _normalize_dashboard_entity_type(raw: object) -> str | None:
-    return core_entity_types.normalize_entity_type(
-        raw,
-        allowed=_DASHBOARD_ENTITY_TYPES,
-    )
+_normalize_dashboard_entity_type = _wiki_service.normalize_entity_type
+_is_safe_slug = _wiki_service.is_safe_slug
 
 
 def _audit_entity_type(row: dict) -> str | None:
@@ -213,42 +215,12 @@ def _audit_entity_type(row: dict) -> str | None:
     return _normalize_dashboard_entity_type(prefix)
 
 
-def _wiki_entity_path(slug: str, entity_type: str | None = None) -> Path | None:
-    """Resolve a slug to its wiki entity page.
-
-    Wiki layout: ``entities/skills/<slug>.md``, ``entities/agents/<slug>.md``,
-    ``entities/harnesses/<slug>.md``, or sharded
-    ``entities/mcp-servers/<first-char>/<slug>.md``. Returns the first match
-    unless ``entity_type`` disambiguates duplicate slugs.
-    """
-    return _wiki_service.entity_path(_wiki_dir(), slug, entity_type)
-
-
-def _wiki_entity_target_path(slug: str, entity_type: str) -> Path:
-    """Return the canonical wiki entity path for a new/updated entity."""
-    return _wiki_service.entity_target_path(_wiki_dir(), slug, entity_type)
-
-
-def _iter_wiki_entity_paths(
-    entity_type: str | None = None,
-) -> list[tuple[str, str, Path]]:
-    return _wiki_service.iter_entity_paths(_wiki_dir(), entity_type)
-
-
-def _wiki_entity_detail(slug: str, entity_type: str | None = None) -> dict[str, Any] | None:
-    return _wiki_service.entity_detail(_wiki_dir(), slug, entity_type)
-
-
-def _wiki_pack_entity_from_relpath(relpath: str) -> tuple[str, str] | None:
-    return _wiki_service.pack_entity_from_relpath(relpath)
-
-
-def _read_wiki_entity_text(
-    slug: str,
-    entity_type: str | None,
-    path: Path,
-) -> str | None:
-    return _wiki_service.read_entity_text(_wiki_dir(), slug, entity_type, path)
+_wiki_entity_path = _wiki_call(_wiki_service.entity_path)
+_wiki_entity_target_path = _wiki_call(_wiki_service.entity_target_path)
+_iter_wiki_entity_paths = _wiki_call(_wiki_service.iter_entity_paths)
+_wiki_entity_detail = _wiki_call(_wiki_service.entity_detail)
+_wiki_pack_entity_from_relpath = _wiki_service.pack_entity_from_relpath
+_read_wiki_entity_text = _wiki_call(_wiki_service.read_entity_text)
 
 
 def _search_wiki_entities(
@@ -447,19 +419,8 @@ def _strip_duplicate_wiki_heading(markdown_text: str, slug: str) -> str:
     return "\n".join(lines)
 
 
-def _entity_wiki_href(slug: str, entity_type: str | None = None) -> str:
-    suffix = f"?type={quote(entity_type)}" if entity_type in _DASHBOARD_ENTITY_TYPES else ""
-    return f"/wiki/{quote(slug)}{suffix}"
-
-
-def _graph_type_from_node_id(node_id: str, fallback: str = "skill") -> str:
-    prefix = node_id.split(":", 1)[0] if ":" in node_id else ""
-    return {
-        "skill": "skill",
-        "agent": "agent",
-        "mcp-server": "mcp-server",
-        "harness": "harness",
-    }.get(prefix, fallback)
+_entity_wiki_href = _wiki_service.entity_wiki_href
+_graph_type_from_node_id = _wiki_service.graph_type_from_node_id
 
 
 def _subgraph_sidecar(slug: str, entity_type: str) -> dict[str, Any] | None:
@@ -1554,10 +1515,6 @@ def _route_dispatch_deps() -> _monitor_app.RouteDispatchDeps:
         readonly_api_deps=_readonly_api_deps,
         mutation_api_deps=_mutation_api_deps,
     )
-
-
-def _is_safe_slug(slug: str) -> bool:
-    return is_safe_source_name(slug)
 
 
 def _perform_load(
