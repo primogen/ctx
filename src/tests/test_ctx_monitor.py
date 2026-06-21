@@ -22,6 +22,7 @@ import ctx_monitor as cm
 import ctx_init as ci
 from ctx import dashboard_entities
 from ctx import dashboard_docs
+from ctx.monitor.pages import config as config_page
 from ctx.monitor.pages import home as home_page
 from ctx.monitor.pages import loaded as loaded_page
 from ctx.monitor import routes as monitor_routes
@@ -4418,6 +4419,57 @@ def test_render_config_page_shows_required_defaults_and_examples(
     assert "Default: <code>180</code>" in html_out
     assert "Example:" in html_out
     assert "id='config-form'" in html_out
+
+
+def test_config_page_module_renders_controls_and_overrides() -> None:
+    remove = object()
+
+    def get_value(raw: dict[str, object], path: str, default: object = None) -> object:
+        current: object = raw
+        for part in path.split("."):
+            if not isinstance(current, dict) or part not in current:
+                return default
+            current = current[part]
+        return current
+
+    html_out = config_page.render_config(
+        payload={
+            "defaults": {"resolver": {"recommendation_top_k": 5}, "intake": {"enabled": True}},
+            "user": {"resolver": {"recommendation_top_k": 3}},
+            "effective": {"resolver": {"recommendation_top_k": 3}, "intake": {"enabled": True}},
+            "path": "C:/tmp/skill-system-config.json",
+        },
+        specs=(
+            {
+                "group": "Recommendation",
+                "path": "resolver.recommendation_top_k",
+                "type": "int",
+                "required": True,
+                "label": "Max mixed recommendations",
+                "help": "Caps recommendations.",
+                "example": 5,
+            },
+            {
+                "group": "Intake",
+                "path": "intake.enabled",
+                "type": "bool",
+                "label": "Intake quality gate",
+                "help": "Runs quality checks.",
+                "example": True,
+            },
+        ),
+        monitor_token="tok",
+        layout=lambda _title, body: body,
+        config_value=get_value,
+        config_remove=remove,
+    )
+
+    assert "<h1>Config</h1>" in html_out
+    assert "resolver.recommendation_top_k" in html_out
+    assert "data-original-value='3'" in html_out
+    assert "data-config-clear='resolver.recommendation_top_k'" in html_out
+    assert "intake.enabled" in html_out
+    assert "X-CTX-Monitor-Token" in html_out
 
 
 def test_render_harness_wizard_guides_model_choice_and_real_commands(
