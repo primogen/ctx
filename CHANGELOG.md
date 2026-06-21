@@ -7,6 +7,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.17] - 2026-06-22
+
+### Changed
+
+- Split more of `ctx-monitor` into focused modules: graph artifact/index
+  helpers, wiki entity/Markdown renderers, and the graph page client script.
+- Kept the flat `ctx.monitor.compat` layer as the tested backcompat surface
+  while normalizing its source encoding for standard AST tooling.
+
 ## [1.0.16] - 2026-06-20
 
 ### Fixed
@@ -1690,6 +1699,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.17]: https://github.com/stevesolun/ctx/releases/tag/v1.0.17
 [1.0.16]: https://github.com/stevesolun/ctx/releases/tag/v1.0.16
 [1.0.15]: https://github.com/stevesolun/ctx/releases/tag/v1.0.15
 [1.0.14]: https://github.com/stevesolun/ctx/releases/tag/v1.0.14
