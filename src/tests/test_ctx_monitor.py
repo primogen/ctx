@@ -4084,6 +4084,42 @@ def test_render_wiki_index_lists_entities(fake_claude: Path) -> None:
     assert "href='/wiki/code-reviewer?type=agent'" in html_out
 
 
+def test_render_wiki_index_wrapper_matches_extracted_orchestration(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skills_dir = fake_claude / "skill-wiki" / "entities" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "python-patterns.md").write_text(
+        "---\nname: python-patterns\ntype: skill\n"
+        "description: Idiomatic Python patterns\ntags: [python, patterns]\n"
+        "---\n# body\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cm, "_wiki_render_cache_key", lambda _type, _query: None)
+
+    wrapper_html = cm._render_wiki_index(query="python")
+    direct_html = wiki_page.render_wiki_index(
+        query="python",
+        normalize_dashboard_entity_type=cm._normalize_dashboard_entity_type,
+        wiki_render_cache_key=cm._wiki_render_cache_key,
+        read_memory_cache=cm._wiki_render_memory_cache_get,
+        write_memory_cache=cm._wiki_render_memory_cache_set,
+        disk_cache_token=cm._cache_service.disk_cache_token,
+        read_html_disk_cache=cm._cache_service.read_html_disk_cache,
+        write_html_disk_cache=cm._cache_service.write_html_disk_cache,
+        wiki_render_disk_cache_path=cm._wiki_render_disk_cache_path,
+        wiki_index_entries=cm._wiki_index_entries,
+        wiki_stats=cm._wiki_stats,
+        load_sidecar=cm._load_sidecar,
+        dashboard_entity_types=cm._DASHBOARD_ENTITY_TYPES,
+        layout=cm._layout,
+    )
+
+    assert wrapper_html == direct_html
+    assert "python-patterns" in wrapper_html
+
+
 def test_wiki_index_entries_use_dashboard_index_without_markdown_pages(
     fake_claude: Path,
     monkeypatch: pytest.MonkeyPatch,

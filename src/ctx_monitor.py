@@ -2050,73 +2050,36 @@ def _wiki_render_disk_cache_path() -> Path:
     return _wiki_service.wiki_render_disk_cache_path(_claude_dir())
 
 
-def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
-    """Card grid of every wiki entity — search + type filter + sidecar grades."""
-    selected_type = _normalize_dashboard_entity_type(entity_type) if entity_type else None
-    if entity_type is not None and selected_type is None:
-        return _layout(
-            "Wiki",
-            f"<div class='error'>Unsupported entity type: {html.escape(entity_type)}</div>",
-        )
-    initial_query = query.strip()
-    cache_key = _wiki_render_cache_key(selected_type, initial_query)
+def _wiki_render_memory_cache_get(cache_key: tuple[Any, ...]) -> str | None:
+    if _WIKI_RENDER_CACHE_KEY == cache_key and _WIKI_RENDER_CACHE_VALUE is not None:
+        return _WIKI_RENDER_CACHE_VALUE
+    return None
+
+
+def _wiki_render_memory_cache_set(cache_key: tuple[Any, ...], html_out: str) -> None:
     global _WIKI_RENDER_CACHE_KEY, _WIKI_RENDER_CACHE_VALUE
-    if cache_key is not None:
-        if _WIKI_RENDER_CACHE_KEY == cache_key and _WIKI_RENDER_CACHE_VALUE is not None:
-            return _WIKI_RENDER_CACHE_VALUE
-        cache_token = _cache_service.disk_cache_token(cache_key)
-        cached = _cache_service.read_html_disk_cache(
-            _wiki_render_disk_cache_path(),
-            cache_token,
-        )
-        if cached is not None:
-            _WIKI_RENDER_CACHE_KEY = cache_key
-            _WIKI_RENDER_CACHE_VALUE = cached
-            return cached
-    else:
-        cache_token = ""
-    entries = _wiki_index_entries()
-    wstats = _wiki_stats()
-    total_available = int(wstats.get("total") or len(entries))
-    # Join with grade pills where a sidecar exists.
-    grade_by_key: dict[tuple[str, str], str] = {}
-    for entry in entries:
-        slug = str(entry["slug"])
-        row_type = str(entry["type"])
-        grade = str(entry.get("grade") or "")
-        if grade:
-            grade_by_key[(slug, row_type)] = grade
-            continue
-        sidecar = _load_sidecar(slug, entity_type=row_type)
-        if sidecar:
-            grade_by_key[(slug, row_type)] = str(sidecar.get("grade") or "")
+    _WIKI_RENDER_CACHE_KEY = cache_key
+    _WIKI_RENDER_CACHE_VALUE = html_out
 
-    type_counts = {
-        "skill": int(wstats.get("skills") or 0),
-        "agent": int(wstats.get("agents") or 0),
-        "mcp-server": int(wstats.get("mcps") or 0),
-        "harness": int(wstats.get("harnesses") or 0),
-    }
 
-    html_out = _wiki_page.render_wiki_index_page(
-        entries=entries,
-        selected_type=selected_type,
-        initial_query=initial_query,
-        total_available=total_available,
-        type_counts=type_counts,
-        grade_by_key=grade_by_key,
+def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
+    return _wiki_page.render_wiki_index(
+        entity_type,
+        query,
+        normalize_dashboard_entity_type=_normalize_dashboard_entity_type,
+        wiki_render_cache_key=_wiki_render_cache_key,
+        read_memory_cache=_wiki_render_memory_cache_get,
+        write_memory_cache=_wiki_render_memory_cache_set,
+        disk_cache_token=_cache_service.disk_cache_token,
+        read_html_disk_cache=_cache_service.read_html_disk_cache,
+        write_html_disk_cache=_cache_service.write_html_disk_cache,
+        wiki_render_disk_cache_path=_wiki_render_disk_cache_path,
+        wiki_index_entries=_wiki_index_entries,
+        wiki_stats=_wiki_stats,
+        load_sidecar=_load_sidecar,
         dashboard_entity_types=_DASHBOARD_ENTITY_TYPES,
         layout=_layout,
     )
-    if cache_key is not None:
-        _cache_service.write_html_disk_cache(
-            _wiki_render_disk_cache_path(),
-            cache_token,
-            html_out,
-        )
-        _WIKI_RENDER_CACHE_KEY = cache_key
-        _WIKI_RENDER_CACHE_VALUE = html_out
-    return html_out
 
 
 

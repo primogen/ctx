@@ -608,6 +608,82 @@ def render_wiki_index_page(
     return layout("Wiki", body)
 
 
+def render_wiki_index(
+    entity_type: str | None = None,
+    query: str = "",
+    *,
+    normalize_dashboard_entity_type: Callable[[object], str | None],
+    wiki_render_cache_key: Callable[[str | None, str], tuple[Any, ...] | None],
+    read_memory_cache: Callable[[tuple[Any, ...]], str | None],
+    write_memory_cache: Callable[[tuple[Any, ...], str], None],
+    disk_cache_token: Callable[[tuple[Any, ...]], str],
+    read_html_disk_cache: Callable[[Any, str], str | None],
+    write_html_disk_cache: Callable[[Any, str, str], None],
+    wiki_render_disk_cache_path: Callable[[], Any],
+    wiki_index_entries: Callable[[], list[dict]],
+    wiki_stats: Callable[[], dict[str, Any]],
+    load_sidecar: Callable[..., dict | None],
+    dashboard_entity_types: tuple[str, ...],
+    layout: Callable[[str, str], str],
+) -> str:
+    """Render the searchable wiki index with dashboard cache integration."""
+    selected_type = normalize_dashboard_entity_type(entity_type) if entity_type else None
+    if entity_type is not None and selected_type is None:
+        return layout(
+            "Wiki",
+            f"<div class='error'>Unsupported entity type: {html.escape(entity_type)}</div>",
+        )
+    initial_query = query.strip()
+    cache_key = wiki_render_cache_key(selected_type, initial_query)
+    if cache_key is not None:
+        cached = read_memory_cache(cache_key)
+        if cached is not None:
+            return cached
+        cache_token = disk_cache_token(cache_key)
+        cached = read_html_disk_cache(wiki_render_disk_cache_path(), cache_token)
+        if cached is not None:
+            write_memory_cache(cache_key, cached)
+            return cached
+    else:
+        cache_token = ""
+
+    entries = wiki_index_entries()
+    wstats = wiki_stats()
+    total_available = int(wstats.get("total") or len(entries))
+    grade_by_key: dict[tuple[str, str], str] = {}
+    for entry in entries:
+        slug = str(entry["slug"])
+        row_type = str(entry["type"])
+        grade = str(entry.get("grade") or "")
+        if grade:
+            grade_by_key[(slug, row_type)] = grade
+            continue
+        sidecar = load_sidecar(slug, entity_type=row_type)
+        if sidecar:
+            grade_by_key[(slug, row_type)] = str(sidecar.get("grade") or "")
+
+    type_counts = {
+        "skill": int(wstats.get("skills") or 0),
+        "agent": int(wstats.get("agents") or 0),
+        "mcp-server": int(wstats.get("mcps") or 0),
+        "harness": int(wstats.get("harnesses") or 0),
+    }
+    html_out = render_wiki_index_page(
+        entries=entries,
+        selected_type=selected_type,
+        initial_query=initial_query,
+        total_available=total_available,
+        type_counts=type_counts,
+        grade_by_key=grade_by_key,
+        dashboard_entity_types=dashboard_entity_types,
+        layout=layout,
+    )
+    if cache_key is not None:
+        write_html_disk_cache(wiki_render_disk_cache_path(), cache_token, html_out)
+        write_memory_cache(cache_key, html_out)
+    return html_out
+
+
 def runtime_graph_center_data(graph: dict) -> dict[str, Any] | None:
     center = str(graph.get("center") or "")
     if not center:
