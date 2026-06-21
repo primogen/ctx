@@ -22,6 +22,7 @@ import ctx_monitor as cm
 import ctx_init as ci
 from ctx import dashboard_entities
 from ctx import dashboard_docs
+from ctx.monitor.pages import loaded as loaded_page
 from ctx.monitor import routes as monitor_routes
 from ctx.core.wiki import wiki_queue
 
@@ -615,6 +616,25 @@ def test_render_loaded_shows_harness_install_without_unload_button(fake_claude: 
     assert "langgraph" in html
     assert "ctx-harness-install langgraph --uninstall --dry-run" in html
     assert "data-slug='langgraph'" not in html
+
+
+def test_loaded_page_module_renders_read_only_state() -> None:
+    html = loaded_page.render_loaded(
+        {
+            "load": [{"skill": "reviewer", "entity_type": "agent", "source": "manual"}],
+            "unload": [{"skill": "old-skill", "entity_type": "skill", "reason": "stale"}],
+        },
+        mutations_enabled=False,
+        monitor_token="secret-token",
+        layout=lambda _title, body: body,
+    )
+
+    assert "Read-only mode" in html
+    assert "reviewer" in html
+    assert "old-skill" in html
+    assert "btn-unload" in html
+    assert " disabled" in html
+    assert "secret-token" not in html
 
 
 def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
