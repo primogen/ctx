@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -263,6 +264,112 @@ def graph_type_from_node_id(node_id: str, fallback: str = "skill") -> str:
     }.get(prefix, fallback)
 
 
+def normalize_dashboard_entity_type(raw: object) -> str | None:
+    return core_entity_types.normalize_entity_type(
+        raw,
+        allowed=_DASHBOARD_ENTITY_TYPES,
+    )
+
+
+def unit_score(value: Any) -> float | None:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(score):
+        return None
+    return max(0.0, min(1.0, score))
+
+
+def dashboard_score_payload(field: str, value: Any) -> dict[str, float | None]:
+    score = unit_score(value)
+    payload: dict[str, float | None] = {field: score}
+    try:
+        raw = float(value)
+    except (TypeError, ValueError):
+        return payload
+    if math.isfinite(raw) and score is not None and raw != score:
+        payload[f"{field}_raw"] = raw
+    return payload
+
+
+def node_size_from_scores(
+    *,
+    quality: Any,
+    usage: Any,
+    degree: int,
+    max_degree: int,
+) -> dict[str, Any]:
+    quality_value = 0.35 if quality is None else float(quality)
+    usage_value = 0.0 if usage is None else float(usage)
+    popularity = (
+        math.log1p(max(0, degree)) / math.log1p(max(1, max_degree))
+        if max_degree > 0
+        else 0.0
+    )
+    signal = max(
+        0.0,
+        min(1.0, 0.45 * quality_value + 0.35 * usage_value + 0.20 * popularity),
+    )
+    return {
+        "node_size": round(8.0 + signal * 16.0, 2),
+        "size_signal": round(signal, 4),
+        "size_reason": (
+            f"quality {quality_value:.3f}; usage {usage_value:.3f}; "
+            f"popularity {popularity:.3f}"
+        ),
+    }
+
+
+def graph_node_size(
+    nid: str,
+    data: dict[str, Any],
+    *,
+    entity_type: str,
+    degree: int,
+    max_degree: int,
+    sidecar_score_inputs: Callable[[str, str], tuple[float | None, float | None]],
+) -> dict[str, Any]:
+    """Return bounded visual size metadata for a graph node."""
+    slug = graph_slug_from_node_id(nid)
+    quality = unit_score(data.get("quality_score"))
+    usage = unit_score(data.get("usage_score"))
+    if quality is None or usage is None:
+        sidecar_quality, sidecar_usage = sidecar_score_inputs(slug, entity_type)
+        quality = quality if quality is not None else sidecar_quality
+        usage = usage if usage is not None else sidecar_usage
+    return node_size_from_scores(
+        quality=quality,
+        usage=usage,
+        degree=degree,
+        max_degree=max_degree,
+    )
+
+
+def index_node_size(
+    *,
+    slug: str,
+    entity_type: str,
+    quality: Any,
+    usage: Any,
+    degree: int,
+    max_degree: int,
+    sidecar_score_inputs: Callable[[str, str], tuple[float | None, float | None]],
+) -> dict[str, Any]:
+    quality_value = unit_score(quality)
+    usage_value = unit_score(usage)
+    if quality_value is None or usage_value is None:
+        sidecar_quality, sidecar_usage = sidecar_score_inputs(slug, entity_type)
+        quality_value = quality_value if quality_value is not None else sidecar_quality
+        usage_value = usage_value if usage_value is not None else sidecar_usage
+    return node_size_from_scores(
+        quality=quality_value,
+        usage=usage_value,
+        degree=degree,
+        max_degree=max_degree,
+    )
+
+
 def resolve_index_center(
     conn: sqlite3.Connection,
     raw_query: str,
@@ -490,6 +597,39 @@ def dashboard_index_neighborhood(
         }, source="dashboard-index")
     except (OSError, sqlite3.Error, json.JSONDecodeError, zlib.error, KeyError, TypeError):
         return None
+
+
+def dashboard_index_neighborhood_from_path(
+    index_path: Path | None,
+    slug: str,
+    *,
+    hops: int,
+    limit: int,
+    entity_type: str | None,
+    sidecar_score_inputs: Callable[[str, str], tuple[float | None, float | None]],
+) -> dict[str, Any] | None:
+    if index_path is None or not index_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    conn.row_factory = sqlite3.Row
+    try:
+        return dashboard_index_neighborhood(
+            conn,
+            slug,
+            hops=hops,
+            limit=limit,
+            entity_type=entity_type,
+            node_size=lambda **kwargs: index_node_size(
+                **kwargs,
+                sidecar_score_inputs=sidecar_score_inputs,
+            ),
+            score_payload=dashboard_score_payload,
+        )
+    finally:
+        conn.close()
 
 
 def graph_store_neighborhood(
@@ -1133,6 +1273,19 @@ def dashboard_uncovered_runtime_overlay_nodes(
         return None
 
 
+def dashboard_uncovered_runtime_overlay_nodes_for_wiki(
+    index_path: Path,
+    wiki_dir: Path,
+) -> set[str] | None:
+    overlay = wiki_dir / "graphify-out" / "entity-overlays.jsonl"
+    require_edges = not dashboard_overlay_matches_known_release(overlay)
+    return dashboard_uncovered_runtime_overlay_nodes(
+        index_path,
+        wiki_dir,
+        require_edges=require_edges,
+    )
+
+
 def dashboard_index_covers_runtime_overlays(
     index_path: Path,
     wiki_dir: Path,
@@ -1175,6 +1328,19 @@ def dashboard_index_covers_runtime_overlays(
         _OVERLAY_INDEX_COVERAGE_CACHE_KEY = cache_key
         _OVERLAY_INDEX_COVERAGE_CACHE_VALUE = coverage
     return coverage
+
+
+def dashboard_index_covers_runtime_overlays_for_wiki(
+    index_path: Path,
+    wiki_dir: Path,
+) -> bool:
+    overlay = wiki_dir / "graphify-out" / "entity-overlays.jsonl"
+    require_edges = not dashboard_overlay_matches_known_release(overlay)
+    return dashboard_index_covers_runtime_overlays(
+        index_path,
+        wiki_dir,
+        require_edges=require_edges,
+    )
 
 
 def dashboard_graph_index_archives(module_root: Path) -> list[Path]:
@@ -1342,3 +1508,111 @@ def load_dashboard_graph(
     _GRAPH_CACHE_KEY = cache_key
     _GRAPH_CACHE_VALUE = graph
     return graph
+
+
+def dashboard_graph_stats(
+    wiki_dir: Path,
+    *,
+    ensure_index: Callable[[], Path | None],
+    load_graph: Callable[[], Any],
+) -> dict[str, Any]:
+    """Top-line graph stats for dashboard home and API responses."""
+    report_stats = graph_report_stats(wiki_dir / "graphify-out" / "graph-report.md")
+    if report_stats is not None:
+        return report_stats
+
+    index_path = ensure_index()
+    if index_path is not None and index_path.is_file():
+        index_stats = dashboard_index_graph_stats(index_path)
+        if index_stats is not None:
+            return index_stats
+    try:
+        graph = load_graph()
+    except Exception:  # noqa: BLE001
+        return {"nodes": 0, "edges": 0, "available": False}
+    return {
+        "nodes": graph.number_of_nodes(),
+        "edges": graph.number_of_edges(),
+        "available": graph.number_of_nodes() > 0,
+    }
+
+
+def graph_neighborhood_for_monitor(
+    slug: str,
+    *,
+    hops: int,
+    limit: int,
+    entity_type: str | None,
+    wiki_dir: Path,
+    index_path: Callable[[], Path],
+    ensure_index: Callable[[], Path | None],
+    load_graph: Callable[[], Any],
+    sidecar_score_inputs: Callable[[str, str], tuple[float | None, float | None]],
+) -> dict[str, Any]:
+    """Resolve a dashboard graph neighborhood through the fastest valid reader."""
+
+    def _index_neighborhood(
+        current_slug: str,
+        current_hops: int,
+        current_limit: int,
+        current_type: str | None,
+    ) -> dict[str, Any] | None:
+        return dashboard_index_neighborhood_from_path(
+            ensure_index(),
+            current_slug,
+            hops=current_hops,
+            limit=current_limit,
+            entity_type=current_type,
+            sidecar_score_inputs=sidecar_score_inputs,
+        )
+
+    def _store_neighborhood(
+        current_slug: str,
+        current_hops: int,
+        current_limit: int,
+        current_type: str | None,
+    ) -> dict[str, Any] | None:
+        return graph_store_neighborhood(
+            wiki_dir / "graphify-out",
+            current_slug,
+            hops=current_hops,
+            limit=current_limit,
+            entity_type=current_type,
+            node_size=lambda *args, **kwargs: graph_node_size(
+                *args,
+                **kwargs,
+                sidecar_score_inputs=sidecar_score_inputs,
+            ),
+            score_payload=dashboard_score_payload,
+        )
+
+    return graph_neighborhood(
+        slug,
+        hops=hops,
+        limit=limit,
+        entity_type=entity_type,
+        deps=GraphNeighborhoodDeps(
+            normalize_entity_type=normalize_dashboard_entity_type,
+            store_neighborhood=_store_neighborhood,
+            index_neighborhood=_index_neighborhood,
+            index_path=index_path,
+            has_runtime_overlays=lambda: dashboard_graph_has_runtime_overlays(wiki_dir),
+            index_covers_runtime_overlays=lambda path: (
+                dashboard_index_covers_runtime_overlays_for_wiki(path, wiki_dir)
+            ),
+            index_matches_manifest=lambda path: dashboard_index_matches_manifest(
+                path,
+                wiki_dir,
+            ),
+            uncovered_runtime_overlay_nodes=lambda path: (
+                dashboard_uncovered_runtime_overlay_nodes_for_wiki(path, wiki_dir)
+            ),
+            load_graph=load_graph,
+            node_size=lambda *args, **kwargs: graph_node_size(
+                *args,
+                **kwargs,
+                sidecar_score_inputs=sidecar_score_inputs,
+            ),
+            score_payload=dashboard_score_payload,
+        ),
+    )
