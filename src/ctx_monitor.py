@@ -101,6 +101,7 @@ from ctx.monitor.server import MonitorHandlerDeps as _MonitorHandlerDeps
 from ctx.monitor.server import MonitorServer as _MonitorServer
 from ctx.monitor.server import build_monitor_handler as _build_monitor_handler
 from ctx.monitor.server import make_monitor_server as _make_server
+from ctx.monitor.services import audit as _audit_service
 from ctx.monitor.services import cache as _cache_service
 from ctx.monitor.services import config as _config_service
 from ctx.monitor.services import graph as _graph_service
@@ -645,42 +646,12 @@ def _log_dashboard_entity_event(
     action: str,
     slug: str,
 ) -> None:
-    """Append a dashboard-visible audit row for a load/unload action."""
-    try:
-        from ctx_audit_log import log
-        if entity_type == "skill":
-            log(
-                f"skill.{action}",
-                subject_type="skill",
-                subject=slug,
-                actor="user",
-                meta={"via": "ctx-monitor"},
-                path=_audit_log_path(),
-            )
-        elif entity_type == "agent":
-            log(
-                f"agent.{action}",
-                subject_type="agent",
-                subject=slug,
-                actor="user",
-                meta={"via": "ctx-monitor"},
-                path=_audit_log_path(),
-            )
-        elif entity_type == "mcp-server":
-            log(
-                "toolbox.triggered",
-                subject_type="toolbox",
-                subject=slug,
-                actor="user",
-                meta={
-                    "via": "ctx-monitor",
-                    "entity_type": "mcp-server",
-                    "action": action,
-                },
-                path=_audit_log_path(),
-            )
-    except Exception:  # noqa: BLE001
-        pass
+    _audit_service.log_dashboard_entity_event(
+        _audit_log_path(),
+        entity_type,
+        action,
+        slug,
+    )
 
 
 def _read_manifest() -> dict:
