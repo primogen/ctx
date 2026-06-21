@@ -95,6 +95,7 @@ from ctx.monitor.pages import harness as _harness_page
 from ctx.monitor.pages import home as _home_page
 from ctx.monitor.pages import loaded as _loaded_page
 from ctx.monitor.pages import ops as _ops_page
+from ctx.monitor.pages import skills as _skills_page
 from ctx.monitor.server import MonitorServer as _MonitorServer
 from ctx.monitor.server import make_monitor_server as _make_server
 from ctx.monitor.server import server_shutdown_requested as _server_shutdown_requested
@@ -3797,133 +3798,13 @@ def _render_session_detail(session_id: str) -> str:
 
 
 def _render_skills(qs: dict[str, str] | None = None) -> str:
-    payload = _sidecar_page_payload(qs)
-    sidecars = payload["items"]
-
-    cards = "".join(
-        f"<div class='skill-card' data-slug='{html.escape(s.get('slug', ''))}' "
-        f"data-grade='{html.escape(s.get('grade', 'F'))}' "
-        f"data-type='{html.escape(_sidecar_entity_type(s))}' "
-        f"data-floor='{html.escape(s.get('hard_floor') or '')}' "
-        f"style='border:1px solid #e5e7eb; border-radius:6px; padding:0.7rem 0.9rem; "
-        f"display:flex; flex-direction:column; gap:0.3rem;'>"
-        f"<div style='display:flex; justify-content:space-between; align-items:center;'>"
-        f"<code style='font-size:0.85rem;'>{html.escape(s.get('slug', ''))}</code>"
-        f"<span class='pill grade-{html.escape(s.get('grade', 'F'))}'>{html.escape(s.get('grade', 'F'))}</span>"
-        f"</div>"
-        f"<div class='muted' style='font-size:0.78rem;'>"
-        f"score {s.get('raw_score', 0.0):.3f} · {html.escape(s.get('type', s.get('subject_type', 'skill')))}"
-        f"{' · ' + html.escape(s.get('hard_floor','')) if s.get('hard_floor') else ''}"
-        f"</div>"
-        f"<div style='display:flex; gap:0.4rem; margin-top:0.2rem;'>"
-        f"<a href='/skill/{html.escape(s.get('slug', ''))}?type={html.escape(_sidecar_entity_type(s))}' style='font-size:0.78rem;'>sidecar</a>"
-        f"<a href='/wiki/{html.escape(s.get('slug', ''))}?type={html.escape(_sidecar_entity_type(s))}' style='font-size:0.78rem;'>wiki</a>"
-        f"<a href='/graph?slug={html.escape(s.get('slug', ''))}&amp;type={html.escape(_sidecar_entity_type(s))}' style='font-size:0.78rem;'>graph</a>"
-        f"</div>"
-        f"</div>"
-        for s in sidecars
+    return _skills_page.render_skills(
+        payload=_sidecar_page_payload(qs),
+        query_params=qs,
+        entity_types=_DASHBOARD_ENTITY_TYPES,
+        layout=_layout,
+        sidecar_entity_type=_sidecar_entity_type,
     )
-
-    start_index = ((payload["page"] - 1) * payload["limit"]) + 1 if payload["total"] else 0
-    end_index = min(payload["page"] * payload["limit"], payload["total"])
-    summary = (
-        f"Showing {start_index}-{end_index} of {payload['total']} matching sidecars"
-        if payload["filtered"]
-        else f"Showing {start_index}-{end_index} of {payload['catalog_total']} sidecars"
-    )
-    query_base = {
-        key: value
-        for key, value in (qs or {}).items()
-        if key not in {"page"}
-    }
-
-    def page_href(page: int) -> str:
-        params = {
-            **query_base,
-            "page": str(max(1, page)),
-            "limit": str(payload["limit"]),
-        }
-        query = "&".join(
-            f"{quote(str(key))}={quote(str(value))}"
-            for key, value in params.items()
-            if str(value).strip()
-        )
-        return "/skills" + (f"?{query}" if query else "")
-
-    prev_link = (
-        f"<a href='{html.escape(page_href(payload['page'] - 1))}'>previous</a>"
-        if payload["has_prev"]
-        else "<span class='muted'>previous</span>"
-    )
-    next_link = (
-        f"<a href='{html.escape(page_href(payload['page'] + 1))}'>next</a>"
-        if payload["has_next"]
-        else "<span class='muted'>next</span>"
-    )
-    pagination = (
-        "<div class='card' style='display:flex; justify-content:space-between; "
-        "align-items:center; gap:1rem;'>"
-        f"<span id='match-count' class='muted'>{html.escape(summary)} · page "
-        f"{payload['page']} of {payload['pages']}</span>"
-        f"<span>{prev_link} · {next_link}</span>"
-        "</div>"
-    )
-    selected_type = ",".join(payload["types"])
-    selected_grade = ",".join(payload["grades"])
-    type_options = "<option value=''>all types</option>" + "".join(
-        f"<option value='{html.escape(t)}'"
-        f"{' selected' if selected_type == t else ''}>{html.escape(t)}</option>"
-        for t in _DASHBOARD_ENTITY_TYPES
-    )
-    grade_options = "<option value=''>all grades</option>" + "".join(
-        f"<option value='{g}'{' selected' if selected_grade == g else ''}>{g}</option>"
-        for g in ("A", "B", "C", "D", "F")
-    )
-    limit_options = "".join(
-        f"<option value='{n}'{' selected' if payload['limit'] == n else ''}>{n}</option>"
-        for n in (50, 100, 200, 500)
-    )
-    hide_checked = " checked" if payload["hide_floor"] else ""
-
-    body = (
-        "<h1>Quality sidecars</h1>"
-        f"<p class='muted'>{payload['catalog_total']} sidecars · click any card to drill in.</p>"
-        + pagination
-        + "<div style='display:grid; grid-template-columns:220px 1fr; gap:1.25rem; align-items:start;'>"
-        # ── Left filter sidebar ──────────────────────────────────────
-        "<aside style='position:sticky; top:1rem;'>"
-        "<form class='card' id='skills-filter-form' method='get' action='/skills'>"
-        "<strong>Search</strong>"
-        f"<input type='text' id='skill-search' name='q' value='{html.escape(payload['q'])}' placeholder='filter by slug...' "
-        "style='width:100%; margin-top:0.4rem; padding:0.35rem 0.5rem; "
-        "border:1px solid #ccc; border-radius:4px;'>"
-        "<label style='display:block; margin-top:0.6rem; font-size:0.82rem;'>Type"
-        f"<select class='type-filter' name='type' style='width:100%; margin-top:0.25rem;'>{type_options}</select>"
-        "</label>"
-        "<label style='display:block; margin-top:0.6rem; font-size:0.82rem;'>Grade"
-        f"<select class='grade-filter' name='grade' style='width:100%; margin-top:0.25rem;'>{grade_options}</select>"
-        "</label>"
-        "<label style='display:block; margin-top:0.6rem; font-size:0.82rem;'>Limit"
-        f"<select name='limit' style='width:100%; margin-top:0.25rem;'>{limit_options}</select>"
-        "</label>"
-        "<label style='display:block; padding:0.55rem 0 0.35rem;'>"
-        f"<input type='checkbox' id='hide-floor' name='hide_floor' value='1'{hide_checked}> hide floored</label>"
-        "<button type='submit' style='width:100%;'>apply</button>"
-        "</form>"
-        "</aside>"
-        # ── Card grid ────────────────────────────────────────────────
-        "<div id='card-grid' style='display:grid; "
-        "grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:0.7rem;'>"
-        + cards
-        + "</div>"
-        "</div>"
-        "<script>\n"
-        "document.querySelectorAll('#skills-filter-form select').forEach(el => {\n"
-        "  el.addEventListener('change', () => el.form.submit());\n"
-        "});\n"
-        "</script>"
-    )
-    return _layout("Skills", body)
 
 
 def _select_options(
