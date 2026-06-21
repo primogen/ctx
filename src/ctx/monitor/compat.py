@@ -1,4 +1,4 @@
-﻿# mypy: disable-error-code=attr-defined
+# mypy: disable-error-code=attr-defined
 """Compatibility layer for the local ctx runtime and catalog dashboard.
 
 ``ctx-monitor serve [--port 8765]`` starts a zero-dependency threaded HTTP server
