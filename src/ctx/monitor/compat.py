@@ -1,5 +1,5 @@
 ﻿# mypy: disable-error-code=attr-defined
-"""ctx_monitor.py -- Local HTTP dashboard for ctx runtime and catalog activity.
+"""Compatibility layer for the local ctx runtime and catalog dashboard.
 
 ``ctx-monitor serve [--port 8765]`` starts a zero-dependency threaded HTTP server
 (stdlib http.server) that renders the audit log + skill-events.jsonl +
@@ -104,6 +104,7 @@ from ctx.monitor.services import config as _config_service
 from ctx.monitor.services import graph as _graph_service
 from ctx.monitor.services import harness as _harness_service
 from ctx.monitor.services import kpi as _kpi_service
+from ctx.monitor.services import lifecycle as _lifecycle_service
 from ctx.monitor.services import manifest as _manifest_service
 from ctx.monitor.services import runtime as _runtime_service
 from ctx.monitor.services import sidecars as _sidecar_service
@@ -314,13 +315,11 @@ def _entity_crud_deps() -> dashboard_entities.EntityCrudDeps:
 
 
 def _entity_runtime_deps() -> dashboard_entities.EntityRuntimeDeps:
-    return dashboard_entities.EntityRuntimeDeps(
-        is_safe_slug=_is_safe_slug,
-        normalize_entity_type=_normalize_dashboard_entity_type,
+    return _lifecycle_service.entity_runtime_deps(
         wiki_dir=_wiki_dir,
         claude_dir=_claude_dir,
-        log_dashboard_entity_event=_log_dashboard_entity_event,
-        remove_loaded_manifest_entry=_remove_loaded_manifest_entry,
+        audit_log_path=_audit_log_path,
+        manifest_path=_manifest_path,
     )
 
 
@@ -1532,20 +1531,26 @@ def _perform_load(
     command: str | None = None,
     json_config: str | None = None,
 ) -> tuple[bool, str]:
-    return dashboard_entities.perform_load(
+    return _lifecycle_service.perform_load(
         slug,
         entity_type,
         command=command,
         json_config=json_config,
-        deps=_entity_runtime_deps(),
+        wiki_dir=_wiki_dir,
+        claude_dir=_claude_dir,
+        audit_log_path=_audit_log_path,
+        manifest_path=_manifest_path,
     )
 
 
 def _perform_unload(slug: str, entity_type: str = "skill") -> tuple[bool, str]:
-    return dashboard_entities.perform_unload(
+    return _lifecycle_service.perform_unload(
         slug,
         entity_type,
-        deps=_entity_runtime_deps(),
+        wiki_dir=_wiki_dir,
+        claude_dir=_claude_dir,
+        audit_log_path=_audit_log_path,
+        manifest_path=_manifest_path,
     )
 
 

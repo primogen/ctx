@@ -27,13 +27,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import council_runner as cr  # noqa: E402
-import ctx_monitor as cm  # noqa: E402
 import harness_install  # noqa: E402
 import toolbox as tb  # noqa: E402
 import toolbox_verdict as tv  # noqa: E402
 from ctx import dashboard_docs  # noqa: E402
 from ctx.adapters.claude_code.install import install_utils  # noqa: E402
 from ctx.adapters.claude_code.install import mcp_install  # noqa: E402
+from ctx.monitor.services import lifecycle as monitor_lifecycle  # noqa: E402
 from ctx.utils._file_lock import file_lock  # noqa: E402
 
 
@@ -196,11 +196,16 @@ def test_dashboard_skill_load_requires_security_scan(
         calls.append(kwargs)
         return Result()
 
-    monkeypatch.setattr(cm, "_wiki_dir", lambda: tmp_path / "wiki")
-    monkeypatch.setattr(cm, "_claude_dir", lambda: tmp_path / ".claude")
     monkeypatch.setattr(skill_install, "install_skill", fake_install_skill)
 
-    ok, _msg = cm._perform_load("python-patterns", entity_type="skill")
+    ok, _msg = monitor_lifecycle.perform_load(
+        "python-patterns",
+        entity_type="skill",
+        wiki_dir=lambda: tmp_path / "wiki",
+        claude_dir=lambda: tmp_path / ".claude",
+        audit_log_path=lambda: tmp_path / ".claude" / "ctx-audit.jsonl",
+        manifest_path=lambda: tmp_path / ".claude" / "skill-manifest.json",
+    )
 
     assert ok is True
     assert calls

@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from ctx.monitor.services import lifecycle as monitor_lifecycle
+
 _SRC_ROOT = Path(__file__).resolve().parents[1]
 _MANIFEST_DASHBOARD_WORKER = r"""
 from __future__ import annotations
@@ -109,9 +111,6 @@ def test_dashboard_agent_unload_preserves_same_slug_skill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import ctx_monitor as cm
-    from ctx.adapters.claude_code.install import skill_unload
-
     class _AuditLog:
         @staticmethod
         def log_skill_event(*args: object, **kwargs: object) -> None:
@@ -131,12 +130,16 @@ def test_dashboard_agent_unload_preserves_same_slug_skill(
         }),
         encoding="utf-8",
     )
-    monkeypatch.setattr(cm, "_claude_dir", lambda: claude_dir)
-    monkeypatch.setattr(skill_unload, "CLAUDE_DIR", claude_dir)
-    monkeypatch.setattr(skill_unload, "MANIFEST_PATH", manifest_path)
     monkeypatch.setitem(sys.modules, "ctx_audit_log", _AuditLog)
 
-    ok, message = cm._perform_unload("debugger", entity_type="agent")
+    ok, message = monitor_lifecycle.perform_unload(
+        "debugger",
+        entity_type="agent",
+        wiki_dir=lambda: claude_dir / "skill-wiki",
+        claude_dir=lambda: claude_dir,
+        audit_log_path=lambda: claude_dir / "ctx-audit.jsonl",
+        manifest_path=lambda: manifest_path,
+    )
 
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert ok, message
