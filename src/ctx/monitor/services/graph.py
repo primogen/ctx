@@ -28,6 +28,35 @@ _DASHBOARD_ENTITY_TYPES: tuple[str, ...] = tuple(
 _GRAPH_REPORT_RE = re.compile(r"Nodes:\s*([\d,]+)\s*\|\s*Edges:\s*([\d,]+)")
 
 
+class GraphNeighborhoodDeps:
+    def __init__(
+        self,
+        *,
+        normalize_entity_type: Callable[[str | None], str | None],
+        store_neighborhood: Callable[[str, int, int, str | None], dict[str, Any] | None],
+        index_neighborhood: Callable[[str, int, int, str | None], dict[str, Any] | None],
+        index_path: Callable[[], Path],
+        has_runtime_overlays: Callable[[], bool],
+        index_covers_runtime_overlays: Callable[[Path], bool],
+        index_matches_manifest: Callable[[Path], bool],
+        uncovered_runtime_overlay_nodes: Callable[[Path], set[str] | None],
+        load_graph: Callable[[], Any],
+        node_size: Callable[..., dict[str, Any]],
+        score_payload: Callable[[str, Any], dict[str, float | None]],
+    ) -> None:
+        self.normalize_entity_type = normalize_entity_type
+        self.store_neighborhood = store_neighborhood
+        self.index_neighborhood = index_neighborhood
+        self.index_path = index_path
+        self.has_runtime_overlays = has_runtime_overlays
+        self.index_covers_runtime_overlays = index_covers_runtime_overlays
+        self.index_matches_manifest = index_matches_manifest
+        self.uncovered_runtime_overlay_nodes = uncovered_runtime_overlay_nodes
+        self.load_graph = load_graph
+        self.node_size = node_size
+        self.score_payload = score_payload
+
+
 def reset_caches() -> None:
     global _GRAPH_CACHE_KEY, _GRAPH_CACHE_VALUE
     global _OVERLAY_INDEX_COVERAGE_CACHE_KEY, _OVERLAY_INDEX_COVERAGE_CACHE_VALUE
@@ -508,6 +537,228 @@ def graph_store_neighborhood(
         node_size=node_size,
         score_payload=score_payload,
     )
+
+
+def graph_neighborhood(
+    slug: str,
+    *,
+    hops: int = 1,
+    limit: int = 40,
+    entity_type: str | None = None,
+    deps: GraphNeighborhoodDeps,
+) -> dict[str, Any]:
+    if "/" in slug or "\\" in slug or ".." in slug:
+        return {"nodes": [], "edges": [], "center": None}
+    normalized_entity_type = deps.normalize_entity_type(entity_type)
+    stored = deps.store_neighborhood(slug, hops, limit, normalized_entity_type)
+    if stored is not None:
+        return stored
+    index_path = deps.index_path()
+    has_runtime_overlays = deps.has_runtime_overlays()
+    index_covers_overlays = (
+        not has_runtime_overlays
+        or deps.index_covers_runtime_overlays(index_path)
+    )
+    if index_covers_overlays:
+        indexed = deps.index_neighborhood(slug, hops, limit, normalized_entity_type)
+        if indexed is not None:
+            return indexed
+    elif hops == 1 and index_path.is_file() and deps.index_matches_manifest(index_path):
+        indexed = deps.index_neighborhood(slug, hops, limit, normalized_entity_type)
+        center = indexed.get("center") if isinstance(indexed, dict) else None
+        uncovered = deps.uncovered_runtime_overlay_nodes(index_path)
+        if indexed is not None and isinstance(center, str) and uncovered is not None:
+            if center not in uncovered:
+                return indexed
+    try:
+        graph = deps.load_graph()
+    except Exception:  # noqa: BLE001 - graph is advisory; blank on error
+        return {"nodes": [], "edges": [], "center": None}
+    if graph.number_of_nodes() == 0:
+        return {"nodes": [], "edges": [], "center": None}
+
+    if entity_type is not None and normalized_entity_type is None:
+        return {"nodes": [], "edges": [], "center": None}
+    center, resolved, suggestions = resolve_graph_center(
+        graph,
+        slug,
+        normalized_entity_type,
+    )
+    if center is None:
+        return {"nodes": [], "edges": [], "center": None}
+
+    nodes_out: dict[str, dict[str, Any]] = {}
+    edges_out: list[dict[str, Any]] = []
+    emitted_edges: set[tuple[str, str]] = set()
+    frontier = [center]
+    seen: set[str] = {center}
+    try:
+        max_degree = max((int(degree) for _node, degree in graph.degree()), default=1)
+    except Exception:  # noqa: BLE001
+        max_degree = 1
+
+    def add_node(node_id: str, depth: int) -> None:
+        if node_id in nodes_out:
+            return
+        data = dict(graph.nodes.get(node_id, {}))
+        node_slug = graph_slug_from_node_id(node_id)
+        label = _display_label(data.get("label"), fallback_slug=node_slug)
+        tags = list(data.get("tags", []))
+        node_type = str(data.get("type") or graph_type_from_node_id(node_id))
+        try:
+            degree = int(graph.degree[node_id])
+        except Exception:  # noqa: BLE001
+            degree = 0
+        nodes_out[node_id] = {
+            "data": {
+                "id": node_id,
+                "label": label,
+                "type": node_type,
+                "depth": depth,
+                "degree": degree,
+                "tags": tags[:6],
+                "description": data.get("description", ""),
+                **deps.score_payload("quality_score", data.get("quality_score")),
+                **deps.score_payload("usage_score", data.get("usage_score")),
+                "filter_tokens": [
+                    node_id,
+                    label,
+                    node_slug,
+                    _display_slug(node_slug),
+                    *tags,
+                ],
+                **deps.node_size(
+                    node_id,
+                    data,
+                    entity_type=node_type,
+                    degree=degree,
+                    max_degree=max_degree,
+                ),
+            },
+        }
+
+    add_node(center, 0)
+
+    for depth in range(1, hops + 1):
+        next_frontier: list[str] = []
+        for node_id in frontier:
+            neighbors = sorted(
+                graph[node_id].items(),
+                key=lambda kv: -kv[1].get("weight", 1),
+            )
+            for other, edata in neighbors:
+                if len(nodes_out) >= limit:
+                    break
+                add_node(other, depth)
+                edge_key = tuple(sorted((node_id, other)))
+                if edge_key not in emitted_edges:
+                    emitted_edges.add(edge_key)
+                    shared_tags = edata.get("shared_tags", [])[:4]
+                    for current in (node_id, other):
+                        tokens = nodes_out[current]["data"].setdefault(
+                            "filter_tokens",
+                            [],
+                        )
+                        tokens.extend(shared_tags)
+                    edges_out.append({
+                        "data": {
+                            "id": f"{edge_key[0]}__{edge_key[1]}",
+                            "source": node_id,
+                            "target": other,
+                            "weight": edata.get("weight", 1),
+                            "shared_tags": shared_tags,
+                            "reasons": edata.get("reasons", []),
+                            "semantic": edata.get("semantic"),
+                            "tag_sim": edata.get("tag_sim"),
+                            "slug_token_sim": edata.get("slug_token_sim"),
+                            "source_overlap": edata.get("source_overlap"),
+                        },
+                    })
+                if other not in seen:
+                    seen.add(other)
+                    next_frontier.append(other)
+            if len(nodes_out) >= limit:
+                break
+        frontier = next_frontier
+        if len(nodes_out) >= limit:
+            break
+
+    return dashboard_graph.enrich_neighborhood({
+        "nodes": list(nodes_out.values()),
+        "edges": edges_out,
+        "center": center,
+        "resolved": resolved,
+        "suggestions": suggestions,
+    }, source="networkx")
+
+
+def resolve_graph_center(
+    graph: Any,
+    slug: str,
+    entity_type: str | None,
+) -> tuple[str | None, dict[str, str] | None, list[str]]:
+    raw_query = str(slug or "").strip()
+    if not raw_query or "/" in raw_query or "\\" in raw_query or ".." in raw_query:
+        return None, None, []
+    normalized_query = _slugish(raw_query)
+    if not normalized_query or not is_safe_source_name(normalized_query):
+        return None, None, []
+
+    entity_types = (entity_type,) if entity_type is not None else _DASHBOARD_ENTITY_TYPES
+    for current_type in entity_types:
+        for candidate_slug in (raw_query, normalized_query):
+            candidate = f"{current_type}:{candidate_slug}"
+            if candidate in graph:
+                return candidate, None, [candidate_slug]
+
+    matches: list[tuple[tuple[int, int, int], str, str]] = []
+    query_tokens = set(normalized_query.split("-"))
+    for node_id in graph.nodes:
+        node_type = graph_type_from_node_id(str(node_id))
+        if node_type not in entity_types:
+            continue
+        data = graph.nodes.get(node_id, {})
+        node_slug = graph_slug_from_node_id(str(node_id))
+        label = _display_label(data.get("label"), fallback_slug=node_slug)
+        haystacks = {
+            _slugish(node_slug),
+            _slugish(_display_slug(node_slug)),
+            _slugish(label),
+        }
+        tags = data.get("tags", [])
+        if isinstance(tags, list):
+            haystacks.update(_slugish(str(tag)) for tag in tags[:12])
+        rank = None
+        if normalized_query in haystacks:
+            rank = 0
+        elif any(h.startswith(normalized_query) for h in haystacks):
+            rank = 1
+        elif any(normalized_query in h for h in haystacks):
+            rank = 2
+        elif query_tokens and all(
+            any(token in haystack for haystack in haystacks)
+            for token in query_tokens
+        ):
+            rank = 3
+        if rank is None:
+            continue
+        try:
+            degree = int(graph.degree[node_id])
+        except Exception:  # noqa: BLE001
+            degree = 0
+        matches.append(((rank, len(node_slug), -degree), str(node_id), node_slug))
+
+    matches.sort(key=lambda item: item[0])
+    suggestions: list[str] = []
+    for _, _node_id, suggestion in matches[:8]:
+        display_suggestion = _display_slug(suggestion)
+        if display_suggestion not in suggestions:
+            suggestions.append(display_suggestion)
+    if not matches:
+        return None, None, suggestions
+    center = matches[0][1]
+    resolved_slug = graph_slug_from_node_id(center)
+    return center, {"query": raw_query, "slug": resolved_slug, "id": center}, suggestions
 
 
 def resolve_graph_store_center(

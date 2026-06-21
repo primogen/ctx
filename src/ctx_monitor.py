@@ -75,7 +75,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from ctx import dashboard_entities, dashboard_graph
+from ctx import dashboard_entities
 from ctx.core import entity_types as core_entity_types
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
@@ -1175,72 +1175,7 @@ def _resolve_graph_center(
     slug: str,
     entity_type: str | None,
 ) -> tuple[str | None, dict[str, str] | None, list[str]]:
-    """Resolve exact and fuzzy graph focus queries to one graph node id."""
-    raw_query = str(slug or "").strip()
-    if not raw_query or "/" in raw_query or "\\" in raw_query or ".." in raw_query:
-        return None, None, []
-    normalized_query = _slugish(raw_query)
-    if not normalized_query or not _is_safe_slug(normalized_query):
-        return None, None, []
-
-    entity_types = (
-        (entity_type,)
-        if entity_type is not None
-        else _DASHBOARD_ENTITY_TYPES
-    )
-    for current_type in entity_types:
-        for candidate_slug in (raw_query, normalized_query):
-            candidate = f"{current_type}:{candidate_slug}"
-            if candidate in G:
-                return candidate, None, [candidate_slug]
-
-    matches: list[tuple[tuple[int, int, int], str, str]] = []
-    query_tokens = set(normalized_query.split("-"))
-    for node_id in G.nodes:
-        node_type = _graph_type_from_node_id(str(node_id))
-        if node_type not in entity_types:
-            continue
-        data = G.nodes.get(node_id, {})
-        node_slug = _graph_slug_from_node_id(str(node_id))
-        label = _display_label(data.get("label"), fallback_slug=node_slug)
-        haystacks = {_slugish(node_slug), _slugish(_display_slug(node_slug)), _slugish(label)}
-        tags = data.get("tags", [])
-        if isinstance(tags, list):
-            haystacks.update(_slugish(str(tag)) for tag in tags[:12])
-        rank = None
-        if normalized_query in haystacks:
-            rank = 0
-        elif any(h.startswith(normalized_query) for h in haystacks):
-            rank = 1
-        elif any(normalized_query in h for h in haystacks):
-            rank = 2
-        elif query_tokens and all(
-            any(token in h for h in haystacks) for token in query_tokens
-        ):
-            rank = 3
-        if rank is None:
-            continue
-        try:
-            degree = int(G.degree[node_id])
-        except Exception:  # noqa: BLE001
-            degree = 0
-        matches.append(((rank, len(node_slug), -degree), str(node_id), node_slug))
-
-    matches.sort(key=lambda item: item[0])
-    suggestions = []
-    for _, _node_id, suggestion in matches[:8]:
-        display_suggestion = _display_slug(suggestion)
-        if display_suggestion not in suggestions:
-            suggestions.append(display_suggestion)
-    if not matches:
-        return None, None, suggestions
-    center = matches[0][1]
-    resolved_slug = _graph_slug_from_node_id(center)
-    return (
-        center,
-        {"query": raw_query, "slug": resolved_slug, "id": center},
-        suggestions,
-    )
+    return _graph_service.resolve_graph_center(G, slug, entity_type)
 
 
 def _unit_score(value: Any) -> float | None:
@@ -1538,171 +1473,39 @@ def _graph_neighborhood(
     limit: int = 40,
     entity_type: str | None = None,
 ) -> dict:
-    """Return dashboard-shaped {nodes, edges} for the N-hop neighborhood.
-
-    Uses ``resolve_graph.load_graph`` so the NetworkX 'links' vs 'edges'
-    schema is handled centrally. Returns an empty shape if the graph
-    hasn't been built or the slug isn't a node.
-    """
-    if "/" in slug or "\\" in slug or ".." in slug:
-        return {"nodes": [], "edges": [], "center": None}
-    normalized_entity_type = _normalize_dashboard_entity_type(entity_type)
-    stored = _graph_neighborhood_from_store(
+    return _graph_service.graph_neighborhood(
         slug,
         hops=hops,
         limit=limit,
-        entity_type=normalized_entity_type,
+        entity_type=entity_type,
+        deps=_graph_service.GraphNeighborhoodDeps(
+            normalize_entity_type=_normalize_dashboard_entity_type,
+            store_neighborhood=lambda current_slug, current_hops, current_limit, current_type: (
+                _graph_neighborhood_from_store(
+                    current_slug,
+                    hops=current_hops,
+                    limit=current_limit,
+                    entity_type=current_type,
+                )
+            ),
+            index_neighborhood=lambda current_slug, current_hops, current_limit, current_type: (
+                _graph_neighborhood_from_index(
+                    current_slug,
+                    hops=current_hops,
+                    limit=current_limit,
+                    entity_type=current_type,
+                )
+            ),
+            index_path=_dashboard_graph_index_path,
+            has_runtime_overlays=_dashboard_graph_has_runtime_overlays,
+            index_covers_runtime_overlays=_dashboard_index_covers_runtime_overlays,
+            index_matches_manifest=_dashboard_index_matches_manifest,
+            uncovered_runtime_overlay_nodes=_dashboard_uncovered_runtime_overlay_nodes,
+            load_graph=_load_dashboard_graph,
+            node_size=_graph_node_size,
+            score_payload=_dashboard_score_payload,
+        ),
     )
-    if stored is not None:
-        return stored
-    index_path = _dashboard_graph_index_path()
-    has_runtime_overlays = _dashboard_graph_has_runtime_overlays()
-    index_covers_overlays = (
-        not has_runtime_overlays
-        or _dashboard_index_covers_runtime_overlays(index_path)
-    )
-    if index_covers_overlays:
-        indexed = _graph_neighborhood_from_index(
-            slug,
-            hops=hops,
-            limit=limit,
-            entity_type=normalized_entity_type,
-        )
-        if indexed is not None:
-            return indexed
-    elif hops == 1 and index_path.is_file() and _dashboard_index_matches_manifest(index_path):
-        indexed = _graph_neighborhood_from_index(
-            slug,
-            hops=hops,
-            limit=limit,
-            entity_type=normalized_entity_type,
-        )
-        center = indexed.get("center") if isinstance(indexed, dict) else None
-        uncovered = _dashboard_uncovered_runtime_overlay_nodes(index_path)
-        if indexed is not None and isinstance(center, str) and uncovered is not None:
-            if center not in uncovered:
-                return indexed
-    try:
-        G = _load_dashboard_graph()
-    except Exception:  # noqa: BLE001 — graph is advisory; blank on error
-        return {"nodes": [], "edges": [], "center": None}
-    if G.number_of_nodes() == 0:
-        return {"nodes": [], "edges": [], "center": None}
-
-    center = None
-    if entity_type is not None and normalized_entity_type is None:
-        return {"nodes": [], "edges": [], "center": None}
-    center, resolved, suggestions = _resolve_graph_center(
-        G, slug, normalized_entity_type,
-    )
-    if center is None:
-        return {"nodes": [], "edges": [], "center": None}
-
-    nodes_out: dict[str, dict] = {}
-    edges_out: list[dict] = []
-    emitted_edges: set[tuple[str, str]] = set()
-    frontier = [center]
-    seen: set[str] = {center}
-    try:
-        max_degree = max((int(degree) for _node, degree in G.degree()), default=1)
-    except Exception:  # noqa: BLE001
-        max_degree = 1
-
-    def _add_node(nid: str, depth: int) -> None:
-        if nid in nodes_out:
-            return
-        data = dict(G.nodes.get(nid, {}))
-        node_slug = nid.split(":", 1)[-1]
-        label = _display_label(data.get("label"), fallback_slug=node_slug)
-        tags = list(data.get("tags", []))
-        default_type = (
-            "mcp-server" if nid.startswith("mcp-server:")
-            else "harness" if nid.startswith("harness:")
-            else "agent" if nid.startswith("agent:")
-            else "skill"
-        )
-        ntype = data.get("type") or default_type
-        try:
-            degree = int(G.degree[nid])
-        except Exception:  # noqa: BLE001
-            degree = 0
-        size_data = _graph_node_size(
-            nid,
-            data,
-            entity_type=str(ntype),
-            degree=degree,
-            max_degree=max_degree,
-        )
-        nodes_out[nid] = {
-            "data": {
-                "id": nid,
-                "label": label,
-                "type": ntype,
-                "depth": depth,
-                "degree": degree,
-                "tags": tags[:6],
-                "description": data.get("description", ""),
-                **_dashboard_score_payload("quality_score", data.get("quality_score")),
-                **_dashboard_score_payload("usage_score", data.get("usage_score")),
-                "filter_tokens": [nid, label, node_slug, _display_slug(node_slug), *tags],
-                **size_data,
-            },
-        }
-
-    _add_node(center, 0)
-
-    for depth in range(1, hops + 1):
-        next_frontier: list[str] = []
-        for nid in frontier:
-            # Sort neighbors by edge weight so we pick the strongest
-            # connections first under the ``limit`` cap.
-            neighbors = sorted(
-                G[nid].items(),
-                key=lambda kv: -kv[1].get("weight", 1),
-            )
-            for other, edata in neighbors:
-                if len(nodes_out) >= limit:
-                    break
-                _add_node(other, depth)
-                edge_key = tuple(sorted((nid, other)))
-                if edge_key not in emitted_edges:
-                    emitted_edges.add(edge_key)
-                    shared_tags = edata.get("shared_tags", [])[:4]
-                    for node_id in (nid, other):
-                        tokens = nodes_out[node_id]["data"].setdefault(
-                            "filter_tokens", []
-                        )
-                        tokens.extend(shared_tags)
-                    edges_out.append({
-                        "data": {
-                            "id": f"{edge_key[0]}__{edge_key[1]}",
-                            "source": nid,
-                            "target": other,
-                            "weight": edata.get("weight", 1),
-                            "shared_tags": shared_tags,
-                            "reasons": edata.get("reasons", []),
-                            "semantic": edata.get("semantic"),
-                            "tag_sim": edata.get("tag_sim"),
-                            "slug_token_sim": edata.get("slug_token_sim"),
-                            "source_overlap": edata.get("source_overlap"),
-                        },
-                    })
-                if other not in seen:
-                    seen.add(other)
-                    next_frontier.append(other)
-            if len(nodes_out) >= limit:
-                break
-        frontier = next_frontier
-        if len(nodes_out) >= limit:
-            break
-
-    return dashboard_graph.enrich_neighborhood({
-        "nodes": list(nodes_out.values()),
-        "edges": edges_out,
-        "center": center,
-        "resolved": resolved,
-        "suggestions": suggestions,
-    }, source="networkx")
 
 
 def _graph_stats() -> dict:
