@@ -58,14 +58,11 @@ starting point.
 
 from __future__ import annotations
 
-import argparse
 import ipaddress
 import json
 import math
 import re
-import secrets
 import sqlite3
-import socket
 import sys
 from collections.abc import Mapping
 from http.cookies import CookieError, SimpleCookie
@@ -83,6 +80,7 @@ from ctx.monitor.layout import monitor_asset_text as _monitor_asset_text
 from ctx.monitor.layout import monitor_inline_script as _monitor_inline_script
 from ctx.monitor.api import mutations as _mutation_api
 from ctx.monitor.api import readonly as _readonly_api
+from ctx.monitor import cli as _monitor_cli
 from ctx.monitor import routes as _monitor_routes
 from ctx.monitor import state as _monitor_state
 from ctx.monitor.pages import activity as _activity_page
@@ -1727,63 +1725,27 @@ def _make_monitor_server(host: str, port: int) -> _MonitorServer:
     )
 
 
-def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
-    """Run the monitor. Blocks until Ctrl+C."""
+def _set_monitor_token(token: str) -> None:
     global _MONITOR_TOKEN
-    server = _make_monitor_server(host, port)
-    _MONITOR_TOKEN = secrets.token_urlsafe(32)
-    mutations_enabled = bool(getattr(server, "_ctx_mutations_enabled", False))
-    url = f"http://{_monitor_display_host(host)}:{port}/"
-    if not mutations_enabled:
-        url = f"{url}?token={_MONITOR_TOKEN}"
-    print(f"ctx-monitor serving at {url}  (Ctrl+C to stop)", flush=True)
-    if not mutations_enabled:
-        print(
-            "ctx-monitor: non-loopback bind; read token required and "
-            "load/unload mutations disabled",
-            flush=True,
-        )
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("ctx-monitor: shutdown", flush=True)
-    finally:
-        server.server_close()
+    _MONITOR_TOKEN = token
+
+
+def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
+    return _monitor_cli.serve(
+        host=host,
+        port=port,
+        make_server=_make_monitor_server,
+        set_monitor_token=_set_monitor_token,
+        display_host=_monitor_display_host,
+    )
 
 
 def _monitor_display_host(host: str) -> str:
-    """Return a URL host users can paste into a browser."""
-    if host in {"0.0.0.0", "::"}:
-        try:
-            candidate = socket.gethostbyname(socket.gethostname())
-        except OSError:
-            candidate = ""
-        if candidate and not candidate.startswith("127."):
-            return candidate
-        return "localhost"
-    if ":" in host and not host.startswith("["):
-        return f"[{host}]"
-    return host
+    return _monitor_cli.monitor_display_host(host)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="ctx-monitor",
-        description="Local HTTP dashboard for ctx skill/agent activity.",
-    )
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    sp = sub.add_parser("serve", help="Start the monitor web server")
-    sp.add_argument("--port", type=int, default=8765)
-    sp.add_argument(
-        "--host", default="127.0.0.1",
-        help="Host to bind (default: 127.0.0.1; use 0.0.0.0 to expose — be careful)",
-    )
-
-    args = parser.parse_args(argv)
-    if args.cmd == "serve":
-        serve(host=args.host, port=args.port)
-    return 0
+    return _monitor_cli.main(argv, serve_func=serve)
 
 
 if __name__ == "__main__":

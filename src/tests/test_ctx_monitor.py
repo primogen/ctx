@@ -34,6 +34,7 @@ from ctx.monitor.pages import wiki as wiki_page
 from ctx.monitor.api import mutations as mutations_api
 from ctx.monitor.api import readonly as readonly_api
 from ctx.monitor import routes as monitor_routes
+from ctx.monitor import cli as monitor_cli
 from ctx.monitor.services import config as config_service
 from ctx.monitor.services import graph as graph_service
 from ctx.monitor.services import harness as harness_service
@@ -1351,9 +1352,9 @@ def test_serve_generates_read_token_for_non_loopback(
 
     monkeypatch.setattr(cm, "_MONITOR_TOKEN", "")
     monkeypatch.setattr(cm, "_make_monitor_server", lambda _host, _port: FakeServer())
-    monkeypatch.setattr(cm.secrets, "token_urlsafe", lambda _size: "lan-token")
-    monkeypatch.setattr(cm.socket, "gethostname", lambda: "devbox")
-    monkeypatch.setattr(cm.socket, "gethostbyname", lambda _name: "192.168.1.50")
+    monkeypatch.setattr(monitor_cli.secrets, "token_urlsafe", lambda _size: "lan-token")
+    monkeypatch.setattr(monitor_cli.socket, "gethostname", lambda: "devbox")
+    monkeypatch.setattr(monitor_cli.socket, "gethostbyname", lambda _name: "192.168.1.50")
 
     cm.serve(host="0.0.0.0", port=8765)
 
