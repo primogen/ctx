@@ -79,6 +79,7 @@ from ctx import dashboard_entities, dashboard_graph
 from ctx.core import entity_types as core_entity_types
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
+from ctx.monitor import app as _monitor_app
 from ctx.monitor.layout import layout as _layout
 from ctx.monitor.layout import monitor_asset_text as _monitor_asset_text
 from ctx.monitor.layout import monitor_inline_script as _monitor_inline_script
@@ -2317,6 +2318,38 @@ def _mutation_api_deps() -> _mutation_api.MutationApiDeps:
     )
 
 
+def _route_dispatch_deps() -> _monitor_app.RouteDispatchDeps:
+    return _monitor_app.RouteDispatchDeps(
+        render_home=_render_home,
+        render_sessions_index=_render_sessions_index,
+        render_session_detail=_render_session_detail,
+        render_skills=_render_skills,
+        render_skillspector=_render_skillspector,
+        render_skill_detail=_render_skill_detail,
+        render_loaded=_render_loaded,
+        render_logs=_render_logs,
+        render_graph=_render_graph,
+        render_manage=_render_manage,
+        render_harness_wizard=_render_harness_wizard,
+        render_docs=_render_docs,
+        render_config=_render_config,
+        render_status=_render_status,
+        render_wiki_index=_render_wiki_index,
+        render_wiki_entity=lambda slug, entity_type, mutations_enabled: (
+            _render_wiki_entity(
+                slug,
+                entity_type,
+                mutations_enabled=mutations_enabled,
+            )
+        ),
+        render_kpi=_render_kpi,
+        render_runtime_lifecycle=_render_runtime_lifecycle,
+        render_events=_render_events,
+        readonly_api_deps=_readonly_api_deps,
+        mutation_api_deps=_mutation_api_deps,
+    )
+
+
 def _is_safe_slug(slug: str) -> bool:
     return is_safe_source_name(slug)
 
@@ -2353,69 +2386,7 @@ def _handle_monitor_get_route(
     route: _monitor_routes.RouteMatch,
     qs: dict[str, str],
 ) -> None:
-    name = route.name
-    params = route.params
-    if name == "home":
-        handler._send_html(_render_home())
-    elif name == "sessions_index":
-        handler._send_html(_render_sessions_index())
-    elif name == "session_detail":
-        handler._send_html(_render_session_detail(params["session_id"]))
-    elif name == "skills":
-        handler._send_html(_render_skills(qs))
-    elif name == "skillspector":
-        handler._send_html(_render_skillspector(qs))
-    elif name == "skill_detail":
-        handler._send_html(_render_skill_detail(params["slug"], qs.get("type")))
-    elif name == "loaded":
-        handler._send_html(_render_loaded(handler._mutations_enabled()))
-    elif name == "logs":
-        handler._send_html(_render_logs())
-    elif name == "graph":
-        handler._send_html(_render_graph(qs.get("slug"), qs.get("type")))
-    elif name == "manage":
-        handler._send_html(_render_manage(handler._mutations_enabled()))
-    elif name == "harness":
-        handler._send_html(_render_harness_wizard())
-    elif name == "docs":
-        handler._send_html(_render_docs())
-    elif name == "config":
-        handler._send_html(_render_config())
-    elif name == "status":
-        handler._send_html(_render_status())
-    elif name == "wiki_index":
-        handler._send_html(_render_wiki_index(qs.get("type"), qs.get("q", "")))
-    elif name == "wiki_entity":
-        handler._send_html(
-            _render_wiki_entity(
-                params["slug"],
-                qs.get("type"),
-                mutations_enabled=handler._mutations_enabled(),
-            ),
-        )
-    elif name == "kpi":
-        handler._send_html(_render_kpi())
-    elif name == "runtime":
-        handler._send_html(_render_runtime_lifecycle())
-    elif name == "events":
-        handler._send_html(_render_events())
-    elif name == "api_events_stream":
-        handler._stream_audit_log()
-    else:
-        api_response = _readonly_api.handle_readonly_route(
-            name,
-            params,
-            qs,
-            _readonly_api_deps(),
-        )
-        if api_response is None:
-            handler._send_404(name)
-        elif api_response.not_found_detail is not None:
-            handler._send_404(api_response.not_found_detail)
-        elif api_response.status == 200:
-            handler._send_json(api_response.payload)
-        else:
-            handler._send_json_status(api_response.status, api_response.payload)
+    _monitor_app.handle_get_route(handler, route, qs, _route_dispatch_deps())
 
 
 def _handle_monitor_post_route(
@@ -2424,18 +2395,13 @@ def _handle_monitor_post_route(
     body: Mapping[str, Any],
     path: str,
 ) -> None:
-    mutation_response = _mutation_api.handle_mutation_route(
+    _monitor_app.handle_post_route(
+        handler,
         route_name,
         body,
-        _mutation_api_deps(),
+        path,
+        _route_dispatch_deps(),
     )
-    if mutation_response is None:
-        handler._send_404(path)
-    else:
-        handler._send_json_status(
-            mutation_response.status,
-            mutation_response.payload,
-        )
 
 
 def _monitor_handler_deps() -> _MonitorHandlerDeps:
