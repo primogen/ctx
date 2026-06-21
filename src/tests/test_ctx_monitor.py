@@ -18,10 +18,10 @@ from pathlib import Path
 
 import pytest
 
-import ctx_monitor as cm
 import ctx_init as ci
 from ctx import dashboard_entities
 from ctx import dashboard_docs
+from ctx.monitor import compat as cm
 from ctx.monitor.pages import config as config_page
 from ctx.monitor.pages import graph as graph_page
 from ctx.monitor.pages import harness as harness_page
@@ -50,7 +50,7 @@ from ctx.core.wiki import wiki_queue
 
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch) -> Path:
-    """Point ctx_monitor at a throwaway ~/.claude tree."""
+    """Point monitor compatibility helpers at a throwaway ~/.claude tree."""
     claude = tmp_path / ".claude"
     (claude / "skill-quality").mkdir(parents=True)
     monkeypatch.setattr(cm, "_claude_dir", lambda: claude)
@@ -3764,8 +3764,6 @@ def test_graph_neighborhood_empty_when_graph_absent(
 ) -> None:
     # Force load_graph to raise so the helper returns the empty shape
     # deterministically, independent of whether the user's graph is built.
-    import ctx_monitor as cm_mod
-
     def _bad(*_a, **_k):
         raise RuntimeError("no graph")
 
@@ -3773,13 +3771,13 @@ def test_graph_neighborhood_empty_when_graph_absent(
     # the import to yield a stub that raises.
     import sys
     fake = type("M", (), {"load_graph": _bad})
-    # ctx_monitor lazy-imports 'from ctx.core.graph.resolve_graph import load_graph'
+    # ctx.monitor.compat lazy-imports 'from ctx.core.graph.resolve_graph import load_graph'
     # at call time; inject at the canonical dotted path so the lazy import
     # resolves to our stub. Also populate the legacy shim path belt-and-
     # braces in case a downstream path still routes through it.
     monkeypatch.setitem(sys.modules, "ctx.core.graph.resolve_graph", fake)
     monkeypatch.setitem(sys.modules, "resolve_graph", fake)
-    result = cm_mod._graph_neighborhood("python-patterns")
+    result = cm._graph_neighborhood("python-patterns")
     assert result == {"nodes": [], "edges": [], "center": None}
 
 
@@ -5610,7 +5608,7 @@ def test_render_graph_landing_hides_seeds_when_graph_absent(monkeypatch) -> None
         raise RuntimeError("no graph")
 
     fake = type("M", (), {"load_graph": _bad})
-    # ctx_monitor lazy-imports 'from ctx.core.graph.resolve_graph import load_graph'
+    # ctx.monitor.compat lazy-imports 'from ctx.core.graph.resolve_graph import load_graph'
     # at call time; inject at the canonical dotted path so the lazy import
     # resolves to our stub. Also populate the legacy shim path belt-and-
     # braces in case a downstream path still routes through it.
@@ -5627,6 +5625,10 @@ def test_render_graph_landing_hides_seeds_when_graph_absent(monkeypatch) -> None
 
 
 def test_cli_argparser_exposes_serve() -> None:
+    import ctx_monitor
+
+    assert ctx_monitor.main is cm.main
+    assert ctx_monitor.serve is cm.serve
     # argparse should not raise; subcommand "serve" is required
     with pytest.raises(SystemExit):
         cm.main([])

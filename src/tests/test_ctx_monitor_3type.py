@@ -31,9 +31,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-import ctx_monitor as _cm
 from ctx.core import entity_types as _entity_types
 from ctx.core.wiki.wiki_packs import write_wiki_base_pack
+from ctx.monitor import compat as _cm
 from ctx.monitor.services import wiki as _wiki_service
 
 
@@ -44,7 +44,7 @@ from ctx.monitor.services import wiki as _wiki_service
 
 @pytest.fixture()
 def wiki_3type(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Build a minimal wiki and point ctx_monitor at it via ``_wiki_dir``."""
+    """Build a minimal wiki and point monitor compat at it via ``_wiki_dir``."""
     _wiki_service.reset_caches()
     wiki = tmp_path / "skill-wiki"
     for sub in ("skills", "agents", "harnesses"):
