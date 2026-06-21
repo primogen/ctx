@@ -38,6 +38,7 @@ from ctx.monitor.services import config as config_service
 from ctx.monitor.services import graph as graph_service
 from ctx.monitor.services import harness as harness_service
 from ctx.monitor.services import kpi as kpi_service
+from ctx.monitor.services import manifest as manifest_service
 from ctx.monitor.services import runtime as runtime_service
 from ctx.monitor.services import sidecars as sidecar_service
 from ctx.monitor.services import skillspector as skillspector_service
@@ -430,6 +431,10 @@ def test_skills_page_module_renders_filters_cards_and_pagination() -> None:
 def test_read_manifest_empty_when_missing(fake_claude: Path) -> None:
     m = cm._read_manifest()
     assert m == {"load": [], "unload": [], "warnings": []}
+    assert manifest_service.read_manifest(
+        fake_claude / "skill-manifest.json",
+        fake_claude,
+    ) == m
 
 
 def test_read_manifest_reads_real_manifest(fake_claude: Path) -> None:
@@ -439,8 +444,13 @@ def test_read_manifest_reads_real_manifest(fake_claude: Path) -> None:
         encoding="utf-8",
     )
     m = cm._read_manifest()
+    direct = manifest_service.read_manifest(
+        fake_claude / "skill-manifest.json",
+        fake_claude,
+    )
     assert [e["skill"] for e in m["load"]] == ["a"]
     assert [e["skill"] for e in m["unload"]] == ["b"]
+    assert direct == m
 
 
 def test_read_manifest_includes_installed_harness_records(fake_claude: Path) -> None:
@@ -458,6 +468,10 @@ def test_read_manifest_includes_installed_harness_records(fake_claude: Path) -> 
     )
 
     m = cm._read_manifest()
+    direct = manifest_service.read_manifest(
+        fake_claude / "skill-manifest.json",
+        fake_claude,
+    )
 
     assert m["load"] == [{
         "skill": "langgraph",
@@ -467,6 +481,7 @@ def test_read_manifest_includes_installed_harness_records(fake_claude: Path) -> 
         "installed_at": "2026-05-01T00:00:00Z",
         "status": "installed",
     }]
+    assert direct == m
 
 
 def test_queue_status_summarizes_worker_jobs(fake_claude: Path) -> None:

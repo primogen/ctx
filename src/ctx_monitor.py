@@ -106,13 +106,13 @@ from ctx.monitor.services import config as _config_service
 from ctx.monitor.services import graph as _graph_service
 from ctx.monitor.services import harness as _harness_service
 from ctx.monitor.services import kpi as _kpi_service
+from ctx.monitor.services import manifest as _manifest_service
 from ctx.monitor.services import runtime as _runtime_service
 from ctx.monitor.services import sidecars as _sidecar_service
 from ctx.monitor.services import skillspector as _skillspector_service
 from ctx.monitor.services import status as _status_service
 from ctx.monitor.services import wiki as _wiki_service
 from ctx.utils._file_lock import file_lock
-from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
 from ctx.utils._fs_utils import safe_atomic_write_text as _safe_atomic_write_text
 from ctx.utils._safe_name import is_safe_source_name
 
@@ -625,73 +625,19 @@ def _render_quality_drilldown(
 
 
 def _save_manifest(manifest: dict) -> None:
-    _atomic_write_text(_manifest_path(), json.dumps(manifest, indent=2) + "\n")
+    _manifest_service.save_manifest(_manifest_path(), manifest)
 
 
 def _read_skill_manifest_only() -> dict:
-    """Read the mutable skill manifest without synthetic harness rows."""
-    path = _manifest_path()
-    if not path.exists():
-        return {"load": [], "unload": [], "warnings": []}
-    try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"load": [], "unload": [], "warnings": []}
-    if not isinstance(manifest, dict):
-        return {"load": [], "unload": [], "warnings": []}
-    if not isinstance(manifest.get("load"), list):
-        manifest["load"] = []
-    if not isinstance(manifest.get("unload"), list):
-        manifest["unload"] = []
-    if not isinstance(manifest.get("warnings"), list):
-        manifest["warnings"] = []
-    return manifest
+    return _manifest_service.read_skill_manifest_only(_manifest_path())
 
 
 def _remove_loaded_manifest_entry(slug: str, entity_type: str) -> list[dict]:
-    """Remove loaded rows for one entity tuple and return removed rows."""
-    path = _manifest_path()
-    with file_lock(path):
-        manifest = _read_skill_manifest_only()
-        removed: list[dict] = []
-        remaining: list[dict] = []
-        for entry in manifest.get("load", []):
-            entry_type = str(entry.get("entity_type") or "skill")
-            if entry.get("skill") == slug and entry_type == entity_type:
-                removed.append(entry)
-            else:
-                remaining.append(entry)
-        if not removed:
-            return []
-        manifest["load"] = remaining
-        unloaded = {
-            (entry.get("skill"), str(entry.get("entity_type") or "skill"))
-            for entry in manifest.get("unload", [])
-        }
-        preserved: dict[str, object] = {}
-        for field in ("command", "json_config", "priority", "reason"):
-            value = removed[0].get(field)
-            if value not in (None, ""):
-                preserved[field] = value
-        if (slug, entity_type) not in unloaded:
-            entry = {
-                "skill": slug,
-                "entity_type": entity_type,
-                "source": removed[0].get("source") or "ctx-monitor",
-            }
-            entry.update(preserved)
-            manifest.setdefault("unload", []).append(entry)
-        elif preserved:
-            for entry in manifest.get("unload", []):
-                if (
-                    entry.get("skill") == slug
-                    and str(entry.get("entity_type") or "skill") == entity_type
-                ):
-                    for field, value in preserved.items():
-                        entry.setdefault(field, value)
-                    break
-        _save_manifest(manifest)
-        return removed
+    return _manifest_service.remove_loaded_manifest_entry(
+        _manifest_path(),
+        slug,
+        entity_type,
+    )
 
 
 def _log_dashboard_entity_event(
@@ -738,62 +684,11 @@ def _log_dashboard_entity_event(
 
 
 def _read_manifest() -> dict:
-    """Return current loaded entities from the skill manifest plus harness installs."""
-    path = _manifest_path()
-    manifest: dict[str, Any]
-    if not path.exists():
-        manifest = {"load": [], "unload": [], "warnings": []}
-    else:
-        try:
-            manifest = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            manifest = {"load": [], "unload": [], "warnings": []}
-    if not isinstance(manifest, dict):
-        manifest = {"load": [], "unload": [], "warnings": []}
-    load_rows = manifest.setdefault("load", [])
-    if not isinstance(load_rows, list):
-        load_rows = []
-        manifest["load"] = load_rows
-    manifest.setdefault("unload", [])
-    manifest.setdefault("warnings", [])
-    existing = {
-        (str(row.get("entity_type") or "skill"), str(row.get("skill") or ""))
-        for row in load_rows
-        if isinstance(row, dict)
-    }
-    for row in _read_harness_install_rows():
-        key = ("harness", str(row.get("skill") or ""))
-        if key not in existing:
-            load_rows.append(row)
-            existing.add(key)
-    return manifest
+    return _manifest_service.read_manifest(_manifest_path(), _claude_dir())
 
 
 def _read_harness_install_rows() -> list[dict]:
-    """Return installed harness records as manifest-compatible load rows."""
-    root = _claude_dir() / "harness-installs"
-    if not root.is_dir():
-        return []
-    rows: list[dict] = []
-    for path in sorted(root.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(data, dict) or data.get("status") != "installed":
-            continue
-        slug = str(data.get("slug") or path.stem).strip()
-        if not slug or not _is_safe_slug(slug):
-            continue
-        rows.append({
-            "skill": slug,
-            "entity_type": "harness",
-            "source": "ctx-harness-install",
-            "command": data.get("target") or data.get("repo_url") or "",
-            "installed_at": data.get("installed_at", ""),
-            "status": data.get("status", "installed"),
-        })
-    return rows
+    return _manifest_service.read_harness_install_rows(_claude_dir())
 
 
 def _queue_status() -> dict[str, Any]:
