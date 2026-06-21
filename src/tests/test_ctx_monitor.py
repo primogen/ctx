@@ -23,6 +23,7 @@ import ctx_init as ci
 from ctx import dashboard_entities
 from ctx import dashboard_docs
 from ctx.monitor.pages import config as config_page
+from ctx.monitor.pages import graph as graph_page
 from ctx.monitor.pages import harness as harness_page
 from ctx.monitor.pages import home as home_page
 from ctx.monitor.pages import loaded as loaded_page
@@ -1748,7 +1749,18 @@ def test_render_graph_uses_builtin_3d_mount(monkeypatch: pytest.MonkeyPatch) -> 
     )
     monkeypatch.setattr(cm, "_graph_match_default_min_percent", lambda: 7)
     html_out = cm._render_graph("python-patterns")
+    direct_html = graph_page.render_graph(
+        focus="python-patterns",
+        graph_stats=lambda: {"nodes": 0, "edges": 0, "available": False},
+        top_degree_seeds=lambda **_kwargs: [],
+        default_focus_slug="github",
+        json_for_script=cm._json_for_script,
+        graph_match_default_min_percent=lambda: 7,
+        format_count=cm._format_count,
+        layout=lambda _title, body: body,
+    )
     assert "id='cy'" in html_out
+    assert "id='cy'" in direct_html
     assert "https://unpkg.com" not in html_out
     assert "data-testid=\"graph-renderer\"" in html_out
     assert "data-testid=\"graph-3d\"" in html_out
