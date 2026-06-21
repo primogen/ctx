@@ -90,6 +90,7 @@ from ctx.monitor.layout import monitor_inline_script as _monitor_inline_script
 from ctx.monitor import state as _monitor_state
 from ctx.monitor.pages import activity as _activity_page
 from ctx.monitor.pages import docs as _docs_page
+from ctx.monitor.pages import loaded as _loaded_page
 from ctx.monitor.pages import ops as _ops_page
 from ctx.monitor.server import MonitorServer as _MonitorServer
 from ctx.monitor.server import make_monitor_server as _make_server
@@ -6674,175 +6675,14 @@ def _render_events() -> str:
 
 
 def _render_loaded(mutations_enabled: bool | None = None) -> str:
-    """Live view of ~/.claude/skill-manifest.json with load/unload actions.
-
-    Groups manifest entries by ``entity_type`` (skill / agent / mcp-server / harness)
-    with a per-section count. Unload button posts both the slug and
-    entity_type so the server routes correctly — MCPs need
-    ``claude mcp remove``, skills + agents take the file-copy path.
-    Legacy entries without entity_type default to ``skill`` (what the
-    pre-install_utils manifest implicitly assumed).
-    """
     if mutations_enabled is None:
         mutations_enabled = _MONITOR_MUTATIONS_ENABLED
-    manifest = _read_manifest()
-    load_rows = manifest.get("load", [])
-    unload_rows = manifest.get("unload", [])
-
-    def _etype(entry: dict) -> str:
-        # Missing entity_type => legacy skill entry.
-        return str(entry.get("entity_type") or "skill")
-
-    # Split loaded by entity_type for the sectioned layout.
-    by_type: dict[str, list[dict]] = {
-        "skill": [],
-        "agent": [],
-        "mcp-server": [],
-        "harness": [],
-    }
-    for e in load_rows:
-        by_type.setdefault(_etype(e), []).append(e)
-
-    disabled_attr = "" if mutations_enabled else " disabled"
-    mutation_token = _MONITOR_TOKEN if mutations_enabled else ""
-    mutation_notice = (
-        ""
-        if mutations_enabled
-        else (
-            "<div class='card'><strong>Read-only mode.</strong> "
-            "Load/unload actions are disabled because ctx-monitor is not "
-            "bound to a loopback address.</div>"
-        )
+    return _loaded_page.render_loaded(
+        _read_manifest(),
+        mutations_enabled=mutations_enabled,
+        monitor_token=_MONITOR_TOKEN,
+        layout=_layout,
     )
-
-    def _row(e: dict) -> str:
-        slug = e.get("skill", "")
-        etype = _etype(e)
-        link = (
-            f"<a href='/wiki/{html.escape(slug)}?type={html.escape(etype)}'>"
-            f"<code>{html.escape(slug)}</code></a>"
-        )
-        action = (
-            f"<td class='muted'><code>ctx-harness-install {html.escape(slug)} "
-            f"--uninstall --dry-run</code></td>"
-            if etype == "harness" else
-            f"<td><button class='btn-unload' data-slug='{html.escape(slug)}' "
-            f"data-etype='{html.escape(etype)}'{disabled_attr}>unload</button></td>"
-        )
-        return (
-            f"<tr>"
-            f"<td>{link}</td>"
-            f"<td class='muted'>{html.escape(e.get('source', ''))}</td>"
-            f"<td class='muted'>{html.escape(str(e.get('command', '') or e.get('priority', '—')))[:60]}</td>"
-            f"{action}"
-            f"</tr>"
-        )
-
-    def _section(title: str, etype: str) -> str:
-        rows = by_type.get(etype, [])
-        if not rows:
-            return (
-                f"<h3 style='margin-top:1.2rem;'>{title} "
-                f"<span class='muted' style='font-size:0.85rem;'>(0)</span></h3>"
-                f"<p class='muted' style='margin-left:0.4rem;'>"
-                f"None loaded.</p>"
-            )
-        return (
-            f"<h3 style='margin-top:1.2rem;'>{title} "
-            f"<span class='muted' style='font-size:0.85rem;'>({len(rows)})</span></h3>"
-            f"<table>"
-            f"<tr><th>Slug</th><th>Source</th><th>Cmd / priority</th><th></th></tr>"
-            + "".join(_row(e) for e in rows)
-            + "</table>"
-        )
-
-    unload_html = "".join(
-        f"<tr>"
-        f"<td><code>{html.escape(e.get('skill', ''))}</code></td>"
-        f"<td class='muted'>{html.escape(_etype(e))}</td>"
-        f"<td class='muted'>{html.escape(str(e.get('source', '') or e.get('reason', ''))[:80])}</td>"
-        f"<td><button class='btn-load' data-slug='{html.escape(e.get('skill', ''))}' "
-        f"data-etype='{html.escape(_etype(e))}'"
-        f"{' data-command=' + repr(html.escape(str(e.get('command')))) if e.get('command') else ''}"
-        f"{' data-json-config=' + repr(html.escape(str(e.get('json_config')))) if e.get('json_config') else ''}"
-        f"{disabled_attr}>load</button></td>"
-        f"</tr>"
-        for e in unload_rows
-    )
-
-    body = (
-        "<h1>Loaded entities — skills, agents, MCPs &amp; harnesses</h1>"
-        f"<div class='card'>"
-        f"<strong>{len(load_rows)}</strong> currently loaded "
-        f"(<span class='muted'>"
-        f"{len(by_type.get('skill', []))} skills · "
-        f"{len(by_type.get('agent', []))} agents · "
-        f"{len(by_type.get('mcp-server', []))} MCPs · "
-        f"{len(by_type.get('harness', []))} harnesses</span>) · "
-        f"<strong>{len(unload_rows)}</strong> known-unloaded · "
-        f"<span class='muted'>source: <code>~/.claude/skill-manifest.json</code> "
-        f"+ <code>~/.claude/harness-installs/*.json</code></span>"
-        "</div>"
-        f"{mutation_notice}"
-        "<h2>Load an entity</h2>"
-        "<div class='card'>"
-        "<form id='load-form'>"
-        "<input type='text' id='load-input' placeholder='slug (e.g. fastapi-pro)' "
-        "style='padding:0.35rem 0.6rem; width:18rem; border:1px solid #ccc; "
-        "border-radius:4px;'>"
-        "<select id='load-type' style='margin-left:0.5rem; padding:0.35rem 0.6rem; "
-        "border:1px solid #ccc; border-radius:4px;'>"
-        "<option value='skill'>skill</option>"
-        "<option value='agent'>agent</option>"
-        "<option value='mcp-server'>mcp-server</option>"
-        "</select>"
-        f"<button type='submit' style='margin-left:0.5rem;'{disabled_attr}>load</button>"
-        "<span id='load-msg' class='muted' style='margin-left:0.75rem;'></span>"
-        "</form></div>"
-        f"<h2>Currently loaded ({len(load_rows)})</h2>"
-        + _section("Skills", "skill")
-        + _section("Agents", "agent")
-        + _section("MCP servers", "mcp-server")
-        + _section("Harnesses", "harness")
-        + f"<h2>Recently unloaded ({len(unload_rows)})</h2>"
-        "<table><tr><th>Slug</th><th>Type</th><th>Source / reason</th><th></th></tr>"
-        + unload_html + "</table>"
-        "<script>\n"
-        f"const CTX_MONITOR_MUTATIONS_ENABLED = {json.dumps(mutations_enabled)};\n"
-        f"const CTX_MONITOR_TOKEN = {json.dumps(mutation_token)};\n"
-        "async function post(url, body) {\n"
-        "  if (!CTX_MONITOR_MUTATIONS_ENABLED) return {ok:false, msg:'mutations disabled on non-loopback bind'};\n"
-        "  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json', 'X-CTX-Monitor-Token':CTX_MONITOR_TOKEN}, body: JSON.stringify(body || {})});\n"
-        "  const ok = r.status >= 200 && r.status < 300;\n"
-        "  let msg = ''; try { msg = (await r.json()).detail || r.statusText; } catch(_) { msg = r.statusText; }\n"
-        "  return {ok, msg};\n"
-        "}\n"
-        "document.querySelectorAll('.btn-unload').forEach(b => b.addEventListener('click', async () => {\n"
-        "  b.disabled = true; const slug = b.dataset.slug; const entity_type = b.dataset.etype || 'skill';\n"
-        "  const r = await post('/api/unload', {slug, entity_type});\n"
-        "  if (r.ok) location.reload(); else { b.disabled = false; alert('unload failed: ' + r.msg); }\n"
-        "}));\n"
-        "document.querySelectorAll('.btn-load').forEach(b => b.addEventListener('click', async () => {\n"
-        "  b.disabled = true; const slug = b.dataset.slug; const entity_type = b.dataset.etype || 'skill';\n"
-        "  const payload = {slug, entity_type};\n"
-        "  if (b.dataset.command) payload.command = b.dataset.command;\n"
-        "  if (b.dataset.jsonConfig) payload.json_config = b.dataset.jsonConfig;\n"
-        "  const r = await post('/api/load', payload);\n"
-        "  if (r.ok) location.reload(); else { b.disabled = false; alert('load failed: ' + r.msg); }\n"
-        "}));\n"
-        "document.getElementById('load-form').addEventListener('submit', async (ev) => {\n"
-        "  ev.preventDefault();\n"
-        "  const slug = document.getElementById('load-input').value.trim();\n"
-        "  const entity_type = document.getElementById('load-type').value;\n"
-        "  if (!slug) return;\n"
-        "  document.getElementById('load-msg').textContent = 'loading…';\n"
-        "  const r = await post('/api/load', {slug, entity_type});\n"
-        "  document.getElementById('load-msg').textContent = r.ok ? 'ok — reloading' : ('failed: ' + r.msg);\n"
-        "  if (r.ok) setTimeout(() => location.reload(), 400);\n"
-        "});\n"
-        "</script>"
-    )
-    return _layout("Loaded", body)
 
 
 def _render_runtime_lifecycle() -> str:
