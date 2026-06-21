@@ -71,21 +71,29 @@ import sqlite3
 import socket
 import sys
 import tarfile
-import threading
 import time
 import zlib
 from collections import defaultdict, deque
 from http.cookies import CookieError, SimpleCookie
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib.resources import files
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
-from ctx import dashboard_docs, dashboard_entities, dashboard_graph
+from ctx import dashboard_entities, dashboard_graph
 from ctx.core import entity_types as core_entity_types
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
+from ctx.monitor.layout import layout as _layout
+from ctx.monitor.layout import monitor_asset_text as _monitor_asset_text
+from ctx.monitor.layout import monitor_inline_script as _monitor_inline_script
+from ctx.monitor import state as _monitor_state
+from ctx.monitor.pages import activity as _activity_page
+from ctx.monitor.pages import docs as _docs_page
+from ctx.monitor.pages import ops as _ops_page
+from ctx.monitor.server import MonitorServer as _MonitorServer
+from ctx.monitor.server import make_monitor_server as _make_server
+from ctx.monitor.server import server_shutdown_requested as _server_shutdown_requested
 from ctx.utils._file_lock import file_lock
 from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
 from ctx.utils._fs_utils import safe_atomic_write_text as _safe_atomic_write_text
@@ -166,39 +174,35 @@ def _read_token_cookie(cookie_header: str) -> str:
 
 
 def _claude_dir() -> Path:
-    return Path(os.path.expanduser("~/.claude"))
+    return _monitor_state.claude_dir()
 
 
 def _audit_log_path() -> Path:
-    # Avoid importing ctx_audit_log here so the monitor can run even if
-    # ctx_audit_log is absent for some reason.
-    return _claude_dir() / "ctx-audit.jsonl"
+    return _monitor_state.audit_log_path(_claude_dir())
 
 
 def _events_jsonl_path() -> Path:
-    return _claude_dir() / "skill-events.jsonl"
+    return _monitor_state.events_jsonl_path(_claude_dir())
 
 
 def _runtime_lifecycle_path() -> Path:
-    from ctx.adapters.generic.runtime_lifecycle import RuntimeLifecycleStore
-
-    return RuntimeLifecycleStore().events_path
+    return _monitor_state.runtime_lifecycle_path()
 
 
 def _manifest_path() -> Path:
-    return _claude_dir() / "skill-manifest.json"
+    return _monitor_state.manifest_path(_claude_dir())
 
 
 def _sidecar_dir() -> Path:
-    return _claude_dir() / "skill-quality"
+    return _monitor_state.sidecar_dir(_claude_dir())
 
 
 def _wiki_dir() -> Path:
-    return _claude_dir() / "skill-wiki"
+    return _monitor_state.wiki_dir(_claude_dir())
 
 
 def _user_config_path() -> Path:
-    return _claude_dir() / "skill-system-config.json"
+    return _monitor_state.user_config_path(_claude_dir())
 
 
 def _wiki_pack_pages() -> dict[str, str] | None:
@@ -2434,72 +2438,6 @@ def _session_detail(session_id: str) -> dict:
 # ─── HTML rendering ──────────────────────────────────────────────────────────
 
 
-def _monitor_asset_text(name: str) -> str:
-    """Read a packaged dashboard asset."""
-    return files("ctx").joinpath("assets", name).read_text(encoding="utf-8")
-
-
-def _monitor_inline_script(name: str) -> str:
-    return f"<script>\n{_monitor_asset_text(name).rstrip()}\n</script>"
-
-
-_CSS = _monitor_asset_text("monitor.css")
-
-
-def _layout(title: str, body: str) -> str:
-    """Wrap body HTML in the standard page chrome."""
-    nav_items = (
-        ("home", "Home", "/"),
-        ("loaded", "Loaded", "/loaded"),
-        ("skills", "Skills", "/skills"),
-        ("skillspector", "SkillSpector", "/skillspector"),
-        ("wiki", "Wiki", "/wiki"),
-        ("graph", "Graph", "/graph"),
-        ("manage", "Manage", "/manage"),
-        ("harness", "Harness Setup", "/harness"),
-        ("docs", "Docs", "/docs"),
-        ("config", "Config", "/config"),
-        ("status", "Status", "/status"),
-        ("kpi", "KPIs", "/kpi"),
-        ("runtime", "Runtime", "/runtime"),
-        ("sessions", "Sessions", "/sessions"),
-        ("logs", "Logs", "/logs"),
-        ("events", "Live", "/events"),
-    )
-    nav_html = "".join(
-        f"<a href='{html.escape(href)}' data-nav-key='{html.escape(key)}' "
-        "draggable='true' title='Drag to reorder dashboard tabs'>"
-        f"{html.escape(label)}</a>"
-        for key, label, href in nav_items
-    )
-    nav_default_keys = html.escape(
-        json.dumps([key for key, _label, _href in nav_items]),
-        quote=True,
-    )
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>{html.escape(title)} — ctx monitor</title>"
-        f"<style>{_CSS}</style></head><body>"
-        "<div class='app-shell'>"
-        "<header class='app-header'>"
-        "<a class='app-brand' href='/' aria-label='ctx monitor home'>"
-        "<span class='app-brand-mark'>ctx</span><span>monitor</span></a>"
-        "<div class='app-header-meta'>local graph, wiki, skills, agents, MCPs, and harnesses</div>"
-        "</header>"
-        "<div class='nav' id='dashboard-nav' "
-        "data-nav-storage-key='ctx-monitor-nav-order' "
-        f"data-nav-default-keys='{nav_default_keys}' "
-        "aria-label='Dashboard navigation'>"
-        + nav_html
-        + "<button type='button' id='nav-reset' class='nav-reset' "
-          "title='Reset dashboard tab order'>reset</button>"
-        "</div>"
-        + _monitor_inline_script("monitor-nav.js")
-        + "<main class='app-main'>"
-        + body
-        + "</main></div></body></html>"
-    )
 
 
 # ─── Graph neighborhood (for /graph) ────────────────────────────────────────
@@ -3945,71 +3883,18 @@ def _render_home() -> str:
 
 
 def _render_sessions_index() -> str:
-    sessions = _summarize_sessions()
-    rows = []
-    for s in sessions:
-        sid = s["session_id"]
-        rows.append(
-            f"<tr>"
-            f"<td><a href='/session/{html.escape(sid)}'><code>{html.escape(sid[:32])}</code></a></td>"
-            f"<td class='muted'>{html.escape(s['first_seen'] or '—')}</td>"
-            f"<td class='muted'>{html.escape(s['last_seen'] or '—')}</td>"
-            f"<td>{len(s['skills_loaded'])}</td>"
-            f"<td>{len(s['skills_unloaded'])}</td>"
-            f"<td>{len(s['agents_loaded'])}</td>"
-            f"<td>{len(s['agents_unloaded'])}</td>"
-            f"<td>{len(s['mcps_loaded'])}</td>"
-            f"<td>{len(s['mcps_unloaded'])}</td>"
-            f"<td>{s['lifecycle_transitions']}</td>"
-            f"</tr>"
-        )
-    body = (
-        "<h1>Sessions</h1>"
-        f"<p class='muted'>{len(sessions)} unique sessions observed.</p>"
-        "<table>"
-        "<tr><th>Session</th><th>First seen</th><th>Last seen</th>"
-        "<th>Skills↑</th><th>Skills↓</th>"
-        "<th>Agents↑</th><th>Agents↓</th>"
-        "<th>MCPs↑</th><th>MCPs↓</th><th>Lifecycle</th></tr>"
-        + "".join(rows)
-        + "</table>"
+    return _activity_page.render_sessions_index(
+        layout=_layout,
+        summarize_sessions=_summarize_sessions,
     )
-    return _layout("Sessions", body)
 
 
 def _render_session_detail(session_id: str) -> str:
-    detail = _session_detail(session_id)
-    audit = detail["audit_entries"]
-    events = detail["load_events"]
-
-    audit_rows = "".join(
-        f"<tr><td class='muted'>{html.escape(r.get('ts', ''))}</td>"
-        f"<td><span class='pill'>{html.escape(r.get('event', ''))}</span></td>"
-        f"<td><code>{html.escape(r.get('subject', ''))}</code></td>"
-        f"<td class='muted'>{html.escape(json.dumps(r.get('meta', {}))[:80])}</td></tr>"
-        for r in audit
+    return _activity_page.render_session_detail(
+        session_id,
+        layout=_layout,
+        session_detail=_session_detail,
     )
-    event_rows = "".join(
-        f"<tr><td class='muted'>{html.escape(r.get('timestamp', ''))}</td>"
-        f"<td>{html.escape(r.get('event', ''))}</td>"
-        f"<td><code>{html.escape(r.get('skill') or r.get('agent') or '')}</code></td></tr>"
-        for r in events
-    )
-
-    body = (
-        f"<h1>Session {html.escape(session_id)}</h1>"
-        f"<div class='card'><strong>{len(audit)}</strong> audit entries · "
-        f"<strong>{len(events)}</strong> load/unload events</div>"
-        "<h2>Audit timeline</h2>"
-        "<table><tr><th>ts</th><th>event</th><th>subject</th><th>meta</th></tr>"
-        + audit_rows
-        + "</table>"
-        "<h2>Load/unload events</h2>"
-        "<table><tr><th>ts</th><th>event</th><th>subject</th></tr>"
-        + event_rows
-        + "</table>"
-    )
-    return _layout(f"Session {session_id}", body)
 
 
 def _render_skills(qs: dict[str, str] | None = None) -> str:
@@ -6216,23 +6101,23 @@ def _render_wiki_index(entity_type: str | None = None, query: str = "") -> str:
 
 
 def _docs_roots() -> list[Path]:
-    return dashboard_docs.docs_roots(Path.cwd(), Path(__file__).resolve().parent.parent)
+    return _docs_page.docs_roots(Path.cwd(), Path(__file__).resolve().parent.parent)
 
 
 def _docs_render_disk_cache_path() -> Path:
-    return dashboard_docs.docs_render_disk_cache_path(_claude_dir())
+    return _docs_page.docs_render_disk_cache_path(_claude_dir())
 
 
 def _docs_index_entries() -> list[dict[str, Any]]:
-    return dashboard_docs.docs_index_entries(_docs_roots())
+    return _docs_page.docs_index_entries(_docs_roots())
 
 
 def _docs_tabs(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return dashboard_docs.docs_tabs(entries, _docs_roots())
+    return _docs_page.docs_tabs(entries, _docs_roots())
 
 
 def _render_docs_markdown(markdown_text: str, page_anchor: str) -> str:
-    return dashboard_docs.render_docs_markdown(
+    return _docs_page.render_docs_markdown(
         markdown_text,
         page_anchor,
         fallback_renderer=_render_wiki_markdown,
@@ -6240,7 +6125,7 @@ def _render_docs_markdown(markdown_text: str, page_anchor: str) -> str:
 
 
 def _render_docs() -> str:
-    return dashboard_docs.render_docs(
+    return _docs_page.render_docs(
         roots=_docs_roots(),
         layout=_layout,
         asset_text=_monitor_asset_text,
@@ -6759,325 +6644,32 @@ def _kpi_summary():
 
 
 def _render_kpi() -> str:
-    """HTML-rendered KPI dashboard — grades, lifecycle, categories,
-    hard floors, top demotion candidates, archived entities.
-
-    Mirrors the structure of ``kpi_dashboard.render_markdown`` so the
-    commit-friendly Markdown digest and the browser view show the
-    same numbers.
-    """
-    summary = _kpi_summary()
-    if summary is None or summary.total == 0:
-        empty = (
-            "<h1>KPIs</h1>"
-            "<div class='card'><strong>No KPI data yet.</strong>"
-            "<p class='muted' style='margin-top:0.4rem;'>"
-            "The KPI dashboard reads from "
-            "<code>~/.claude/skill-quality/*.json</code> and "
-            "<code>*.lifecycle.json</code>. Run "
-            "<code>ctx-skill-quality recompute --all</code> to populate "
-            "sidecars, then reload this page.</p>"
-            "<p class='muted'>CLI equivalent: "
-            "<code>python -m kpi_dashboard render</code></p></div>"
-        )
-        return _layout("KPIs", empty)
-
-    total = summary.total
-
-    # Grade distribution pills + detail table
-    grade_pills = "".join(
-        f"<span class='pill grade-{g}'>{g}: {summary.grade_counts.get(g, 0)}</span> "
-        for g in ("A", "B", "C", "D", "F")
+    return _ops_page.render_kpi(
+        _kpi_summary(),
+        layout=_layout,
+        normalize_entity_type=_normalize_dashboard_entity_type,
     )
-
-    def pct(n: int) -> str:
-        return f"{(100.0 * n / total):.1f}%" if total else "—"
-
-    grade_rows = "".join(
-        f"<tr><td><span class='pill grade-{g}'>{g}</span></td>"
-        f"<td>{summary.grade_counts.get(g, 0)}</td>"
-        f"<td class='muted'>{pct(summary.grade_counts.get(g, 0))}</td></tr>"
-        for g in ("A", "B", "C", "D", "F")
-    )
-
-    lifecycle_rows = "".join(
-        f"<tr><td><code>{html.escape(state)}</code></td>"
-        f"<td>{summary.lifecycle_counts.get(state, 0)}</td></tr>"
-        for state in ("active", "watch", "demote", "archive")
-    )
-
-    floor_rows = "".join(
-        f"<tr><td><code>{html.escape(reason)}</code></td><td>{count}</td></tr>"
-        for reason, count in sorted(
-            summary.hard_floor_counts.items(), key=lambda kv: (-kv[1], kv[0]),
-        )
-    ) or "<tr><td colspan='2' class='muted'>No hard floors active.</td></tr>"
-
-    category_rows = "".join(
-        "<tr>"
-        f"<td>{html.escape(c['category'])}</td>"
-        f"<td>{c['count']}</td>"
-        f"<td class='muted'>{c['avg_score']:.3f}</td>"
-        f"<td><span class='pill grade-A'>{c['grade_mix'].get('A', 0)}</span></td>"
-        f"<td><span class='pill grade-B'>{c['grade_mix'].get('B', 0)}</span></td>"
-        f"<td><span class='pill grade-C'>{c['grade_mix'].get('C', 0)}</span></td>"
-        f"<td><span class='pill grade-D'>{c['grade_mix'].get('D', 0)}</span></td>"
-        f"<td><span class='pill grade-F'>{c['grade_mix'].get('F', 0)}</span></td>"
-        "</tr>"
-        for c in summary.category_breakdown
-    ) or "<tr><td colspan='8' class='muted'>No categorized entities.</td></tr>"
-
-    def detail_href(slug: str, entity_type: str) -> str:
-        normalized = _normalize_dashboard_entity_type(entity_type)
-        suffix = f"?type={html.escape(normalized)}" if normalized else ""
-        return f"/skill/{html.escape(slug)}{suffix}"
-
-    demotion_rows = "".join(
-        "<tr>"
-        f"<td><a href='{detail_href(c['slug'], c['subject_type'])}'><code>{html.escape(c['slug'])}</code></a></td>"
-        f"<td class='muted'>{html.escape(c['subject_type'])}</td>"
-        f"<td class='muted'>{html.escape(c['category'])}</td>"
-        f"<td><span class='pill grade-{html.escape(c['grade'])}'>{html.escape(c['grade'])}</span></td>"
-        f"<td class='muted'>{c['score']:.3f}</td>"
-        f"<td class='muted'>{html.escape(c['lifecycle_state'])}</td>"
-        f"<td>{c['consecutive_d_count']}</td>"
-        f"<td class='muted'>{html.escape(c.get('hard_floor') or '—')}</td>"
-        "</tr>"
-        for c in summary.low_quality_candidates
-    ) or "<tr><td colspan='8' class='muted'>No active D/F grade entries — corpus is healthy.</td></tr>"
-
-    archived_rows = "".join(
-        "<tr>"
-        f"<td><a href='{detail_href(a['slug'], a['subject_type'])}'><code>{html.escape(a['slug'])}</code></a></td>"
-        f"<td class='muted'>{html.escape(a['subject_type'])}</td>"
-        f"<td class='muted'>{html.escape(a['category'])}</td>"
-        f"<td class='muted'>{html.escape(a.get('last_grade') or '—')}</td>"
-        f"<td class='muted'>{html.escape(a.get('computed_at') or '—')}</td>"
-        "</tr>"
-        for a in summary.archived
-    ) or "<tr><td colspan='5' class='muted'>None.</td></tr>"
-
-    by_subject = summary.by_subject
-    subject_blurb = " · ".join(
-        f"{html.escape(s)}: {n}" for s, n in sorted(by_subject.items())
-    ) or "—"
-
-    body = (
-        "<h1>KPIs</h1>"
-        "<p class='muted'>Aggregated from "
-        "<code>~/.claude/skill-quality/*.json</code> (quality sidecars) "
-        "and <code>*.lifecycle.json</code> (tier sidecars). "
-        f"Generated {html.escape(summary.generated_at)}.</p>"
-        "<div class='card'>"
-        f"<strong>Total entities:</strong> {total} "
-        f"<span class='muted'>· {subject_blurb}</span>"
-        f"<div style='margin-top:0.5rem;'>{grade_pills}</div>"
-        "<div style='margin-top:0.4rem;'>"
-        "<a href='/api/kpi.json'>JSON</a> · "
-        "<a href='/skills'>skill cards →</a></div>"
-        "</div>"
-        "<div style='display:grid; grid-template-columns:1fr 1fr; gap:1rem;'>"
-        "<div class='card'><strong>Grade distribution</strong>"
-        "<table><tr><th>Grade</th><th>Count</th><th>Share</th></tr>"
-        + grade_rows + "</table></div>"
-        "<div class='card'><strong>Lifecycle tiers</strong>"
-        "<table><tr><th>State</th><th>Count</th></tr>"
-        + lifecycle_rows + "</table></div>"
-        "</div>"
-        "<div class='card'><strong>Hard floors active</strong>"
-        "<table><tr><th>Reason</th><th>Count</th></tr>"
-        + floor_rows + "</table></div>"
-        "<div class='card'><strong>By category</strong>"
-        "<table><tr><th>Category</th><th>Count</th><th>Avg score</th>"
-        "<th>A</th><th>B</th><th>C</th><th>D</th><th>F</th></tr>"
-        + category_rows + "</table></div>"
-        "<div class='card'><strong>Top demotion candidates</strong> "
-        "<span class='muted'>(active or watch · grade D/F · sorted by D-streak desc, score asc)</span>"
-        "<table><tr><th>Slug</th><th>Type</th><th>Category</th><th>Grade</th>"
-        "<th>Score</th><th>State</th><th>D-streak</th><th>Hard floor</th></tr>"
-        + demotion_rows + "</table></div>"
-        "<div class='card'><strong>Archived</strong>"
-        "<table><tr><th>Slug</th><th>Type</th><th>Category</th>"
-        "<th>Last grade</th><th>Computed at</th></tr>"
-        + archived_rows + "</table></div>"
-    )
-    return _layout("KPIs", body)
 
 
 def _render_status() -> str:
-    """Render queue and graph/wiki artifact state for operator checks."""
-    status = _status_payload()
-    queue = status["queue"]
-    artifacts = status["artifacts"]
-    counts = queue.get("counts", {})
-    count_pills = " ".join(
-        f"<span class='pill'>{html.escape(name)}: {int(counts.get(name, 0))}</span>"
-        for name in (
+    return _ops_page.render_status(
+        _status_payload(),
+        layout=_layout,
+        queue_status_names=(
             wiki_queue.STATUS_PENDING,
             wiki_queue.STATUS_RUNNING,
             wiki_queue.STATUS_SUCCEEDED,
             wiki_queue.STATUS_FAILED,
             wiki_queue.STATUS_CANCELLED,
-        )
+        ),
     )
-
-    job_rows = "".join(
-        "<tr>"
-        f"<td>{job.get('id')}</td>"
-        f"<td><code>{html.escape(str(job.get('kind') or ''))}</code></td>"
-        f"<td><span class='pill'>{html.escape(str(job.get('status') or ''))}</span></td>"
-        f"<td>{job.get('attempts')}/{job.get('max_attempts')}</td>"
-        f"<td class='muted'>{html.escape(str(job.get('source') or ''))}</td>"
-        f"<td class='muted'>{html.escape(str(job.get('worker_id') or ''))}</td>"
-        f"<td class='muted'>{html.escape(str(job.get('last_error') or ''))[:120]}</td>"
-        "</tr>"
-        for job in queue.get("recent_jobs", [])
-    ) or "<tr><td colspan='7' class='muted'>No queue jobs recorded.</td></tr>"
-
-    artifact_keys = (
-        ("graph_json", "graph.json"),
-        ("graph_packs", "graph packs"),
-        ("graph_delta_json", "graph-delta.json"),
-        ("communities_json", "communities.json"),
-        ("graph_store", "graph-store.sqlite3"),
-        ("wiki_packs", "wiki packs"),
-        ("pack_compaction", "pack compaction"),
-        ("wiki_graph_tar", "wiki-graph.tar.gz"),
-        ("skills_sh_catalog", "skill-index.json.gz"),
-    )
-    artifact_rows = "".join(
-        "<tr>"
-        f"<td><code>{label}</code></td>"
-        f"<td>{'yes' if artifacts[key].get('exists') else 'no'}</td>"
-        f"<td>{int(artifacts[key].get('size') or 0):,}</td>"
-        f"<td class='muted'>{_artifact_detail(artifacts[key])}</td>"
-        f"<td class='muted'>{html.escape(str(artifacts[key].get('path') or ''))}</td>"
-        "</tr>"
-        for key, label in artifact_keys
-    )
-
-    promotion_rows = "".join(
-        "<tr>"
-        f"<td><span class='pill'>{html.escape(str(row.get('status') or ''))}</span></td>"
-        f"<td class='muted'>{html.escape(str(row.get('promoted_at') or row.get('started_at') or ''))}</td>"
-        f"<td class='muted'><code>{html.escape(str(row.get('current_sha256') or row.get('candidate_sha256') or ''))[:16]}</code></td>"
-        f"<td class='muted'>{html.escape(str(row.get('target') or ''))}</td>"
-        "</tr>"
-        for row in artifacts.get("promotions", [])
-    ) or "<tr><td colspan='4' class='muted'>No promotion metadata recorded.</td></tr>"
-
-    queue_error = queue.get("error")
-    if queue_error:
-        availability = f"error ({html.escape(str(queue.get('db_path') or ''))})"
-    elif queue.get("available"):
-        availability = "available"
-    else:
-        availability = f"not initialized ({html.escape(str(queue.get('db_path') or ''))})"
-    queue_error_html = (
-        "<p class='error'>Queue DB error: "
-        f"{html.escape(str(queue_error))}</p>"
-        if queue_error
-        else ""
-    )
-    body = (
-        "<h1>Status</h1>"
-        "<div class='card'>"
-        "<strong>Queue state</strong>"
-        f"<p class='muted'>Durable worker DB: {availability}. "
-        f"Total jobs: {int(queue.get('total') or 0)}. "
-        "<a href='/api/status.json'>JSON</a></p>"
-        f"{queue_error_html}"
-        f"<div>{count_pills}</div>"
-        "</div>"
-        "<div class='card'><strong>Recent queue jobs</strong>"
-        "<table><tr><th>ID</th><th>Kind</th><th>Status</th><th>Attempts</th>"
-        "<th>Source</th><th>Worker</th><th>Last error</th></tr>"
-        + job_rows
-        + "</table></div>"
-        "<div class='card'><strong>Artifact versions</strong>"
-        "<table><tr><th>Artifact</th><th>Exists</th><th>Bytes</th><th>Details</th><th>Path</th></tr>"
-        + artifact_rows
-        + "</table></div>"
-        f"<div class='card'><strong>Artifact promotions ({artifacts.get('promotion_count', 0)})</strong>"
-        "<table><tr><th>Status</th><th>Time</th><th>Hash</th><th>Target</th></tr>"
-        + promotion_rows
-        + "</table></div>"
-    )
-    return _layout("Status", body)
-
-
-def _artifact_detail(status: dict[str, Any]) -> str:
-    if "needs_compaction" in status:
-        need = "needed" if status.get("needs_compaction") else "not needed"
-        readiness = "ready" if status.get("can_compact_now") else "not ready"
-        detail = (
-            f"compaction: {need}, "
-            f"{int(status.get('max_overlay_count') or 0)} overlays / "
-            f"threshold {int(status.get('overlay_threshold') or 0)}, "
-            f"{readiness}"
-        )
-    elif "pack_count" in status:
-        detail = (
-            f"packs: {int(status.get('pack_count') or 0)} "
-            f"(base {int(status.get('base_count') or 0)}, "
-            f"overlay {int(status.get('overlay_count') or 0)})"
-        )
-    elif {"fresh", "nodes", "edges"} <= set(status):
-        freshness = "fresh" if status.get("fresh") else "stale or missing"
-        detail = (
-            f"store: {freshness}, "
-            f"{int(status.get('nodes') or 0)} nodes, "
-            f"{int(status.get('edges') or 0)} edges"
-        )
-    else:
-        return ""
-    error = status.get("error")
-    if error:
-        detail += f" - {error}"
-    errors = status.get("errors")
-    if isinstance(errors, list) and errors:
-        detail += f" - {'; '.join(str(item) for item in errors[:3])}"
-    return html.escape(detail)
 
 
 def _render_events() -> str:
-    """SSE endpoint page. The server emits events at /api/events.stream."""
-    entries = _read_jsonl(_audit_log_path(), limit=200)
-    event_lines = [
-        json.dumps(entry, ensure_ascii=False, default=str)
-        for entry in entries
-    ]
-    initial_stream = "\n".join(event_lines)
-    if not initial_stream:
-        initial_stream = "-- no audit events recorded yet; waiting for new events --"
-    return _layout(
-        "Live events",
-        "<h1>Live events</h1>"
-        "<p class='muted'>Tails <code>~/.claude/ctx-audit.jsonl</code> "
-        "via server-sent events.</p>"
-        "<div class='card'>"
-        f"<strong>Showing last {len(entries)} audit events</strong>; "
-        "new writes append below. "
-        "<span id='stream-status' class='muted'>connecting...</span>"
-        "</div>"
-        "<pre id='stream' style='min-height:20rem; max-height:70vh; "
-        "overflow-y:scroll; font-size:0.78rem;'>"
-        f"{html.escape(initial_stream)}"
-        "</pre>"
-        "<script>\n"
-        "const src = new EventSource('/api/events.stream');\n"
-        "const pre = document.getElementById('stream');\n"
-        "const status = document.getElementById('stream-status');\n"
-        "const appendLine = (line) => {\n"
-        "  if (pre.textContent && !pre.textContent.endsWith('\\n')) pre.textContent += '\\n';\n"
-        "  pre.textContent += line + '\\n';\n"
-        "  pre.scrollTop = pre.scrollHeight;\n"
-        "};\n"
-        "pre.scrollTop = pre.scrollHeight;\n"
-        "src.onopen = () => { status.textContent = 'connected; waiting for new events'; };\n"
-        "src.onmessage = (e) => { appendLine(e.data); status.textContent = 'live'; };\n"
-        "src.onerror = () => { status.textContent = 'stream error; reconnecting'; };\n"
-        "</script>",
+    return _activity_page.render_events(
+        layout=_layout,
+        read_jsonl=_read_jsonl,
+        audit_log_path=_audit_log_path,
     )
 
 
@@ -7254,108 +6846,18 @@ def _render_loaded(mutations_enabled: bool | None = None) -> str:
 
 
 def _render_runtime_lifecycle() -> str:
-    summary = _runtime_lifecycle_summary()
-
-    def _event_cell(event: dict[str, Any], key: str, limit: int = 120) -> str:
-        return html.escape(str(event.get(key) or ""))[:limit]
-
-    validation_rows = "".join(
-        "<tr>"
-        f"<td class='muted'>{_event_cell(event, 'created_at')}</td>"
-        f"<td><code>{_event_cell(event, 'check_name')}</code></td>"
-        f"<td><span class='pill'>{_event_cell(event, 'status')}</span></td>"
-        f"<td class='muted'>{_event_cell(event, 'session_id')}</td>"
-        f"<td class='muted'>{_event_cell(event, 'summary')}</td>"
-        "</tr>"
-        for event in reversed(summary["recent_validations"])
+    return _activity_page.render_runtime_lifecycle(
+        layout=_layout,
+        runtime_lifecycle_summary=_runtime_lifecycle_summary,
     )
-    escalation_rows = "".join(
-        "<tr>"
-        f"<td class='muted'>{_event_cell(event, 'created_at')}</td>"
-        f"<td><code>{_event_cell(event, 'trigger')}</code></td>"
-        f"<td><span class='pill'>{_event_cell(event, 'severity')}</span></td>"
-        f"<td class='muted'>{_event_cell(event, 'session_id')}</td>"
-        f"<td class='muted'>{_event_cell(event, 'reason')}</td>"
-        "</tr>"
-        for event in reversed(summary["open_escalations"])
-    )
-
-    body = (
-        "<h1>Runtime lifecycle</h1>"
-        "<div class='card'>"
-        f"<strong>{summary['validations_total']}</strong> validations / "
-        f"<strong>{summary['validation_failures']}</strong> failed / "
-        f"<strong>{summary['open_escalations_total']}</strong> open escalations"
-        f"<br><span class='muted'>source: <code>{html.escape(summary['path'])}</code></span>"
-        " / <a href='/api/runtime.json'>JSON</a>"
-        "</div>"
-        "<div class='card'><strong>Recent validations</strong>"
-        + (
-            "<table><tr><th>Created</th><th>Check</th><th>Status</th>"
-            "<th>Session</th><th>Summary</th></tr>"
-            + validation_rows
-            + "</table>"
-            if validation_rows else
-            "<p class='muted'>No validation checks recorded yet.</p>"
-        )
-        + "</div>"
-        "<div class='card'><strong>Open escalations</strong>"
-        + (
-            "<table><tr><th>Created</th><th>Trigger</th><th>Severity</th>"
-            "<th>Session</th><th>Reason</th></tr>"
-            + escalation_rows
-            + "</table>"
-            if escalation_rows else
-            "<p class='muted'>No open escalations.</p>"
-        )
-        + "</div>"
-    )
-    return _layout("Runtime lifecycle", body)
 
 
 def _render_logs() -> str:
-    """Filterable audit-log viewer — reads the last 500 lines of the log."""
-    entries = _read_jsonl(_audit_log_path(), limit=500)
-    rows = "".join(
-        f"<tr data-event='{html.escape(e.get('event', ''))}' "
-        f"data-subject='{html.escape(e.get('subject', ''))}' "
-        f"data-session='{html.escape(e.get('session_id', '') or '')}'>"
-        f"<td class='muted'>{html.escape(e.get('ts', ''))}</td>"
-        f"<td><span class='pill'>{html.escape(e.get('event', ''))}</span></td>"
-        f"<td><code>{html.escape(e.get('subject', ''))}</code></td>"
-        f"<td class='muted'>{html.escape(e.get('actor', ''))}</td>"
-        f"<td class='muted'>{html.escape((e.get('session_id') or '')[:24])}</td>"
-        f"<td class='muted'>{html.escape(json.dumps(e.get('meta', {}))[:100])}</td>"
-        f"</tr>"
-        for e in reversed(entries)
+    return _activity_page.render_logs(
+        layout=_layout,
+        read_jsonl=_read_jsonl,
+        audit_log_path=_audit_log_path,
     )
-    body = (
-        "<h1>Audit log</h1>"
-        f"<div class='card'>Showing last {len(entries)} of "
-        f"<code>~/.claude/ctx-audit.jsonl</code>. "
-        "<a href='/events'>Live stream →</a>"
-        "</div>"
-        "<div class='card'>"
-        "<input type='text' id='filter' placeholder='filter: event/subject/session…' "
-        "style='padding:0.35rem 0.6rem; width:20rem; border:1px solid #ccc; border-radius:4px;'>"
-        "<span class='muted' style='margin-left:0.75rem;'>"
-        "e.g. <code>skill.loaded</code>, <code>kubernetes-deployment</code>, or a session id</span>"
-        "</div>"
-        "<table id='logs'><tr><th>ts</th><th>event</th><th>subject</th>"
-        "<th>actor</th><th>session</th><th>meta</th></tr>" + rows + "</table>"
-        "<script>\n"
-        "const input = document.getElementById('filter');\n"
-        "const rows = document.querySelectorAll('#logs tr[data-event]');\n"
-        "input.addEventListener('input', () => {\n"
-        "  const q = input.value.toLowerCase();\n"
-        "  rows.forEach(r => {\n"
-        "    const hay = [r.dataset.event, r.dataset.subject, r.dataset.session].join(' ').toLowerCase();\n"
-        "    r.style.display = !q || hay.includes(q) ? '' : 'none';\n"
-        "  });\n"
-        "});\n"
-        "</script>"
-    )
-    return _layout("Audit log", body)
 
 
 # ─── Mutation endpoints ──────────────────────────────────────────────────────
@@ -7390,11 +6892,6 @@ def _perform_unload(slug: str, entity_type: str = "skill") -> tuple[bool, str]:
 
 
 # ─── HTTP handler ────────────────────────────────────────────────────────────
-
-
-def _server_shutdown_requested(server: Any) -> bool:
-    event = getattr(server, "_ctx_shutdown", None)
-    return bool(event is not None and event.is_set())
 
 
 class _MonitorHandler(BaseHTTPRequestHandler):
@@ -7848,38 +7345,15 @@ class _MonitorHandler(BaseHTTPRequestHandler):
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
 
-class _MonitorServer(ThreadingHTTPServer):
-    daemon_threads = True
-    block_on_close = False
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self._ctx_shutdown = threading.Event()
-        super().__init__(*args, **kwargs)
-
-    def shutdown(self) -> None:
-        self._ctx_shutdown.set()
-        super().shutdown()
-
-    def server_close(self) -> None:
-        self._ctx_shutdown.set()
-        super().server_close()
-
-    def handle_error(self, request: Any, client_address: Any) -> None:
-        exc_type, _, _ = sys.exc_info()
-        if exc_type is not None and issubclass(
-            exc_type,
-            (BrokenPipeError, ConnectionAbortedError, ConnectionResetError),
-        ):
-            return
-        super().handle_error(request, client_address)
-
-
 def _make_monitor_server(host: str, port: int) -> _MonitorServer:
     global _MONITOR_MUTATIONS_ENABLED
     _MONITOR_MUTATIONS_ENABLED = _host_allows_mutations(host)
-    server = _MonitorServer((host, port), _MonitorHandler)
-    server._ctx_mutations_enabled = _MONITOR_MUTATIONS_ENABLED
-    return server
+    return _make_server(
+        host,
+        port,
+        _MonitorHandler,
+        mutations_enabled=_MONITOR_MUTATIONS_ENABLED,
+    )
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765) -> None:

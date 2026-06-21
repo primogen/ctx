@@ -22,6 +22,7 @@ import ctx_monitor as cm
 import ctx_init as ci
 from ctx import dashboard_entities
 from ctx import dashboard_docs
+from ctx.monitor import routes as monitor_routes
 from ctx.core.wiki import wiki_queue
 
 
@@ -1202,6 +1203,33 @@ def test_host_allows_mutations_only_for_loopback() -> None:
     assert not cm._host_allows_mutations("0.0.0.0")
     assert not cm._host_allows_mutations("::")
     assert not cm._host_allows_mutations("example.com")
+
+
+def test_monitor_route_inventory_covers_nav_and_api_routes() -> None:
+    nav_hrefs = {href for _key, _label, href in monitor_routes.NAV_ROUTES}
+    assert {
+        "/",
+        "/loaded",
+        "/skills",
+        "/skillspector",
+        "/wiki",
+        "/graph",
+        "/manage",
+        "/harness",
+        "/docs",
+        "/config",
+        "/status",
+        "/kpi",
+        "/runtime",
+        "/sessions",
+        "/logs",
+        "/events",
+    } <= nav_hrefs
+    assert nav_hrefs <= monitor_routes.PAGE_ROUTES
+    assert "/catalog" in monitor_routes.PAGE_ROUTES
+    assert "/api/graph/<slug>.json" in monitor_routes.GET_API_PATTERNS
+    assert "/api/entities/search.json" in monitor_routes.GET_API_ROUTES
+    assert "/api/entity/upsert" in monitor_routes.POST_API_ROUTES
 
 
 def test_graph_api_invalid_params_return_400(
