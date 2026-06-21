@@ -58,17 +58,15 @@ starting point.
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import math
 import re
 import sqlite3
 import sys
 from collections.abc import Mapping
-from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 from ctx import dashboard_entities
 from ctx.core import entity_types as core_entity_types
@@ -99,6 +97,7 @@ from ctx.monitor.server import MonitorHandlerDeps as _MonitorHandlerDeps
 from ctx.monitor.server import MonitorServer as _MonitorServer
 from ctx.monitor.server import build_monitor_handler as _build_monitor_handler
 from ctx.monitor.server import make_monitor_server as _make_server
+from ctx.monitor import security as _monitor_security
 from ctx.monitor.services import audit as _audit_service
 from ctx.monitor.services import cache as _cache_service
 from ctx.monitor.services import config as _config_service
@@ -123,54 +122,18 @@ _WIKI_RENDER_CACHE_VALUE: str | None = None
 _WIKI_INDEX_LIMIT_PER_TYPE = 500
 _SKILLS_PAGE_DEFAULT_LIMIT = 100
 _SKILLS_PAGE_MAX_LIMIT = 500
-_MAX_POST_BODY_BYTES = 64 * 1024
+_MAX_POST_BODY_BYTES = _monitor_security.MAX_POST_BODY_BYTES
 _DASHBOARD_INDEX_MEMBER = "graphify-out/dashboard-neighborhoods.sqlite3"
-_READ_TOKEN_COOKIE = "ctx_monitor_read_token"
+_READ_TOKEN_COOKIE = _monitor_security.READ_TOKEN_COOKIE
 
 
 # ─── Data sources ────────────────────────────────────────────────────────────
 
 
-def _host_allows_mutations(host: str) -> bool:
-    normalized = (host or "").strip().strip("[]").rstrip(".").lower()
-    if normalized == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(normalized).is_loopback
-    except ValueError:
-        return False
-
-
-def _request_host_name(host_header: str) -> str:
-    value = (host_header or "").strip()
-    if not value:
-        return ""
-    if value.startswith("["):
-        end = value.find("]")
-        return value[1:end].rstrip(".").lower() if end != -1 else ""
-    return value.rsplit(":", 1)[0].rstrip(".").lower()
-
-
-def _origin_host_name(origin: str) -> str:
-    try:
-        parsed = urlsplit(origin)
-    except ValueError:
-        return ""
-    if parsed.scheme not in {"http", "https"}:
-        return ""
-    return (parsed.hostname or "").rstrip(".").lower()
-
-
-def _read_token_cookie(cookie_header: str) -> str:
-    if not cookie_header:
-        return ""
-    try:
-        cookie = SimpleCookie()
-        cookie.load(cookie_header)
-    except CookieError:
-        return ""
-    morsel = cookie.get(_READ_TOKEN_COOKIE)
-    return morsel.value if morsel is not None else ""
+_host_allows_mutations = _monitor_security.host_allows_mutations
+_request_host_name = _monitor_security.request_host_name
+_origin_host_name = _monitor_security.origin_host_name
+_read_token_cookie = _monitor_security.read_token_cookie
 
 
 def _claude_dir() -> Path:
