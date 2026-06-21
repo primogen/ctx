@@ -59,7 +59,6 @@ starting point.
 from __future__ import annotations
 
 import argparse
-import html
 import ipaddress
 import json
 import math
@@ -585,66 +584,17 @@ def _render_entity_subgraph_svg(
 
 
 def _render_entity_subgraph(slug: str, entity_type: str | None = None) -> str:
-    """Render a compact 1-hop subgraph table for wiki entity pages."""
-    graph = _graph_neighborhood(slug, hops=1, limit=32, entity_type=entity_type)
-    center = graph.get("center")
-    nodes = graph.get("nodes") or []
-    edges = graph.get("edges") or []
-    if not center:
-        return (
-            "<div class='card'>"
-            "<p class='muted'>No graph node was found for this entity.</p>"
-            "</div>"
-        )
-    node_by_id = {
-        str(node.get("data", {}).get("id", "")): node.get("data", {})
-        for node in nodes
-    }
-    sidecar_by_id = {
-        node_id: _subgraph_sidecar(
-            _graph_slug_from_node_id(node_id),
-            _graph_type_from_node_id(node_id, str(node.get("type") or "skill")),
-        )
-        for node_id, node in node_by_id.items()
-    }
-    rows: list[str] = []
-    for edge in edges:
-        data = edge.get("data", {})
-        source = str(data.get("source", ""))
-        target = str(data.get("target", ""))
-        other_id = target if source == center else source
-        if other_id == center or other_id not in node_by_id:
-            continue
-        other = node_by_id[other_id]
-        other_type = _graph_type_from_node_id(other_id, str(other.get("type", "skill")))
-        other_slug = other_id.split(":", 1)[-1]
-        shared = ", ".join(str(tag) for tag in data.get("shared_tags", [])[:6])
-        shared_html = html.escape(shared) if shared else "<span class='muted'>none</span>"
-        quality_html = _wiki_page.subgraph_quality_cell(sidecar_by_id.get(other_id))
-        rows.append(
-            "<tr>"
-            f"<td><a href='{html.escape(_entity_wiki_href(other_slug, other_type))}'>"
-            f"{html.escape(str(other.get('label') or other_slug))}</a></td>"
-            f"<td><span class='pill entity-type-{html.escape(other_type)}'>"
-            f"{html.escape(other_type)}</span></td>"
-            f"<td>{quality_html}</td>"
-            f"<td><code>{float(data.get('weight', 0.0)):.3f}</code></td>"
-            f"<td>{shared_html}</td>"
-            "</tr>"
-        )
-    table = (
-        "<table><tr><th>Entity</th><th>Type</th><th>Quality sidecar</th>"
-        "<th>Weight</th><th>Shared signals</th></tr>"
-        + ("".join(rows) if rows else "<tr><td colspan='5' class='muted'>No neighbors under the current limit.</td></tr>")
-        + "</table>"
-    )
-    return (
-        "<div class='card'>"
-        "<h2>Subgraph</h2>"
-        f"<p class='muted'>{len(nodes)} nodes and {len(edges)} edges in the 1-hop neighborhood.</p>"
-        + _render_entity_subgraph_svg(node_by_id, edges, center, sidecar_by_id)
-        + table
-        + "</div>"
+    return _wiki_page.render_entity_subgraph(
+        slug,
+        entity_type,
+        graph_neighborhood=_graph_neighborhood,
+        graph_type_from_node_id=_graph_type_from_node_id,
+        graph_slug_from_node_id=_graph_slug_from_node_id,
+        subgraph_sidecar=_subgraph_sidecar,
+        display_label=_display_label,
+        display_slug=_display_slug,
+        entity_wiki_href=_entity_wiki_href,
+        json_for_script=_json_for_script,
     )
 
 
