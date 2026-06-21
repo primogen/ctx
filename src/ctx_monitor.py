@@ -90,6 +90,7 @@ from ctx.monitor.layout import monitor_inline_script as _monitor_inline_script
 from ctx.monitor import state as _monitor_state
 from ctx.monitor.pages import activity as _activity_page
 from ctx.monitor.pages import docs as _docs_page
+from ctx.monitor.pages import home as _home_page
 from ctx.monitor.pages import loaded as _loaded_page
 from ctx.monitor.pages import ops as _ops_page
 from ctx.monitor.server import MonitorServer as _MonitorServer
@@ -3759,128 +3760,23 @@ def _wiki_stats() -> dict:
     }
 
 
+def _count_audit_lines(path: Path) -> int:
+    return sum(1 for _ in path.open(encoding="utf-8")) if path.exists() else 0
+
+
 def _render_home() -> str:
-    sessions = _summarize_sessions()
-    recent = sessions[:10]
-    gstats = _graph_stats()
-    wstats = _wiki_stats()
-    runtime = _runtime_lifecycle_summary()
-    audit_lines = sum(1 for _ in _audit_log_path().open(encoding="utf-8")) \
-        if _audit_log_path().exists() else 0
-    manifest = _read_manifest()
-    recent_audit = _read_jsonl(_audit_log_path(), limit=10)
-    if wstats.get("split_known", True):
-        wiki_detail = (
-            f"{wstats['skills']:,} skills · {wstats['agents']:,} agents · "
-            f"{wstats['mcps']:,} MCPs · {wstats['harnesses']:,} harnesses"
-        )
-    else:
-        wiki_detail = "entity split unavailable; install the current graph index"
-
-    rows = []
-    for s in recent:
-        sid = s["session_id"]
-        rows.append(
-            f"<tr>"
-            f"<td><a href='/session/{html.escape(sid)}'>{html.escape(sid[:20])}</a></td>"
-            f"<td class='muted'>{html.escape(s['last_seen'] or '—')}</td>"
-            f"<td>{len(s['skills_loaded'])}</td>"
-            f"<td>{len(s['skills_unloaded'])}</td>"
-            f"<td>{len(s['agents_loaded'])}</td>"
-            f"<td>{s['score_updates']}</td>"
-            f"</tr>"
-        )
-
-    audit_rows = "".join(
-        f"<tr><td class='muted'>{html.escape((r.get('ts') or '')[-8:])}</td>"
-        f"<td><span class='pill'>{html.escape(r.get('event', ''))}</span></td>"
-        f"<td><a href='/wiki/{html.escape(r.get('subject',''))}'><code>{html.escape(r.get('subject',''))}</code></a></td>"
-        f"</tr>"
-        for r in reversed(recent_audit)
+    audit_path = _audit_log_path()
+    return _home_page.render_home(
+        manifest=_read_manifest(),
+        sessions=_summarize_sessions(),
+        wiki_stats=_wiki_stats(),
+        graph_stats=_graph_stats(),
+        runtime_summary=_runtime_lifecycle_summary(),
+        audit_lines=_count_audit_lines(audit_path),
+        recent_audit=_read_jsonl(audit_path, limit=10),
+        layout=_layout,
+        format_count=_format_count,
     )
-
-    body = (
-        "<h1>ctx monitor</h1>"
-        # ── Stat grid ────────────────────────────────────────────────
-        "<div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr));"
-        " gap:0.8rem; margin-bottom:1.25rem;'>"
-        + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Currently loaded</div>"
-        f"<div style='font-size:1.6rem; font-weight:600;'>{_format_count(len(manifest.get('load', [])))}</div>"
-        f"<a href='/loaded'>manage →</a></div>"
-        + "<div class='card'><div class='muted' style='font-size:0.8rem;'>Sidecars</div>"
-        "<div id='home-sidecar-count' style='font-size:1.6rem; font-weight:600;'>...</div>"
-        "<a href='/skills'>browse →</a></div>"
-        + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Wiki entities</div>"
-        f"<div style='font-size:1.6rem; font-weight:600;'>{_format_count(wstats['total'])}</div>"
-        f"<span class='muted' style='font-size:0.75rem;'>"
-        f"{html.escape(wiki_detail)}</span></div>"
-        + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Knowledge graph</div>"
-        f"<div style='font-size:1.6rem; font-weight:600;'>{_format_count(gstats['nodes'])}</div>"
-        f"<span class='muted' style='font-size:0.75rem;'>{_format_count(gstats['edges'])} edges</span>"
-        f" · <a href='/graph'>explore →</a></div>"
-        + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Runtime checks</div>"
-        f"<div style='font-size:1.6rem; font-weight:600;'>{_format_count(runtime['validations_total'])}</div>"
-        f"<span class='muted' style='font-size:0.75rem;'>"
-        f"{_format_count(runtime['validation_failures'])} failed / "
-        f"{_format_count(runtime['open_escalations_total'])} open escalations</span>"
-        f" / <a href='/runtime'>view -></a></div>"
-        + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Audit events</div>"
-        f"<div style='font-size:1.6rem; font-weight:600;'>{_format_count(audit_lines)}</div>"
-        f"<a href='/logs'>view →</a> · <a href='/events'>live →</a></div>"
-        + f"<div class='card'><div class='muted' style='font-size:0.8rem;'>Sessions</div>"
-        f"<div style='font-size:1.6rem; font-weight:600;'>{_format_count(len(sessions))}</div>"
-        f"<a href='/sessions'>browse →</a></div>"
-        + "</div>"
-        # ── Grade distribution ────────────────────────────────────────
-        "<div class='card'><strong>Skill quality grades:</strong> "
-        + "".join(
-            f"<span class='pill grade-{g}' data-home-grade='{g}'>{g}: ...</span> "
-            for g in ("A", "B", "C", "D", "F")
-        )
-        + "<span id='home-grade-total' class='muted'> · total loading</span>"
-        "</div>"
-        "<script>"
-        "(() => {"
-        "const fmt = n => Number(n || 0).toLocaleString();"
-        "const countEl = document.getElementById('home-sidecar-count');"
-        "const totalEl = document.getElementById('home-grade-total');"
-        "fetch('/api/grades.json').then(r => r.ok ? r.json() : Promise.reject())"
-        ".then(data => {"
-        "const grades = data.grades || {};"
-        "['A','B','C','D','F'].forEach(g => {"
-        "const el = document.querySelector(`[data-home-grade=\"${g}\"]`);"
-        "if (el) el.textContent = `${g}: ${fmt(grades[g] || 0)}`;"
-        "});"
-        "if (countEl) countEl.textContent = fmt(data.total || 0);"
-        "if (totalEl) totalEl.textContent = ` · total ${fmt(data.total || 0)}`;"
-        "})"
-        ".catch(() => {"
-        "if (countEl) countEl.textContent = 'open';"
-        "if (totalEl) totalEl.textContent = ' · open Skills for counts';"
-        "});"
-        "})();"
-        "</script>"
-        # ── Two-column: recent sessions + recent audit ────────────────
-        "<div style='display:grid; grid-template-columns:2fr 1fr; gap:1rem;'>"
-        f"<div class='card'><strong>Recent sessions</strong> ({_format_count(len(sessions))} total)"
-        + ("<table>"
-           "<tr><th>Session</th><th>Last seen</th><th>Load</th>"
-           "<th>Unload</th><th>Agents</th><th>Scores</th></tr>"
-           + "".join(rows)
-           + "</table>" if recent else
-           "<p class='muted'>No sessions recorded yet. Hooks start logging "
-           "once you run a Claude Code session with ctx installed.</p>")
-        + "</div>"
-        "<div class='card'><strong>Latest audit events</strong>"
-        + ("<table>"
-           "<tr><th>Time</th><th>Event</th><th>Subject</th></tr>"
-           + audit_rows
-           + "</table>" if recent_audit else
-           "<p class='muted'>No audit events yet.</p>")
-        + "</div>"
-        "</div>"
-    )
-    return _layout("Home", body)
 
 
 def _render_sessions_index() -> str:

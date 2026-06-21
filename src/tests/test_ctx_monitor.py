@@ -22,6 +22,7 @@ import ctx_monitor as cm
 import ctx_init as ci
 from ctx import dashboard_entities
 from ctx import dashboard_docs
+from ctx.monitor.pages import home as home_page
 from ctx.monitor.pages import loaded as loaded_page
 from ctx.monitor import routes as monitor_routes
 from ctx.core.wiki import wiki_queue
@@ -288,6 +289,45 @@ def test_render_home_has_grade_pills(fake_claude: Path) -> None:
     assert "ctx monitor" in html
     assert "grade-A" in html
     assert "/sessions" in html
+
+
+def test_home_page_module_renders_stats_and_recent_activity() -> None:
+    html = home_page.render_home(
+        manifest={"load": [{"skill": "reviewer"}]},
+        sessions=[{
+            "session_id": "sess-1234567890",
+            "last_seen": "2026-06-21T00:00:00Z",
+            "skills_loaded": ["python"],
+            "skills_unloaded": [],
+            "agents_loaded": ["reviewer"],
+            "score_updates": 2,
+        }],
+        wiki_stats={
+            "skills": 1000,
+            "agents": 2,
+            "mcps": 3,
+            "harnesses": 4,
+            "total": 1009,
+            "split_known": True,
+        },
+        graph_stats={"nodes": 1009, "edges": 2000},
+        runtime_summary={
+            "validations_total": 5,
+            "validation_failures": 1,
+            "open_escalations_total": 0,
+        },
+        audit_lines=12,
+        recent_audit=[{"ts": "2026-06-21T01:02:03Z", "event": "skill.loaded", "subject": "python"}],
+        layout=lambda _title, body: body,
+        format_count=lambda value: f"{value:,}",
+    )
+
+    assert "ctx monitor" in html
+    assert "1,009" in html
+    assert "1,000 skills" in html
+    assert "sess-1234567890" in html
+    assert "skill.loaded" in html
+    assert "home-sidecar-count" in html
 
 
 def test_render_session_detail_escapes_html(fake_claude: Path) -> None:
