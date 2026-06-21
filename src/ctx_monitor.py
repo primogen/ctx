@@ -63,7 +63,7 @@ import math
 import re
 import sqlite3
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -136,36 +136,21 @@ _origin_host_name = _monitor_security.origin_host_name
 _read_token_cookie = _monitor_security.read_token_cookie
 
 
-def _claude_dir() -> Path:
-    return _monitor_state.claude_dir()
+def _state_path(factory: Callable[[Path | None], Path]) -> Callable[[], Path]:
+    def path() -> Path:
+        return factory(_claude_dir())
+
+    return path
 
 
-def _audit_log_path() -> Path:
-    return _monitor_state.audit_log_path(_claude_dir())
-
-
-def _events_jsonl_path() -> Path:
-    return _monitor_state.events_jsonl_path(_claude_dir())
-
-
-def _runtime_lifecycle_path() -> Path:
-    return _monitor_state.runtime_lifecycle_path()
-
-
-def _manifest_path() -> Path:
-    return _monitor_state.manifest_path(_claude_dir())
-
-
-def _sidecar_dir() -> Path:
-    return _monitor_state.sidecar_dir(_claude_dir())
-
-
-def _wiki_dir() -> Path:
-    return _monitor_state.wiki_dir(_claude_dir())
-
-
-def _user_config_path() -> Path:
-    return _monitor_state.user_config_path(_claude_dir())
+_claude_dir = _monitor_state.claude_dir
+_audit_log_path = _state_path(_monitor_state.audit_log_path)
+_events_jsonl_path = _state_path(_monitor_state.events_jsonl_path)
+_runtime_lifecycle_path = _monitor_state.runtime_lifecycle_path
+_manifest_path = _state_path(_monitor_state.manifest_path)
+_sidecar_dir = _state_path(_monitor_state.sidecar_dir)
+_wiki_dir = _state_path(_monitor_state.wiki_dir)
+_user_config_path = _state_path(_monitor_state.user_config_path)
 
 
 def _wiki_pack_pages() -> dict[str, str] | None:
