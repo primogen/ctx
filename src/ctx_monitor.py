@@ -345,23 +345,13 @@ def _queue_entity_refresh(
     content: str,
     action: str,
 ) -> None:
-    wiki = _wiki_dir()
-    wiki_queue.enqueue_entity_upsert(
-        wiki,
+    _wiki_service.queue_entity_refresh(
+        _wiki_dir(),
         entity_type=entity_type,
         slug=slug,
         entity_path=entity_path,
         content=content,
         action=action,
-        source="ctx-monitor",
-    )
-    if action == "delete":
-        return
-    wiki_queue.enqueue_maintenance_job(
-        wiki,
-        kind=wiki_queue.GRAPH_EXPORT_JOB,
-        payload={"reason": f"entity-{action}", "entity_type": entity_type, "slug": slug},
-        source="ctx-monitor",
     )
 
 

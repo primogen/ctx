@@ -11,6 +11,7 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from ctx.core import entity_types as core_entity_types
+from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_packs import load_merged_wiki_pages
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
 from ctx.monitor.services import graph as graph_service
@@ -40,6 +41,34 @@ def normalize_entity_type(raw: object) -> str | None:
 
 def is_safe_slug(slug: str) -> bool:
     return is_safe_source_name(slug)
+
+
+def queue_entity_refresh(
+    wiki_dir: Path,
+    *,
+    entity_type: str,
+    slug: str,
+    entity_path: Path,
+    content: str,
+    action: str,
+) -> None:
+    wiki_queue.enqueue_entity_upsert(
+        wiki_dir,
+        entity_type=entity_type,
+        slug=slug,
+        entity_path=entity_path,
+        content=content,
+        action=action,
+        source="ctx-monitor",
+    )
+    if action == "delete":
+        return
+    wiki_queue.enqueue_maintenance_job(
+        wiki_dir,
+        kind=wiki_queue.GRAPH_EXPORT_JOB,
+        payload={"reason": f"entity-{action}", "entity_type": entity_type, "slug": slug},
+        source="ctx-monitor",
+    )
 
 
 def wiki_pack_pages(wiki_dir: Path) -> dict[str, str] | None:
