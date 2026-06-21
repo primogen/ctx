@@ -376,42 +376,15 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return parse_frontmatter_and_body(text)
 
 
-def _frontmatter_text(value: Any) -> str:
-    if isinstance(value, list):
-        return ", ".join(str(v) for v in value)
-    if isinstance(value, dict):
-        return json.dumps(value, ensure_ascii=False, default=str)
-    if value is None:
-        return ""
-    return str(value)
-
-
-def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
-    if limit <= 0 or len(value) <= limit:
-        return value, False
-    if limit <= 3:
-        return value[:limit], True
-    return value[: limit - 3].rstrip() + "...", True
+_frontmatter_text = _wiki_service.frontmatter_text
+_truncate_text = _wiki_service.truncate_text
 
 
 def _json_for_script(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str).replace("</", "<\\/")
 
 
-def _frontmatter_tags(value: Any, *, limit: int | None = 6) -> list[str]:
-    if isinstance(value, list):
-        raw_items = value
-    else:
-        raw = _frontmatter_text(value)
-        raw_items = raw.replace("[", "").replace("]", "").split(",")
-    out: list[str] = []
-    for item in raw_items:
-        tok = str(item).strip().strip("'\"")
-        if tok:
-            out.append(tok)
-        if limit is not None and len(out) >= limit:
-            break
-    return out
+_frontmatter_tags = _wiki_service.frontmatter_tags
 
 
 _WIKI_QUALITY_BLOCK_RE = re.compile(
@@ -470,15 +443,8 @@ def _slugish(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
-def _display_slug(slug: str) -> str:
-    """Return the user-facing slug while preserving raw IDs for links/actions."""
-    text = str(slug or "")
-    return text.removeprefix("skills-sh-")
-
-
-def _display_label(value: Any, *, fallback_slug: str = "") -> str:
-    text = str(value or fallback_slug or "")
-    return _display_slug(text)
+_display_slug = _wiki_service.display_slug
+_display_label = _wiki_service.display_label
 
 
 def _strip_duplicate_wiki_heading(markdown_text: str, slug: str) -> str:
