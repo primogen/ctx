@@ -903,34 +903,20 @@ def _format_count(value: Any) -> str:
 
 
 def _load_direct_sidecar(slug: str, entity_type: str | None = None) -> dict | None:
-    if not _is_safe_slug(slug):
-        return None
-    for path in (
-        _sidecar_dir() / f"{slug}.json",
-        _sidecar_dir() / "mcp" / f"{slug}.json",
-    ):
-        if not path.exists():
-            continue
-        sidecar = _read_sidecar_file(path)
-        if sidecar is None:
-            continue
-        if entity_type is None or _sidecar_entity_type(sidecar) == entity_type:
-            return sidecar
-    return None
+    return _sidecar_service.load_direct_sidecar(
+        _sidecar_dir(),
+        slug,
+        entity_type=entity_type,
+    )
 
 
 def _sidecar_score_inputs(slug: str, entity_type: str) -> tuple[float | None, float | None]:
-    sidecar = _load_direct_sidecar(slug, entity_type=entity_type)
-    if not isinstance(sidecar, dict):
-        return None, None
-    quality = _unit_score(sidecar.get("score", sidecar.get("raw_score")))
-    usage = None
-    signals = sidecar.get("signals")
-    if isinstance(signals, dict):
-        telemetry = signals.get("telemetry")
-        if isinstance(telemetry, dict):
-            usage = _unit_score(telemetry.get("score"))
-    return quality, usage
+    return _sidecar_service.sidecar_score_inputs(
+        _sidecar_dir(),
+        slug,
+        entity_type,
+        unit_score=_unit_score,
+    )
 
 
 def _graph_node_size(
