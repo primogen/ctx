@@ -26,6 +26,7 @@ from ctx.monitor.pages import config as config_page
 from ctx.monitor.pages import harness as harness_page
 from ctx.monitor.pages import home as home_page
 from ctx.monitor.pages import loaded as loaded_page
+from ctx.monitor.pages import skills as skills_page
 from ctx.monitor import routes as monitor_routes
 from ctx.core.wiki import wiki_queue
 
@@ -372,6 +373,45 @@ def test_render_skills_includes_harness_filter_and_typed_links(fake_claude: Path
     assert "/skill/langgraph?type=harness" in html
     assert "/wiki/langgraph?type=harness" in html
     assert "/graph?slug=langgraph&amp;type=harness" in html
+
+
+def test_skills_page_module_renders_filters_cards_and_pagination() -> None:
+    html_out = skills_page.render_skills(
+        payload={
+            "items": [{
+                "slug": "reviewer",
+                "grade": "A",
+                "raw_score": 0.91,
+                "subject_type": "agent",
+                "hard_floor": "",
+            }],
+            "page": 2,
+            "limit": 50,
+            "total": 75,
+            "catalog_total": 100,
+            "filtered": True,
+            "has_prev": True,
+            "has_next": False,
+            "pages": 2,
+            "types": ["agent"],
+            "grades": ["A"],
+            "hide_floor": True,
+            "q": "review",
+        },
+        query_params={"q": "review", "type": "agent", "grade": "A", "hide_floor": "1"},
+        entity_types=("skill", "agent", "mcp-server", "harness"),
+        layout=lambda _title, body: body,
+        sidecar_entity_type=lambda sidecar: str(sidecar.get("subject_type", "skill")),
+    )
+
+    assert "<h1>Quality sidecars</h1>" in html_out
+    assert "Showing 51-75 of 75 matching sidecars" in html_out
+    assert "class='skill-card'" in html_out
+    assert "data-type='agent'" in html_out
+    assert "class='type-filter'" in html_out
+    assert "class='grade-filter'" in html_out
+    assert "name='hide_floor' value='1' checked" in html_out
+    assert "/skill/reviewer?type=agent" in html_out
 
 
 def test_read_manifest_empty_when_missing(fake_claude: Path) -> None:
