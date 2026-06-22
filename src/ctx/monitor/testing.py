@@ -21,6 +21,10 @@ def _compat_name(name: str) -> str:
     return name
 
 
+def __getattr__(name: str) -> Any:
+    return getattr(_compat, _compat_name(name))
+
+
 class _MonitorTestingModule(ModuleType):
     def __getattr__(self, name: str) -> Any:
         return getattr(_compat, _compat_name(name))
