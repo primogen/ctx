@@ -101,7 +101,7 @@ def test_entity_onboarding_incremental_attach_a_to_z(
     skill_add = _fresh_module("skill_add")
     mcp_add = _fresh_module("mcp_add")
     harness_add = _fresh_module("harness_add")
-    cm = _fresh_module("ctx.monitor.compat")
+    mt = _fresh_module("ctx.monitor.testing")
     mcp_entity = _fresh_module("mcp_entity")
 
     claude = tmp_path / ".claude"
@@ -115,8 +115,8 @@ def test_entity_onboarding_incremental_attach_a_to_z(
     monkeypatch.setattr(skill_add, "record_embedding", lambda **_kwargs: None)
     monkeypatch.setattr(mcp_add, "check_intake", _allow_intake)
     monkeypatch.setattr(mcp_add, "record_embedding", lambda **_kwargs: None)
-    monkeypatch.setattr(cm, "_claude_dir", lambda: claude)
-    monkeypatch.setattr(cm, "_dashboard_graph_index_archives", lambda: [])
+    monkeypatch.setattr(mt, "_claude_dir", lambda: claude)
+    monkeypatch.setattr(mt, "_dashboard_graph_index_archives", lambda: [])
 
     source = tmp_path / "SKILL.md"
     source.write_text(
@@ -270,17 +270,17 @@ def test_entity_onboarding_incremental_attach_a_to_z(
     assert attached["status"] == "inserted"
     assert overlay.is_file()
 
-    graph_payload = cm._graph_neighborhood("az-attached", entity_type="skill")
+    graph_payload = mt.graph_neighborhood("az-attached", entity_type="skill")
     assert graph_payload["center"] == "skill:az-attached"
     assert {node["data"]["id"] for node in graph_payload["nodes"]} >= {
         "skill:az-attached",
         "skill:existing-python-helper",
     }
-    rendered = cm._render_graph("az-attached", "skill")
+    rendered = mt.render_graph("az-attached", "skill")
     assert "Knowledge graph" in rendered
     assert "az-attached" in rendered
 
-    ok, message = cm._delete_wiki_entity("az-skill", "skill")
+    ok, message = mt.delete_wiki_entity("az-skill", "skill")
     assert ok is True, message
     assert not (wiki / "entities" / "skills" / "az-skill.md").exists()
     jobs = wiki_queue.list_jobs(wiki_queue.queue_db_path(wiki))
