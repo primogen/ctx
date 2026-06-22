@@ -15,6 +15,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   helpers, wiki entity/Markdown renderers, and the graph page client script.
 - Kept the flat `ctx.monitor.compat` layer as the tested backcompat surface
   while normalizing its source encoding for standard AST tooling.
+- Added a stable `ctx.monitor.testing` facade so monitor tests no longer
+  depend directly on private `compat._*` names.
 
 ## [1.0.16] - 2026-06-20
 
