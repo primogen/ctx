@@ -18,10 +18,10 @@ from pathlib import Path
 
 import pytest
 
-import ctx_monitor as cm
 import ctx_init as ci
 from ctx import dashboard_entities
 from ctx import dashboard_docs
+from ctx.monitor import compat as cm
 from ctx.monitor.pages import config as config_page
 from ctx.monitor.pages import graph as graph_page
 from ctx.monitor.pages import harness as harness_page
@@ -34,9 +34,12 @@ from ctx.monitor.pages import wiki as wiki_page
 from ctx.monitor.api import mutations as mutations_api
 from ctx.monitor.api import readonly as readonly_api
 from ctx.monitor import routes as monitor_routes
+from ctx.monitor import cli as monitor_cli
 from ctx.monitor.services import config as config_service
 from ctx.monitor.services import graph as graph_service
+from ctx.monitor.services import harness as harness_service
 from ctx.monitor.services import kpi as kpi_service
+from ctx.monitor.services import manifest as manifest_service
 from ctx.monitor.services import runtime as runtime_service
 from ctx.monitor.services import sidecars as sidecar_service
 from ctx.monitor.services import skillspector as skillspector_service
@@ -47,7 +50,7 @@ from ctx.core.wiki import wiki_queue
 
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch) -> Path:
-    """Point ctx_monitor at a throwaway ~/.claude tree."""
+    """Point monitor compatibility helpers at a throwaway ~/.claude tree."""
     claude = tmp_path / ".claude"
     (claude / "skill-quality").mkdir(parents=True)
     monkeypatch.setattr(cm, "_claude_dir", lambda: claude)
@@ -429,6 +432,10 @@ def test_skills_page_module_renders_filters_cards_and_pagination() -> None:
 def test_read_manifest_empty_when_missing(fake_claude: Path) -> None:
     m = cm._read_manifest()
     assert m == {"load": [], "unload": [], "warnings": []}
+    assert manifest_service.read_manifest(
+        fake_claude / "skill-manifest.json",
+        fake_claude,
+    ) == m
 
 
 def test_read_manifest_reads_real_manifest(fake_claude: Path) -> None:
@@ -438,8 +445,13 @@ def test_read_manifest_reads_real_manifest(fake_claude: Path) -> None:
         encoding="utf-8",
     )
     m = cm._read_manifest()
+    direct = manifest_service.read_manifest(
+        fake_claude / "skill-manifest.json",
+        fake_claude,
+    )
     assert [e["skill"] for e in m["load"]] == ["a"]
     assert [e["skill"] for e in m["unload"]] == ["b"]
+    assert direct == m
 
 
 def test_read_manifest_includes_installed_harness_records(fake_claude: Path) -> None:
@@ -457,6 +469,10 @@ def test_read_manifest_includes_installed_harness_records(fake_claude: Path) -> 
     )
 
     m = cm._read_manifest()
+    direct = manifest_service.read_manifest(
+        fake_claude / "skill-manifest.json",
+        fake_claude,
+    )
 
     assert m["load"] == [{
         "skill": "langgraph",
@@ -466,6 +482,7 @@ def test_read_manifest_includes_installed_harness_records(fake_claude: Path) -> 
         "installed_at": "2026-05-01T00:00:00Z",
         "status": "installed",
     }]
+    assert direct == m
 
 
 def test_queue_status_summarizes_worker_jobs(fake_claude: Path) -> None:
@@ -1335,9 +1352,9 @@ def test_serve_generates_read_token_for_non_loopback(
 
     monkeypatch.setattr(cm, "_MONITOR_TOKEN", "")
     monkeypatch.setattr(cm, "_make_monitor_server", lambda _host, _port: FakeServer())
-    monkeypatch.setattr(cm.secrets, "token_urlsafe", lambda _size: "lan-token")
-    monkeypatch.setattr(cm.socket, "gethostname", lambda: "devbox")
-    monkeypatch.setattr(cm.socket, "gethostbyname", lambda _name: "192.168.1.50")
+    monkeypatch.setattr(monitor_cli.secrets, "token_urlsafe", lambda _size: "lan-token")
+    monkeypatch.setattr(monitor_cli.socket, "gethostname", lambda: "devbox")
+    monkeypatch.setattr(monitor_cli.socket, "gethostbyname", lambda _name: "192.168.1.50")
 
     cm.serve(host="0.0.0.0", port=8765)
 
@@ -3349,6 +3366,55 @@ def test_entity_subgraph_wrapper_matches_extracted_wiki_renderer() -> None:
     assert "mcp-server" in wrapper_html
 
 
+def test_entity_subgraph_page_renderer_uses_injected_graph_dependencies() -> None:
+    graph = {
+        "center": "skill:github",
+        "nodes": [
+            {"data": {"id": "skill:github", "label": "GitHub", "type": "skill"}},
+            {
+                "data": {
+                    "id": "mcp-server:github-api",
+                    "label": "GitHub API",
+                    "type": "mcp-server",
+                },
+            },
+        ],
+        "edges": [
+            {
+                "data": {
+                    "source": "skill:github",
+                    "target": "mcp-server:github-api",
+                    "weight": 0.82,
+                    "shared_tags": ["github"],
+                },
+            },
+        ],
+    }
+
+    html_out = wiki_page.render_entity_subgraph(
+        "github",
+        "skill",
+        graph_neighborhood=lambda *_args, **_kwargs: graph,
+        graph_type_from_node_id=cm._graph_type_from_node_id,
+        graph_slug_from_node_id=cm._graph_slug_from_node_id,
+        subgraph_sidecar=lambda slug, _entity_type: {
+            "grade": "A",
+            "raw_score": 0.91,
+        }
+        if slug == "github-api"
+        else None,
+        display_label=cm._display_label,
+        display_slug=cm._display_slug,
+        entity_wiki_href=cm._entity_wiki_href,
+        json_for_script=cm._json_for_script,
+    )
+
+    assert "1-hop neighborhood" in html_out
+    assert "/wiki/github-api?type=mcp-server" in html_out
+    assert "github" in html_out
+    assert "grade-A" in html_out
+
+
 def test_graph_page_initial_query_escapes_script_end_tag() -> None:
     html_out = cm._render_graph("</script><script>alert(1)</script>")
 
@@ -3698,8 +3764,6 @@ def test_graph_neighborhood_empty_when_graph_absent(
 ) -> None:
     # Force load_graph to raise so the helper returns the empty shape
     # deterministically, independent of whether the user's graph is built.
-    import ctx_monitor as cm_mod
-
     def _bad(*_a, **_k):
         raise RuntimeError("no graph")
 
@@ -3707,13 +3771,13 @@ def test_graph_neighborhood_empty_when_graph_absent(
     # the import to yield a stub that raises.
     import sys
     fake = type("M", (), {"load_graph": _bad})
-    # ctx_monitor lazy-imports 'from ctx.core.graph.resolve_graph import load_graph'
+    # ctx.monitor.compat lazy-imports 'from ctx.core.graph.resolve_graph import load_graph'
     # at call time; inject at the canonical dotted path so the lazy import
     # resolves to our stub. Also populate the legacy shim path belt-and-
     # braces in case a downstream path still routes through it.
     monkeypatch.setitem(sys.modules, "ctx.core.graph.resolve_graph", fake)
     monkeypatch.setitem(sys.modules, "resolve_graph", fake)
-    result = cm_mod._graph_neighborhood("python-patterns")
+    result = cm._graph_neighborhood("python-patterns")
     assert result == {"nodes": [], "edges": [], "center": None}
 
 
@@ -4082,6 +4146,42 @@ def test_render_wiki_index_lists_entities(fake_claude: Path) -> None:
     # disambiguate skill/agent/MCP/harness pages.
     assert "href='/wiki/python-patterns?type=skill'" in html_out
     assert "href='/wiki/code-reviewer?type=agent'" in html_out
+
+
+def test_render_wiki_index_wrapper_matches_extracted_orchestration(
+    fake_claude: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skills_dir = fake_claude / "skill-wiki" / "entities" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "python-patterns.md").write_text(
+        "---\nname: python-patterns\ntype: skill\n"
+        "description: Idiomatic Python patterns\ntags: [python, patterns]\n"
+        "---\n# body\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cm, "_wiki_render_cache_key", lambda _type, _query: None)
+
+    wrapper_html = cm._render_wiki_index(query="python")
+    direct_html = wiki_page.render_wiki_index(
+        query="python",
+        normalize_dashboard_entity_type=cm._normalize_dashboard_entity_type,
+        wiki_render_cache_key=cm._wiki_render_cache_key,
+        read_memory_cache=cm._wiki_render_memory_cache_get,
+        write_memory_cache=cm._wiki_render_memory_cache_set,
+        disk_cache_token=cm._cache_service.disk_cache_token,
+        read_html_disk_cache=cm._cache_service.read_html_disk_cache,
+        write_html_disk_cache=cm._cache_service.write_html_disk_cache,
+        wiki_render_disk_cache_path=cm._wiki_render_disk_cache_path,
+        wiki_index_entries=cm._wiki_index_entries,
+        wiki_stats=cm._wiki_stats,
+        load_sidecar=cm._load_sidecar,
+        dashboard_entity_types=cm._DASHBOARD_ENTITY_TYPES,
+        layout=cm._layout,
+    )
+
+    assert wrapper_html == direct_html
+    assert "python-patterns" in wrapper_html
 
 
 def test_wiki_index_entries_use_dashboard_index_without_markdown_pages(
@@ -5338,9 +5438,14 @@ def test_harness_wizard_entries_do_not_scan_full_sidecar_tree(
     )
 
     entries = cm._harness_wizard_entries()
+    direct_entries = harness_service.harness_wizard_entries(
+        fake_claude / "skill-wiki",
+        fake_claude / "skill-quality",
+    )
 
     assert entries[0]["slug"] == "langgraph"
     assert entries[0]["grade"] == "A"
+    assert entries == direct_entries
 
 
 def test_save_config_updates_casts_values_and_blank_removes_override(
@@ -5503,7 +5608,7 @@ def test_render_graph_landing_hides_seeds_when_graph_absent(monkeypatch) -> None
         raise RuntimeError("no graph")
 
     fake = type("M", (), {"load_graph": _bad})
-    # ctx_monitor lazy-imports 'from ctx.core.graph.resolve_graph import load_graph'
+    # ctx.monitor.compat lazy-imports 'from ctx.core.graph.resolve_graph import load_graph'
     # at call time; inject at the canonical dotted path so the lazy import
     # resolves to our stub. Also populate the legacy shim path belt-and-
     # braces in case a downstream path still routes through it.
@@ -5520,6 +5625,10 @@ def test_render_graph_landing_hides_seeds_when_graph_absent(monkeypatch) -> None
 
 
 def test_cli_argparser_exposes_serve() -> None:
+    import ctx_monitor
+
+    assert ctx_monitor.main is cm.main
+    assert ctx_monitor.serve is cm.serve
     # argparse should not raise; subcommand "serve" is required
     with pytest.raises(SystemExit):
         cm.main([])

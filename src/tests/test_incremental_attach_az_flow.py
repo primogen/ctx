@@ -101,7 +101,7 @@ def test_entity_onboarding_incremental_attach_a_to_z(
     skill_add = _fresh_module("skill_add")
     mcp_add = _fresh_module("mcp_add")
     harness_add = _fresh_module("harness_add")
-    cm = _fresh_module("ctx_monitor")
+    cm = _fresh_module("ctx.monitor.compat")
     mcp_entity = _fresh_module("mcp_entity")
 
     claude = tmp_path / ".claude"

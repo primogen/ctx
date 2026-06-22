@@ -2,42 +2,84 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
+import math
 import re
 import sqlite3
-import tarfile
 import zlib
 from pathlib import Path
 from typing import Any, Callable
 
 from ctx import dashboard_graph
 from ctx.core import entity_types as core_entity_types
+from ctx.monitor.services import graph_artifacts
 from ctx.utils._safe_name import is_safe_source_name
 
 
+active_dashboard_overlay_records = graph_artifacts.active_dashboard_overlay_records
+archive_graph_export_id = graph_artifacts.archive_graph_export_id
+dashboard_graph_has_runtime_overlays = graph_artifacts.dashboard_graph_has_runtime_overlays
+dashboard_graph_index_archives = graph_artifacts.dashboard_graph_index_archives
+dashboard_graph_manifest_export_id = graph_artifacts.dashboard_graph_manifest_export_id
+dashboard_index_covers_runtime_overlays = graph_artifacts.dashboard_index_covers_runtime_overlays
+dashboard_index_covers_runtime_overlays_for_wiki = (
+    graph_artifacts.dashboard_index_covers_runtime_overlays_for_wiki
+)
+dashboard_index_matches_manifest = graph_artifacts.dashboard_index_matches_manifest
+dashboard_index_meta = graph_artifacts.dashboard_index_meta
+dashboard_index_uncovered_overlay_nodes = graph_artifacts.dashboard_index_uncovered_overlay_nodes
+dashboard_overlay_index_coverage_key = graph_artifacts.dashboard_overlay_index_coverage_key
+dashboard_overlay_matches_known_release = graph_artifacts.dashboard_overlay_matches_known_release
+dashboard_uncovered_runtime_overlay_nodes = graph_artifacts.dashboard_uncovered_runtime_overlay_nodes
+dashboard_uncovered_runtime_overlay_nodes_for_wiki = (
+    graph_artifacts.dashboard_uncovered_runtime_overlay_nodes_for_wiki
+)
+ensure_dashboard_graph_index = graph_artifacts.ensure_dashboard_graph_index
+packaged_graph_export_id = graph_artifacts.packaged_graph_export_id
+
 _GRAPH_CACHE_KEY: tuple[Any, ...] | None = None
 _GRAPH_CACHE_VALUE: Any | None = None
-_OVERLAY_INDEX_COVERAGE_CACHE_KEY: tuple[Any, ...] | None = None
-_OVERLAY_INDEX_COVERAGE_CACHE_VALUE: bool | None = None
-_PACKAGED_GRAPH_EXPORT_ID_CACHE: str | None | bool = None
 _DASHBOARD_ENTITY_TYPES: tuple[str, ...] = tuple(
     entity_type for _, entity_type, _ in core_entity_types.entity_source_specs()
 )
 _GRAPH_REPORT_RE = re.compile(r"Nodes:\s*([\d,]+)\s*\|\s*Edges:\s*([\d,]+)")
 
 
+class GraphNeighborhoodDeps:
+    def __init__(
+        self,
+        *,
+        normalize_entity_type: Callable[[str | None], str | None],
+        store_neighborhood: Callable[[str, int, int, str | None], dict[str, Any] | None],
+        index_neighborhood: Callable[[str, int, int, str | None], dict[str, Any] | None],
+        index_path: Callable[[], Path],
+        has_runtime_overlays: Callable[[], bool],
+        index_covers_runtime_overlays: Callable[[Path], bool],
+        index_matches_manifest: Callable[[Path], bool],
+        uncovered_runtime_overlay_nodes: Callable[[Path], set[str] | None],
+        load_graph: Callable[[], Any],
+        node_size: Callable[..., dict[str, Any]],
+        score_payload: Callable[[str, Any], dict[str, float | None]],
+    ) -> None:
+        self.normalize_entity_type = normalize_entity_type
+        self.store_neighborhood = store_neighborhood
+        self.index_neighborhood = index_neighborhood
+        self.index_path = index_path
+        self.has_runtime_overlays = has_runtime_overlays
+        self.index_covers_runtime_overlays = index_covers_runtime_overlays
+        self.index_matches_manifest = index_matches_manifest
+        self.uncovered_runtime_overlay_nodes = uncovered_runtime_overlay_nodes
+        self.load_graph = load_graph
+        self.node_size = node_size
+        self.score_payload = score_payload
+
+
 def reset_caches() -> None:
     global _GRAPH_CACHE_KEY, _GRAPH_CACHE_VALUE
-    global _OVERLAY_INDEX_COVERAGE_CACHE_KEY, _OVERLAY_INDEX_COVERAGE_CACHE_VALUE
-    global _PACKAGED_GRAPH_EXPORT_ID_CACHE
 
     _GRAPH_CACHE_KEY = None
     _GRAPH_CACHE_VALUE = None
-    _OVERLAY_INDEX_COVERAGE_CACHE_KEY = None
-    _OVERLAY_INDEX_COVERAGE_CACHE_VALUE = None
-    _PACKAGED_GRAPH_EXPORT_ID_CACHE = None
+    graph_artifacts.reset_caches()
 
 
 def cached_dashboard_graph() -> Any | None:
@@ -232,6 +274,112 @@ def graph_type_from_node_id(node_id: str, fallback: str = "skill") -> str:
         "mcp-server": "mcp-server",
         "harness": "harness",
     }.get(prefix, fallback)
+
+
+def normalize_dashboard_entity_type(raw: object) -> str | None:
+    return core_entity_types.normalize_entity_type(
+        raw,
+        allowed=_DASHBOARD_ENTITY_TYPES,
+    )
+
+
+def unit_score(value: Any) -> float | None:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(score):
+        return None
+    return max(0.0, min(1.0, score))
+
+
+def dashboard_score_payload(field: str, value: Any) -> dict[str, float | None]:
+    score = unit_score(value)
+    payload: dict[str, float | None] = {field: score}
+    try:
+        raw = float(value)
+    except (TypeError, ValueError):
+        return payload
+    if math.isfinite(raw) and score is not None and raw != score:
+        payload[f"{field}_raw"] = raw
+    return payload
+
+
+def node_size_from_scores(
+    *,
+    quality: Any,
+    usage: Any,
+    degree: int,
+    max_degree: int,
+) -> dict[str, Any]:
+    quality_value = 0.35 if quality is None else float(quality)
+    usage_value = 0.0 if usage is None else float(usage)
+    popularity = (
+        math.log1p(max(0, degree)) / math.log1p(max(1, max_degree))
+        if max_degree > 0
+        else 0.0
+    )
+    signal = max(
+        0.0,
+        min(1.0, 0.45 * quality_value + 0.35 * usage_value + 0.20 * popularity),
+    )
+    return {
+        "node_size": round(8.0 + signal * 16.0, 2),
+        "size_signal": round(signal, 4),
+        "size_reason": (
+            f"quality {quality_value:.3f}; usage {usage_value:.3f}; "
+            f"popularity {popularity:.3f}"
+        ),
+    }
+
+
+def graph_node_size(
+    nid: str,
+    data: dict[str, Any],
+    *,
+    entity_type: str,
+    degree: int,
+    max_degree: int,
+    sidecar_score_inputs: Callable[[str, str], tuple[float | None, float | None]],
+) -> dict[str, Any]:
+    """Return bounded visual size metadata for a graph node."""
+    slug = graph_slug_from_node_id(nid)
+    quality = unit_score(data.get("quality_score"))
+    usage = unit_score(data.get("usage_score"))
+    if quality is None or usage is None:
+        sidecar_quality, sidecar_usage = sidecar_score_inputs(slug, entity_type)
+        quality = quality if quality is not None else sidecar_quality
+        usage = usage if usage is not None else sidecar_usage
+    return node_size_from_scores(
+        quality=quality,
+        usage=usage,
+        degree=degree,
+        max_degree=max_degree,
+    )
+
+
+def index_node_size(
+    *,
+    slug: str,
+    entity_type: str,
+    quality: Any,
+    usage: Any,
+    degree: int,
+    max_degree: int,
+    sidecar_score_inputs: Callable[[str, str], tuple[float | None, float | None]],
+) -> dict[str, Any]:
+    quality_value = unit_score(quality)
+    usage_value = unit_score(usage)
+    if quality_value is None or usage_value is None:
+        sidecar_quality, sidecar_usage = sidecar_score_inputs(slug, entity_type)
+        quality_value = quality_value if quality_value is not None else sidecar_quality
+        usage_value = usage_value if usage_value is not None else sidecar_usage
+    return node_size_from_scores(
+        quality=quality_value,
+        usage=usage_value,
+        degree=degree,
+        max_degree=max_degree,
+    )
 
 
 def resolve_index_center(
@@ -463,6 +611,39 @@ def dashboard_index_neighborhood(
         return None
 
 
+def dashboard_index_neighborhood_from_path(
+    index_path: Path | None,
+    slug: str,
+    *,
+    hops: int,
+    limit: int,
+    entity_type: str | None,
+    sidecar_score_inputs: Callable[[str, str], tuple[float | None, float | None]],
+) -> dict[str, Any] | None:
+    if index_path is None or not index_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    conn.row_factory = sqlite3.Row
+    try:
+        return dashboard_index_neighborhood(
+            conn,
+            slug,
+            hops=hops,
+            limit=limit,
+            entity_type=entity_type,
+            node_size=lambda **kwargs: index_node_size(
+                **kwargs,
+                sidecar_score_inputs=sidecar_score_inputs,
+            ),
+            score_payload=dashboard_score_payload,
+        )
+    finally:
+        conn.close()
+
+
 def graph_store_neighborhood(
     graph_dir: Path,
     slug: str,
@@ -508,6 +689,228 @@ def graph_store_neighborhood(
         node_size=node_size,
         score_payload=score_payload,
     )
+
+
+def graph_neighborhood(
+    slug: str,
+    *,
+    hops: int = 1,
+    limit: int = 40,
+    entity_type: str | None = None,
+    deps: GraphNeighborhoodDeps,
+) -> dict[str, Any]:
+    if "/" in slug or "\\" in slug or ".." in slug:
+        return {"nodes": [], "edges": [], "center": None}
+    normalized_entity_type = deps.normalize_entity_type(entity_type)
+    stored = deps.store_neighborhood(slug, hops, limit, normalized_entity_type)
+    if stored is not None:
+        return stored
+    index_path = deps.index_path()
+    has_runtime_overlays = deps.has_runtime_overlays()
+    index_covers_overlays = (
+        not has_runtime_overlays
+        or deps.index_covers_runtime_overlays(index_path)
+    )
+    if index_covers_overlays:
+        indexed = deps.index_neighborhood(slug, hops, limit, normalized_entity_type)
+        if indexed is not None:
+            return indexed
+    elif hops == 1 and index_path.is_file() and deps.index_matches_manifest(index_path):
+        indexed = deps.index_neighborhood(slug, hops, limit, normalized_entity_type)
+        center = indexed.get("center") if isinstance(indexed, dict) else None
+        uncovered = deps.uncovered_runtime_overlay_nodes(index_path)
+        if indexed is not None and isinstance(center, str) and uncovered is not None:
+            if center not in uncovered:
+                return indexed
+    try:
+        graph = deps.load_graph()
+    except Exception:  # noqa: BLE001 - graph is advisory; blank on error
+        return {"nodes": [], "edges": [], "center": None}
+    if graph.number_of_nodes() == 0:
+        return {"nodes": [], "edges": [], "center": None}
+
+    if entity_type is not None and normalized_entity_type is None:
+        return {"nodes": [], "edges": [], "center": None}
+    center, resolved, suggestions = resolve_graph_center(
+        graph,
+        slug,
+        normalized_entity_type,
+    )
+    if center is None:
+        return {"nodes": [], "edges": [], "center": None}
+
+    nodes_out: dict[str, dict[str, Any]] = {}
+    edges_out: list[dict[str, Any]] = []
+    emitted_edges: set[tuple[str, str]] = set()
+    frontier = [center]
+    seen: set[str] = {center}
+    try:
+        max_degree = max((int(degree) for _node, degree in graph.degree()), default=1)
+    except Exception:  # noqa: BLE001
+        max_degree = 1
+
+    def add_node(node_id: str, depth: int) -> None:
+        if node_id in nodes_out:
+            return
+        data = dict(graph.nodes.get(node_id, {}))
+        node_slug = graph_slug_from_node_id(node_id)
+        label = _display_label(data.get("label"), fallback_slug=node_slug)
+        tags = list(data.get("tags", []))
+        node_type = str(data.get("type") or graph_type_from_node_id(node_id))
+        try:
+            degree = int(graph.degree[node_id])
+        except Exception:  # noqa: BLE001
+            degree = 0
+        nodes_out[node_id] = {
+            "data": {
+                "id": node_id,
+                "label": label,
+                "type": node_type,
+                "depth": depth,
+                "degree": degree,
+                "tags": tags[:6],
+                "description": data.get("description", ""),
+                **deps.score_payload("quality_score", data.get("quality_score")),
+                **deps.score_payload("usage_score", data.get("usage_score")),
+                "filter_tokens": [
+                    node_id,
+                    label,
+                    node_slug,
+                    _display_slug(node_slug),
+                    *tags,
+                ],
+                **deps.node_size(
+                    node_id,
+                    data,
+                    entity_type=node_type,
+                    degree=degree,
+                    max_degree=max_degree,
+                ),
+            },
+        }
+
+    add_node(center, 0)
+
+    for depth in range(1, hops + 1):
+        next_frontier: list[str] = []
+        for node_id in frontier:
+            neighbors = sorted(
+                graph[node_id].items(),
+                key=lambda kv: -kv[1].get("weight", 1),
+            )
+            for other, edata in neighbors:
+                if len(nodes_out) >= limit:
+                    break
+                add_node(other, depth)
+                edge_key = tuple(sorted((node_id, other)))
+                if edge_key not in emitted_edges:
+                    emitted_edges.add(edge_key)
+                    shared_tags = edata.get("shared_tags", [])[:4]
+                    for current in (node_id, other):
+                        tokens = nodes_out[current]["data"].setdefault(
+                            "filter_tokens",
+                            [],
+                        )
+                        tokens.extend(shared_tags)
+                    edges_out.append({
+                        "data": {
+                            "id": f"{edge_key[0]}__{edge_key[1]}",
+                            "source": node_id,
+                            "target": other,
+                            "weight": edata.get("weight", 1),
+                            "shared_tags": shared_tags,
+                            "reasons": edata.get("reasons", []),
+                            "semantic": edata.get("semantic"),
+                            "tag_sim": edata.get("tag_sim"),
+                            "slug_token_sim": edata.get("slug_token_sim"),
+                            "source_overlap": edata.get("source_overlap"),
+                        },
+                    })
+                if other not in seen:
+                    seen.add(other)
+                    next_frontier.append(other)
+            if len(nodes_out) >= limit:
+                break
+        frontier = next_frontier
+        if len(nodes_out) >= limit:
+            break
+
+    return dashboard_graph.enrich_neighborhood({
+        "nodes": list(nodes_out.values()),
+        "edges": edges_out,
+        "center": center,
+        "resolved": resolved,
+        "suggestions": suggestions,
+    }, source="networkx")
+
+
+def resolve_graph_center(
+    graph: Any,
+    slug: str,
+    entity_type: str | None,
+) -> tuple[str | None, dict[str, str] | None, list[str]]:
+    raw_query = str(slug or "").strip()
+    if not raw_query or "/" in raw_query or "\\" in raw_query or ".." in raw_query:
+        return None, None, []
+    normalized_query = _slugish(raw_query)
+    if not normalized_query or not is_safe_source_name(normalized_query):
+        return None, None, []
+
+    entity_types = (entity_type,) if entity_type is not None else _DASHBOARD_ENTITY_TYPES
+    for current_type in entity_types:
+        for candidate_slug in (raw_query, normalized_query):
+            candidate = f"{current_type}:{candidate_slug}"
+            if candidate in graph:
+                return candidate, None, [candidate_slug]
+
+    matches: list[tuple[tuple[int, int, int], str, str]] = []
+    query_tokens = set(normalized_query.split("-"))
+    for node_id in graph.nodes:
+        node_type = graph_type_from_node_id(str(node_id))
+        if node_type not in entity_types:
+            continue
+        data = graph.nodes.get(node_id, {})
+        node_slug = graph_slug_from_node_id(str(node_id))
+        label = _display_label(data.get("label"), fallback_slug=node_slug)
+        haystacks = {
+            _slugish(node_slug),
+            _slugish(_display_slug(node_slug)),
+            _slugish(label),
+        }
+        tags = data.get("tags", [])
+        if isinstance(tags, list):
+            haystacks.update(_slugish(str(tag)) for tag in tags[:12])
+        rank = None
+        if normalized_query in haystacks:
+            rank = 0
+        elif any(h.startswith(normalized_query) for h in haystacks):
+            rank = 1
+        elif any(normalized_query in h for h in haystacks):
+            rank = 2
+        elif query_tokens and all(
+            any(token in haystack for haystack in haystacks)
+            for token in query_tokens
+        ):
+            rank = 3
+        if rank is None:
+            continue
+        try:
+            degree = int(graph.degree[node_id])
+        except Exception:  # noqa: BLE001
+            degree = 0
+        matches.append(((rank, len(node_slug), -degree), str(node_id), node_slug))
+
+    matches.sort(key=lambda item: item[0])
+    suggestions: list[str] = []
+    for _, _node_id, suggestion in matches[:8]:
+        display_suggestion = _display_slug(suggestion)
+        if display_suggestion not in suggestions:
+            suggestions.append(display_suggestion)
+    if not matches:
+        return None, None, suggestions
+    center = matches[0][1]
+    resolved_slug = graph_slug_from_node_id(center)
+    return center, {"query": raw_query, "slug": resolved_slug, "id": center}, suggestions
 
 
 def resolve_graph_store_center(
@@ -674,397 +1077,6 @@ def dashboard_payload_from_graph_store(
     }, source="graph-store")
 
 
-def dashboard_graph_manifest_export_id(wiki_dir: Path) -> str | None:
-    manifest_path = wiki_dir / "graphify-out" / "graph-export-manifest.json"
-    try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    export_id = data.get("export_id") if isinstance(data, dict) else None
-    if not isinstance(export_id, str) or not export_id.strip():
-        return None
-    return export_id.strip()
-
-
-def dashboard_index_meta(index_path: Path) -> dict[str, Any] | None:
-    try:
-        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
-    except sqlite3.Error:
-        return None
-    try:
-        rows = conn.execute("SELECT key,value FROM meta").fetchall()
-    except sqlite3.Error:
-        return None
-    finally:
-        conn.close()
-    try:
-        return {str(key): json.loads(str(value)) for key, value in rows}
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-
-
-def dashboard_index_matches_manifest(index_path: Path, wiki_dir: Path) -> bool:
-    manifest_export_id = dashboard_graph_manifest_export_id(wiki_dir)
-    if manifest_export_id is None:
-        return False
-    meta = dashboard_index_meta(index_path)
-    if meta is None:
-        return False
-    return meta.get("export_id") == manifest_export_id
-
-
-def dashboard_graph_has_runtime_overlays(wiki_dir: Path) -> bool:
-    overlay = wiki_dir / "graphify-out" / "entity-overlays.jsonl"
-    try:
-        return overlay.is_file() and overlay.stat().st_size > 0
-    except OSError:
-        return False
-
-
-def dashboard_overlay_index_coverage_key(
-    index_path: Path,
-    overlay: Path,
-    manifest_export_id: str | None,
-) -> tuple[Any, ...] | None:
-    try:
-        index_stat = index_path.stat()
-        overlay_stat = overlay.stat()
-    except OSError:
-        return None
-    return (
-        index_path.resolve(),
-        index_stat.st_mtime,
-        index_stat.st_size,
-        overlay.resolve(),
-        overlay_stat.st_mtime,
-        overlay_stat.st_size,
-        manifest_export_id,
-    )
-
-
-def active_dashboard_overlay_records(overlay: Path) -> list[dict[str, Any]] | None:
-    try:
-        from ctx.core.graph.entity_overlays import active_overlay_records
-
-        rows = []
-        for line in overlay.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            payload = json.loads(line)
-            if not isinstance(payload, dict):
-                return None
-            rows.append(payload)
-        return [dict(row) for row in active_overlay_records(rows)]
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return None
-
-
-def dashboard_overlay_matches_known_release(overlay: Path) -> bool:
-    try:
-        from ctx_init import _GRAPH_ENTITY_OVERLAY_SHA256
-    except (ImportError, AttributeError):
-        return False
-    if not isinstance(_GRAPH_ENTITY_OVERLAY_SHA256, str) or not _GRAPH_ENTITY_OVERLAY_SHA256:
-        return False
-    try:
-        data = overlay.read_bytes().replace(b"\r\n", b"\n")
-        return hashlib.sha256(data).hexdigest() == _GRAPH_ENTITY_OVERLAY_SHA256
-    except OSError:
-        return False
-
-
-def dashboard_index_uncovered_overlay_nodes(
-    conn: sqlite3.Connection,
-    records: list[dict[str, Any]],
-    *,
-    require_edges: bool,
-) -> set[str] | None:
-    uncovered: set[str] = set()
-    neighbor_targets: dict[str, set[str]] = {}
-
-    def node_exists(node_id: str) -> bool:
-        return bool(conn.execute(
-            "SELECT 1 FROM nodes WHERE id=? LIMIT 1",
-            (node_id,),
-        ).fetchone())
-
-    def indexed_neighbors(node_id: str) -> set[str]:
-        cached = neighbor_targets.get(node_id)
-        if cached is not None:
-            return cached
-        row = conn.execute(
-            "SELECT payload FROM neighbors WHERE source=?",
-            (node_id,),
-        ).fetchone()
-        targets: set[str] = set()
-        if row is not None:
-            try:
-                payload = json.loads(zlib.decompress(row["payload"]).decode("utf-8"))
-            except (TypeError, json.JSONDecodeError, zlib.error):
-                payload = []
-            if isinstance(payload, list):
-                targets = {
-                    str(edge.get("target"))
-                    for edge in payload
-                    if isinstance(edge, dict) and isinstance(edge.get("target"), str)
-                }
-        neighbor_targets[node_id] = targets
-        return targets
-
-    for record in records:
-        nodes = record.get("nodes", [])
-        edges = record.get("edges", [])
-        if not isinstance(nodes, list) or not isinstance(edges, list):
-            return None
-        if not nodes and edges:
-            return None
-        for node in nodes:
-            if not isinstance(node, dict):
-                return None
-            node_id = node.get("id")
-            if not isinstance(node_id, str):
-                return None
-            if not node_exists(node_id):
-                uncovered.add(node_id)
-        if not require_edges:
-            continue
-        for edge in edges:
-            if not isinstance(edge, dict):
-                return None
-            source = edge.get("source")
-            target = edge.get("target")
-            if not isinstance(source, str) or not isinstance(target, str):
-                return None
-            source_exists = node_exists(source)
-            target_exists = node_exists(target)
-            if not source_exists:
-                uncovered.add(source)
-            if not target_exists:
-                uncovered.add(target)
-            if not source_exists or not target_exists:
-                uncovered.update((source, target))
-                continue
-            if target not in indexed_neighbors(source) and source not in indexed_neighbors(target):
-                uncovered.update((source, target))
-    return uncovered
-
-
-def dashboard_uncovered_runtime_overlay_nodes(
-    index_path: Path,
-    wiki_dir: Path,
-    *,
-    require_edges: bool,
-) -> set[str] | None:
-    overlay = wiki_dir / "graphify-out" / "entity-overlays.jsonl"
-    try:
-        if not overlay.is_file() or overlay.stat().st_size == 0:
-            return set()
-    except OSError:
-        return set()
-    if not index_path.is_file() or not dashboard_index_matches_manifest(index_path, wiki_dir):
-        return None
-    records = active_dashboard_overlay_records(overlay)
-    if records is None:
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        try:
-            return dashboard_index_uncovered_overlay_nodes(
-                conn,
-                records,
-                require_edges=require_edges,
-            )
-        finally:
-            conn.close()
-    except (OSError, sqlite3.Error, KeyError, TypeError):
-        return None
-
-
-def dashboard_index_covers_runtime_overlays(
-    index_path: Path,
-    wiki_dir: Path,
-    *,
-    require_edges: bool,
-) -> bool:
-    """Return True when the SQLite dashboard index already includes overlays."""
-    overlay = wiki_dir / "graphify-out" / "entity-overlays.jsonl"
-    try:
-        if not overlay.is_file() or overlay.stat().st_size == 0:
-            return True
-    except OSError:
-        return True
-    if not index_path.is_file() or not dashboard_index_matches_manifest(index_path, wiki_dir):
-        return False
-
-    global _OVERLAY_INDEX_COVERAGE_CACHE_KEY, _OVERLAY_INDEX_COVERAGE_CACHE_VALUE
-    cache_key = dashboard_overlay_index_coverage_key(
-        index_path,
-        overlay,
-        dashboard_graph_manifest_export_id(wiki_dir),
-    )
-    if cache_key is not None:
-        cache_key = (*cache_key, require_edges)
-    if (
-        cache_key is not None
-        and _OVERLAY_INDEX_COVERAGE_CACHE_KEY == cache_key
-        and _OVERLAY_INDEX_COVERAGE_CACHE_VALUE is not None
-    ):
-        return _OVERLAY_INDEX_COVERAGE_CACHE_VALUE
-
-    uncovered = dashboard_uncovered_runtime_overlay_nodes(
-        index_path,
-        wiki_dir,
-        require_edges=require_edges,
-    )
-    coverage = uncovered == set()
-
-    if cache_key is not None:
-        _OVERLAY_INDEX_COVERAGE_CACHE_KEY = cache_key
-        _OVERLAY_INDEX_COVERAGE_CACHE_VALUE = coverage
-    return coverage
-
-
-def dashboard_graph_index_archives(module_root: Path) -> list[Path]:
-    roots = (module_root,)
-    names = ("wiki-graph-runtime.tar.gz", "wiki-graph.tar.gz")
-    seen: set[Path] = set()
-    archives: list[Path] = []
-    for root in roots:
-        for name in names:
-            candidate = (root / "graph" / name).resolve()
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            if candidate.is_file():
-                archives.append(candidate)
-    return archives
-
-
-def packaged_graph_export_id(module_root: Path) -> str | None:
-    global _PACKAGED_GRAPH_EXPORT_ID_CACHE
-    if isinstance(_PACKAGED_GRAPH_EXPORT_ID_CACHE, bool):
-        return None
-    if isinstance(_PACKAGED_GRAPH_EXPORT_ID_CACHE, str):
-        return _PACKAGED_GRAPH_EXPORT_ID_CACHE
-    try:
-        data = json.loads(
-            (module_root / "graph" / "communities.json").read_text(
-                encoding="utf-8",
-            )
-        )
-    except (OSError, json.JSONDecodeError):
-        _PACKAGED_GRAPH_EXPORT_ID_CACHE = False
-        return None
-    export_id = data.get("export_id") if isinstance(data, dict) else None
-    if isinstance(export_id, str) and export_id.strip():
-        _PACKAGED_GRAPH_EXPORT_ID_CACHE = export_id.strip()
-        return export_id.strip()
-    _PACKAGED_GRAPH_EXPORT_ID_CACHE = False
-    return None
-
-
-def archive_graph_export_id(archive: Path) -> str | None:
-    try:
-        with tarfile.open(archive, "r:gz") as tar:
-            try:
-                member = tar.getmember("./graphify-out/graph-export-manifest.json")
-            except KeyError:
-                member = tar.getmember("graphify-out/graph-export-manifest.json")
-            source = tar.extractfile(member)
-            if source is None:
-                return None
-            try:
-                data = json.loads(source.read().decode("utf-8", errors="replace"))
-            finally:
-                source.close()
-    except (KeyError, OSError, tarfile.TarError, json.JSONDecodeError):
-        return None
-    export_id = data.get("export_id") if isinstance(data, dict) else None
-    return export_id.strip() if isinstance(export_id, str) and export_id.strip() else None
-
-
-def ensure_dashboard_graph_index(
-    *,
-    target: Path,
-    manifest_export_id: Callable[[], str | None],
-    packaged_export_id: Callable[[], str | None],
-    archives: Callable[[], list[Path]],
-    archive_export_id: Callable[[Path], str | None],
-    index_matches_manifest: Callable[[Path], bool],
-    index_member: str,
-) -> Path | None:
-    if target.is_file():
-        if index_matches_manifest(target):
-            return target
-        try:
-            target.unlink()
-        except OSError:
-            return None
-
-    manifest_id = manifest_export_id()
-    packaged_id = packaged_export_id()
-    if (
-        manifest_id is not None
-        and packaged_id is not None
-        and manifest_id != packaged_id
-    ):
-        return None
-
-    archive_paths = archives()
-    if not archive_paths:
-        return None
-    if manifest_id is None:
-        return None
-
-    from ctx.utils._file_lock import file_lock
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with file_lock(target):
-            if target.is_file():
-                if index_matches_manifest(target):
-                    return target
-                try:
-                    target.unlink()
-                except OSError:
-                    return None
-            for archive in archive_paths:
-                archive_id = packaged_id or archive_export_id(archive)
-                if manifest_id and archive_id and archive_id != manifest_id:
-                    continue
-                try:
-                    with tarfile.open(archive, "r:gz") as tar:
-                        try:
-                            member = tar.getmember(f"./{index_member}")
-                        except KeyError:
-                            member = tar.getmember(index_member)
-                        if not member.isfile():
-                            continue
-                        source = tar.extractfile(member)
-                        if source is None:
-                            continue
-                        tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-                        try:
-                            with tmp.open("wb") as out:
-                                for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                                    out.write(chunk)
-                            if not index_matches_manifest(tmp):
-                                continue
-                            os.replace(tmp, target)
-                            return target
-                        finally:
-                            source.close()
-                            if tmp.exists():
-                                tmp.unlink()
-                except (KeyError, OSError, tarfile.TarError):
-                    continue
-    except TimeoutError:
-        return None
-    return target if target.is_file() else None
-
-
 def load_dashboard_graph(
     wiki_dir: Path,
     load_graph: Callable[..., Any],
@@ -1091,3 +1103,111 @@ def load_dashboard_graph(
     _GRAPH_CACHE_KEY = cache_key
     _GRAPH_CACHE_VALUE = graph
     return graph
+
+
+def dashboard_graph_stats(
+    wiki_dir: Path,
+    *,
+    ensure_index: Callable[[], Path | None],
+    load_graph: Callable[[], Any],
+) -> dict[str, Any]:
+    """Top-line graph stats for dashboard home and API responses."""
+    report_stats = graph_report_stats(wiki_dir / "graphify-out" / "graph-report.md")
+    if report_stats is not None:
+        return report_stats
+
+    index_path = ensure_index()
+    if index_path is not None and index_path.is_file():
+        index_stats = dashboard_index_graph_stats(index_path)
+        if index_stats is not None:
+            return index_stats
+    try:
+        graph = load_graph()
+    except Exception:  # noqa: BLE001
+        return {"nodes": 0, "edges": 0, "available": False}
+    return {
+        "nodes": graph.number_of_nodes(),
+        "edges": graph.number_of_edges(),
+        "available": graph.number_of_nodes() > 0,
+    }
+
+
+def graph_neighborhood_for_monitor(
+    slug: str,
+    *,
+    hops: int,
+    limit: int,
+    entity_type: str | None,
+    wiki_dir: Path,
+    index_path: Callable[[], Path],
+    ensure_index: Callable[[], Path | None],
+    load_graph: Callable[[], Any],
+    sidecar_score_inputs: Callable[[str, str], tuple[float | None, float | None]],
+) -> dict[str, Any]:
+    """Resolve a dashboard graph neighborhood through the fastest valid reader."""
+
+    def _index_neighborhood(
+        current_slug: str,
+        current_hops: int,
+        current_limit: int,
+        current_type: str | None,
+    ) -> dict[str, Any] | None:
+        return dashboard_index_neighborhood_from_path(
+            ensure_index(),
+            current_slug,
+            hops=current_hops,
+            limit=current_limit,
+            entity_type=current_type,
+            sidecar_score_inputs=sidecar_score_inputs,
+        )
+
+    def _store_neighborhood(
+        current_slug: str,
+        current_hops: int,
+        current_limit: int,
+        current_type: str | None,
+    ) -> dict[str, Any] | None:
+        return graph_store_neighborhood(
+            wiki_dir / "graphify-out",
+            current_slug,
+            hops=current_hops,
+            limit=current_limit,
+            entity_type=current_type,
+            node_size=lambda *args, **kwargs: graph_node_size(
+                *args,
+                **kwargs,
+                sidecar_score_inputs=sidecar_score_inputs,
+            ),
+            score_payload=dashboard_score_payload,
+        )
+
+    return graph_neighborhood(
+        slug,
+        hops=hops,
+        limit=limit,
+        entity_type=entity_type,
+        deps=GraphNeighborhoodDeps(
+            normalize_entity_type=normalize_dashboard_entity_type,
+            store_neighborhood=_store_neighborhood,
+            index_neighborhood=_index_neighborhood,
+            index_path=index_path,
+            has_runtime_overlays=lambda: dashboard_graph_has_runtime_overlays(wiki_dir),
+            index_covers_runtime_overlays=lambda path: (
+                dashboard_index_covers_runtime_overlays_for_wiki(path, wiki_dir)
+            ),
+            index_matches_manifest=lambda path: dashboard_index_matches_manifest(
+                path,
+                wiki_dir,
+            ),
+            uncovered_runtime_overlay_nodes=lambda path: (
+                dashboard_uncovered_runtime_overlay_nodes_for_wiki(path, wiki_dir)
+            ),
+            load_graph=load_graph,
+            node_size=lambda *args, **kwargs: graph_node_size(
+                *args,
+                **kwargs,
+                sidecar_score_inputs=sidecar_score_inputs,
+            ),
+            score_payload=dashboard_score_payload,
+        ),
+    )

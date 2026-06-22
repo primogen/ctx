@@ -13,7 +13,7 @@ from typing import Any, Iterator
 import networkx as nx
 import pytest
 
-import ctx_monitor as cm
+from ctx.monitor import compat as cm
 from ctx.monitor.services import kpi as kpi_service
 from ctx.monitor.services import sidecars as sidecar_service
 

@@ -243,10 +243,13 @@ ctx-skill-add \
 What happens:
 
 1. The name is validated.
-2. Intake checks run against the markdown.
-3. The skill is copied into `~/.claude/skills/`.
-4. A wiki page is created under `entities/skills/`.
-5. The wiki index and log are updated.
+2. NVIDIA SkillSpector runs in static `--no-llm` mode by default; the add
+   fails unless the scan passes. Use `--no-security-scan` only for a deliberate
+   local exception.
+3. Intake checks run against the markdown.
+4. The skill is copied into `~/.claude/skills/`.
+5. A wiki page is created under `entities/skills/`.
+6. The wiki index and log are updated.
 
 ## Add an Agent
 

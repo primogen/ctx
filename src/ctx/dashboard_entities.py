@@ -35,6 +35,7 @@ class EntityCrudDeps:
     display_slug: Callable[[str], str]
     display_label: Callable[[Any], str]
     entity_wiki_href: Callable[[str, str], str]
+    scan_skill_content: Callable[[str, str], tuple[bool, str]]
 
 
 @dataclass(frozen=True)
@@ -345,6 +346,10 @@ def upsert_wiki_entity(payload: dict[str, Any], *, deps: EntityCrudDeps) -> tupl
             is_safe_slug=deps.is_safe_slug,
             normalize_entity_type=deps.normalize_entity_type,
         )
+        if entity_type == "skill":
+            scan_ok, scan_detail = deps.scan_skill_content(slug, content)
+            if not scan_ok:
+                return False, scan_detail
         path = deps.wiki_entity_target_path(slug, entity_type)
         with deps.file_lock(path):
             deps.write_entity_text(path, content)

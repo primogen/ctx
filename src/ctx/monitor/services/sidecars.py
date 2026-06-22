@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from ctx.utils._safe_name import is_safe_source_name
@@ -93,6 +93,47 @@ def load_sidecar(
     if entity_type is not None and _SIDECAR_INDEX_CACHE_VALUE is not None:
         return sidecar_index(sidecar_dir).get((slug, entity_type))
     return None
+
+
+def load_direct_sidecar(
+    sidecar_dir: Path,
+    slug: str,
+    entity_type: str | None = None,
+) -> dict | None:
+    if not is_safe_source_name(slug):
+        return None
+    for path in (
+        sidecar_dir / f"{slug}.json",
+        sidecar_dir / "mcp" / f"{slug}.json",
+    ):
+        if not path.exists():
+            continue
+        sidecar = read_sidecar_file(path)
+        if sidecar is None:
+            continue
+        if entity_type is None or sidecar_entity_type(sidecar) == entity_type:
+            return sidecar
+    return None
+
+
+def sidecar_score_inputs(
+    sidecar_dir: Path,
+    slug: str,
+    entity_type: str,
+    *,
+    unit_score: Callable[[Any], float | None],
+) -> tuple[float | None, float | None]:
+    sidecar = load_direct_sidecar(sidecar_dir, slug, entity_type=entity_type)
+    if not isinstance(sidecar, dict):
+        return None, None
+    quality = unit_score(sidecar.get("score", sidecar.get("raw_score")))
+    usage = None
+    signals = sidecar.get("signals")
+    if isinstance(signals, dict):
+        telemetry = signals.get("telemetry")
+        if isinstance(telemetry, dict):
+            usage = unit_score(telemetry.get("score"))
+    return quality, usage
 
 
 def sidecar_files(sidecar_dir: Path) -> list[Path]:

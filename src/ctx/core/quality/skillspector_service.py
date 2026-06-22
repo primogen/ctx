@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
@@ -193,6 +194,30 @@ def run_skillspector_scan(
         exit_code=completed.returncode,
         output=output,
     )
+
+
+def run_skillspector_scan_text(
+    slug: str,
+    markdown_text: str,
+    *,
+    command: Sequence[str] | None = None,
+    binary: str | None = None,
+    use_llm: bool = False,
+    timeout_seconds: int = 120,
+) -> SkillSpectorResult:
+    """Run SkillSpector against an in-memory skill body."""
+    safe_slug = re.sub(r"[^a-zA-Z0-9_.+-]+", "-", slug).strip("-") or "skill"
+    with tempfile.TemporaryDirectory(prefix="ctx-skillspector-") as temp_root:
+        skill_dir = Path(temp_root) / safe_slug
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(markdown_text, encoding="utf-8")
+        return run_skillspector_scan(
+            skill_dir,
+            command=command,
+            binary=binary,
+            use_llm=use_llm,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def render_scan_report(result: SkillSpectorResult) -> str:
