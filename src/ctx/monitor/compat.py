@@ -70,6 +70,8 @@ from urllib.parse import quote
 
 from ctx import dashboard_entities
 from ctx.core import entity_types as core_entity_types
+from ctx.core.quality.skillspector_service import render_scan_report
+from ctx.core.quality.skillspector_service import run_skillspector_scan_text
 from ctx.core.wiki import wiki_queue
 from ctx.core.wiki.wiki_utils import parse_frontmatter_and_body
 from ctx.monitor import app as _monitor_app
@@ -286,6 +288,17 @@ def _write_entity_text(path: Path, content: str) -> None:
     _safe_atomic_write_text(path, content, encoding="utf-8")
 
 
+def _scan_skill_entity_content(slug: str, content: str) -> tuple[bool, str]:
+    result = run_skillspector_scan_text(slug, content)
+    if result.passed:
+        return True, "SkillSpector: passed"
+    return (
+        False,
+        "SkillSpector security scan did not pass: "
+        f"{result.status}\n\n{render_scan_report(result)}",
+    )
+
+
 def _entity_crud_deps() -> dashboard_entities.EntityCrudDeps:
     return dashboard_entities.EntityCrudDeps(
         is_safe_slug=_is_safe_slug,
@@ -311,6 +324,7 @@ def _entity_crud_deps() -> dashboard_entities.EntityCrudDeps:
         display_slug=_display_slug,
         display_label=lambda value: _display_label(value),
         entity_wiki_href=_entity_wiki_href,
+        scan_skill_content=_scan_skill_entity_content,
     )
 
 
