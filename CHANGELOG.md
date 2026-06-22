@@ -7,6 +7,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No unreleased changes yet.
 
+## [1.0.19] - 2026-06-23
+
+### Fixed
+
+- Hardened the dashboard smoke contract so it now checks the `/live` alias and
+  the local catalog page, not only the older `/events` and JSON catalog search
+  paths.
+- Added monitor API regressions for typed sidecar JSON reads and the real
+  `/api/unload` agent path without mocking the runtime unload implementation.
+
 ## [1.0.18] - 2026-06-22
 
 ### Fixed
@@ -1713,6 +1723,7 @@ pass. Full test suite: **1316 passed, 2 skipped**.
 - 5 dead imports removed (`os`, `Mapping`, `timedelta` from
   `ctx_lifecycle`; `Path` from `intake_gate`, `intake_pipeline`).
 
+[1.0.19]: https://github.com/stevesolun/ctx/releases/tag/v1.0.19
 [1.0.18]: https://github.com/stevesolun/ctx/releases/tag/v1.0.18
 [1.0.17]: https://github.com/stevesolun/ctx/releases/tag/v1.0.17
 [1.0.16]: https://github.com/stevesolun/ctx/releases/tag/v1.0.16
