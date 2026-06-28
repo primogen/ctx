@@ -46,6 +46,7 @@ from ctx.monitor.services import skillspector as skillspector_service
 from ctx.monitor.services import status as status_service
 from ctx.monitor.services import wiki as wiki_service
 from ctx.core.wiki import wiki_queue
+from ctx.telemetry import EXPORT_STATUS_SCHEMA_VERSION, SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -60,6 +61,12 @@ def fake_claude(tmp_path: Path, monkeypatch) -> Path:
     kpi_service.reset_cache()
     monkeypatch.setattr(mt, "WIKI_RENDER_CACHE_KEY", None)
     monkeypatch.setattr(mt, "WIKI_RENDER_CACHE_VALUE", None)
+    telemetry_path = claude / "telemetry" / "events.jsonl"
+    monkeypatch.setattr(
+        status_service,
+        "_telemetry_config",
+        lambda: {"path": str(telemetry_path), "export": {"sink": "otlp_http"}},
+    )
     dashboard_docs.reset_docs_render_cache()
     return claude
 
@@ -600,6 +607,19 @@ def test_artifact_status_reads_promotion_metadata(
     )
     runtime_catalog.parent.mkdir(parents=True)
     runtime_catalog.write_text("{}", encoding="utf-8")
+    (repo_graph / "wiki-graph-stats.json").write_text(
+        json.dumps({
+            "counts": {
+                "nodes": 79_958,
+                "edges": 1_778_069,
+                "skills": 68_494,
+                "agents": 467,
+                "mcps": 10_790,
+                "harnesses": 207,
+            }
+        }),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(mt, "repo_graph_dir", lambda: repo_graph)
     (graph_dir / "graph.json.promotion.json").write_text(
         json.dumps({
@@ -637,6 +657,9 @@ def test_artifact_status_reads_promotion_metadata(
     assert status["graph_store"]["nodes"] == 1
     assert status["graph_store"]["edges"] == 0
     assert status["wiki_graph_tar"]["path"] == str(repo_graph / "wiki-graph.tar.gz")
+    assert status["wiki_graph_tar"]["counts"]["nodes"] == 79_958
+    assert status["wiki_graph_tar"]["counts"]["edges"] == 1_778_069
+    assert status["published_graph_stats"]["counts"]["skills"] == 68_494
     assert status["skills_sh_catalog"]["path"] == str(runtime_catalog)
     assert status["promotion_count"] == 1
     assert status["promotions"][0]["status"] == "promoted"
@@ -649,6 +672,36 @@ def test_status_page_and_api_show_queue_and_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wiki = fake_claude / "skill-wiki"
+    telemetry_path = fake_claude / "telemetry" / "events.jsonl"
+    telemetry_path.parent.mkdir(parents=True)
+    telemetry_path.write_text(
+        json.dumps({
+            "schema_version": SCHEMA_VERSION,
+            "event_id": "evt-1",
+            "ts": "2026-06-28T00:00:00Z",
+            "event_name": "ctx.mcp.request",
+            "source": "ctx-mcp-server",
+            "outcome": "error",
+            "privacy_mode": "local_redacted",
+            "payload": {},
+        })
+        + "\nnot-json\n",
+        encoding="utf-8",
+    )
+    Path(str(telemetry_path) + ".export-status.json").write_text(
+        json.dumps({
+            "schema_version": EXPORT_STATUS_SCHEMA_VERSION,
+            "status": "degraded",
+            "sink": "otlp_http",
+            "attempted": 1,
+            "exported": 1,
+            "failed": 0,
+            "malformed_records": 1,
+            "malformed_pending_records": 1,
+            "updated_at": "2026-06-28T00:01:00Z",
+        }),
+        encoding="utf-8",
+    )
     wiki_queue.enqueue_maintenance_job(
         wiki,
         kind=wiki_queue.GRAPH_EXPORT_JOB,
@@ -665,7 +718,12 @@ def test_status_page_and_api_show_queue_and_artifacts(
     assert "pack compaction" in html_out
     assert "packs: 0 (base 0, overlay 0)" in html_out
     assert "compaction: not needed, 0 overlays / threshold" in html_out
-    assert "store: stale or missing, 0 nodes, 0 edges" in html_out
+    assert "local store: stale or missing, 0 nodes, 0 edges" in html_out
+    assert "Telemetry health" in html_out
+    assert "events: 1" in html_out
+    assert "malformed: 1" in html_out
+    assert "ctx.mcp.request" in html_out
+    assert "degraded" in html_out
     assert wiki_queue.GRAPH_EXPORT_JOB in html_out
 
     server, _thread, port = _serve_monitor(monkeypatch)
@@ -676,6 +734,10 @@ def test_status_page_and_api_show_queue_and_artifacts(
         ) as response:
             payload = json.loads(response.read().decode("utf-8"))
         assert payload["queue"]["total"] == 1
+        assert payload["telemetry"]["spool"]["event_count"] == 1
+        assert payload["telemetry"]["spool"]["malformed_records"] == 1
+        assert payload["telemetry"]["spool"]["latest_event"]["event_name"] == "ctx.mcp.request"
+        assert payload["telemetry"]["export_status"]["status"] == "degraded"
         assert payload["artifacts"]["graph_json"]["path"].endswith("graph.json")
     finally:
         server.shutdown()
@@ -1572,6 +1634,22 @@ def test_monitor_sse_stream_does_not_block_json_requests(
         thread.join(timeout=2)
 
 
+def test_monitor_sse_stream_sends_initial_comment(
+    fake_claude: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server, thread, port = _serve_monitor(monkeypatch)
+    stream = urllib.request.urlopen(
+        f"http://127.0.0.1:{port}/api/events.stream", timeout=2
+    )
+    try:
+        assert stream.read(len(b": connected\n\n")) == b": connected\n\n"
+    finally:
+        stream.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_monitor_shutdown_signals_open_sse_workers(
     fake_claude: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2089,8 +2167,10 @@ def test_render_graph_uses_builtin_3d_mount(monkeypatch: pytest.MonkeyPatch) -> 
     assert "function drillIntoNode" in html_out
     assert "function restorePreviousGraph" in html_out
     assert "let nodeClickTimer" in html_out
+    assert "let graphLoadSeq = 0" in html_out
     assert "function scheduleNodeClick" in html_out
     assert "function handleNodeDoubleClick" in html_out
+    assert "if (loadSeq !== graphLoadSeq) return;" in html_out
     assert "svg.addEventListener('click', ev => {" not in html_out
     assert "graph-fallback-label" in html_out
     assert "class=\"graph-toolbar\"" in html_out
