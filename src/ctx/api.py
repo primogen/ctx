@@ -6,7 +6,7 @@ the MCP server and the first-party ``ctx run`` CLI, but are not
 great entrypoints for someone building their own loop. This module
 is the one stable, flat namespace such callers should target.
 
-Three delivery paths, in increasing order of coupling to ctx:
+Four delivery paths, in increasing order of coupling to ctx:
 
 1. **Attach the MCP server.** Zero Python dependency on ctx — your
    harness just spawns ``ctx-mcp-server`` and speaks JSON-RPC. The
@@ -21,6 +21,11 @@ Three delivery paths, in increasing order of coupling to ctx:
 3. **Use ``ctx run`` directly.** The full harness-over-LiteLLM
    experience, no host-side code required. Good if you don't already
    have a loop.
+
+4. **Use the LoopFlow adapter.** If another runner already owns
+   plan/act/observe, call ``python -m ctx.adapters.loopflow`` or
+   ``ctx.adapters.loopflow.recommend_for_loop`` before planning to get
+   a permissioned JSON contract for the current loop.
 
 Public functions:
 
@@ -43,6 +48,14 @@ Public functions:
         Resolve the configured wiki directory (``~/.claude/skill-wiki``
         by default) — lets callers pre-build a custom CtxCoreToolbox
         pointed at a non-default location.
+
+Adapter support helpers:
+
+    ctx_core_tool_names()
+        Return ctx-core tool names exposed by the shared toolbox.
+
+    recommendation_graph()
+        Return the shared recommendation graph for adapter-side ranking.
 
 Plan 001 Phase H9.
 """
@@ -181,9 +194,7 @@ def _call(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     toolbox = _get_toolbox()
     with telemetry_span():
         try:
-            raw = toolbox.dispatch(
-                ToolCall(id="api", name=tool_name, arguments=arguments)
-            )
+            raw = toolbox.dispatch(ToolCall(id="api", name=tool_name, arguments=arguments))
             payload = json.loads(raw)
         except Exception as exc:  # noqa: BLE001 - preserve existing propagation.
             _record_api_event(
@@ -328,11 +339,13 @@ def list_all_entities(
         else:
             from ctx.core.wiki.wiki_query import load_all_pages  # noqa: PLC0415
 
-            result = sorted({
-                page.name
-                for page in load_all_pages(wiki)
-                if entity_type is None or page.entity_type == entity_type
-            })
+            result = sorted(
+                {
+                    page.name
+                    for page in load_all_pages(wiki)
+                    if entity_type is None or page.entity_type == entity_type
+                }
+            )
             outcome = "ok"
             error_kind = None
     except Exception as exc:  # noqa: BLE001 - preserve existing propagation.
@@ -354,6 +367,16 @@ def list_all_entities(
         error_kind=error_kind,
     )
     return result
+
+
+def ctx_core_tool_names() -> list[str]:
+    """Return ctx-core tool names exposed by the shared toolbox for adapter payloads."""
+    return [definition.name for definition in _get_toolbox().tool_definitions()]
+
+
+def recommendation_graph() -> Any:
+    """Return the shared recommendation graph for adapter-side ranking."""
+    return _get_toolbox()._ensure_graph()
 
 
 def default_wiki_dir() -> Path | None:

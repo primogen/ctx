@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![PyPI](https://img.shields.io/pypi/v/claude-ctx.svg)](https://pypi.org/project/claude-ctx/)
-[![Tests](https://img.shields.io/badge/Tests-4400_inventory-brightgreen.svg)](https://github.com/stevesolun/ctx/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/Tests-4421_inventory-brightgreen.svg)](https://github.com/stevesolun/ctx/actions/workflows/test.yml)
 [![Graph](https://img.shields.io/badge/Graph-79%2C958_nodes_/_1%2C778%2C069_edges-red.svg)](https://stevesolun.github.io/ctx/knowledge-graph/)
 [![Skills](https://img.shields.io/badge/Skills-68%2C494-blue.svg)](https://stevesolun.github.io/ctx/catalog/?type=skill)
 [![Agents](https://img.shields.io/badge/Agents-467-purple.svg)](https://stevesolun.github.io/ctx/catalog/?type=agent)
@@ -21,9 +21,10 @@ burn fewer tokens and local models waste less CPU/GPU work.
 
 ctx watches what you are building, walks a **79,958-node** graph, and
 recommends a small, top-scored bundle of skills, agents, and MCP servers for
-the current task. If you use your own local/API model instead of Claude Code,
-ctx has a separate harness setup flow: tell it the model and goal, review the
-recommended harness, then install with dry-run/update/uninstall controls.
+the current task. If you use your own local/API model instead of Claude Code or
+run an external loop such as LoopFlow, ctx has separate harness and adapter
+flows: tell it the model and goal, review recommendations, and keep installs
+behind dry-run/update/uninstall controls.
 
 Current shipped snapshot:
 
@@ -58,6 +59,7 @@ Examples from that tracker:
 | --- | --- | --- |
 | `CLI-002` | As a user I can ask ctx for current repo recommendations. | `ctx-recommend` returns a capped, graph-scored bundle of relevant skills, agents, and MCP servers from the shared recommendation engine. |
 | `CLI-026` | As a local/API model user I can get harness recommendations and install one. | `ctx-harness-install --dry-run` interviews model/goals/tools/privacy, recommends a fitting harness above threshold, or emits a no-fit custom harness PRD. |
+| `CLI-049` | As a DSL runner or custom agent-loop author I can ask ctx for scoped planning capabilities before each loop plan. | `python -m ctx.adapters.loopflow` emits a permission-gated JSON contract with skill, agent, MCP, ctx MCP server, and gated harness recommendations. |
 | `API-011` | As a dashboard user I can manually add, edit, or delete entities. | `/api/entity/upsert` and `/api/entity/delete` validate type, slug, and body, then queue safe graph/wiki updates instead of mutating blindly. |
 
 ## Install
@@ -80,7 +82,7 @@ Graph-backed recommendations need the pre-built graph. By default, `ctx-init
 in source checkouts, or the matching GitHub release asset from pip installs.
 It contains `graphify-out/*`, the shipped skill index needed for
 recommendations, and the 207 harness pages needed by
-`ctx-harness-install`:
+`ctx-harness-install` and LoopFlow adapter harness recommendations:
 
 ```bash
 ctx-init --graph
@@ -118,6 +120,7 @@ ctx-harness-install text-to-cad --dry-run   # inspect before cloning/running any
 ctx-harness-install text-to-cad             # install after reviewing the plan
 ctx-harness-install text-to-cad --update --dry-run
 ctx-harness-install text-to-cad --uninstall --dry-run
+python -m ctx.adapters.loopflow --goal "fix checkout e2e" --permissions skills,agents,mcps
 ctx-skill-quality list     # four-signal quality score for every skill
 ctx-skill-quality explain python-patterns   # drill into a single skill
 ctx-skill-health dashboard # structural health + drift detection
