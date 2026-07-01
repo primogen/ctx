@@ -25,7 +25,8 @@ Outcome and dimensions live in attributes such as `otel.status_code`,
 Every recorded event gets a generated OpenTelemetry-compatible `trace_id` and
 `span_id` when the caller does not provide one. OTLP export maps those to the
 log record `traceId` and `spanId` fields and also includes ctx release
-provenance as `ctx.version`.
+provenance as `ctx.version`. In installed wheels this comes from package
+metadata; in source checkouts it falls back to `ctx.__version__`.
 
 ## Metric Shape
 
@@ -100,9 +101,11 @@ The shipped config keeps telemetry local:
 ```
 
 `local_redacted` removes or hashes raw input fields such as `query`, `prompt`,
-`tool_input`, `stdout`, `stderr`, paths, repo names, and secrets. The only
-accepted modes are `local_redacted`, `disabled`, `off`, and `none`; unknown modes
-fail closed instead of emitting raw fields.
+`tool_input`, `stdout`, `stderr`, repo names, secrets, `paths`, dotted or
+hyphenated path keys such as `ctx.repo.path` and `repo-path`, and keys that
+normalize to `_path` or `_paths` suffixes. The only accepted modes are
+`local_redacted`, `disabled`, `off`, and `none`; unknown modes fail closed
+instead of emitting raw fields.
 
 Local JSONL records retain the top-level `session_id` field for compatibility
 with existing local-only workflows, but they also include a salted

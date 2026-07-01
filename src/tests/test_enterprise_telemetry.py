@@ -64,6 +64,7 @@ def test_record_event_writes_local_redacted_envelope(tmp_path: Path) -> None:
         cwd="/Users/example/private-repo/service",
         payload={
             "query": "debug failing checkout for customer acme",
+            "repo_path": "/Users/example/private-repo",
             "result_count": 2,
             "token": "sk-secret-token-value",
             "ranked": [{"slug": "python-patterns", "score": 0.91}],
@@ -90,6 +91,9 @@ def test_record_event_writes_local_redacted_envelope(tmp_path: Path) -> None:
     assert raw["payload"]["token"] == "[redacted]"
     assert "query" not in raw["payload"]
     assert raw["payload"]["query_hash"].startswith("sha256:")
+    assert "repo_path" not in raw["payload"]
+    assert raw["payload"]["repo_path_hash"].startswith("sha256:")
+    assert "/Users/example/private-repo" not in path.read_text(encoding="utf-8")
 
     got = list(read_events(path, trusted_root=tmp_path))
     assert len(got) == 1
@@ -98,6 +102,27 @@ def test_record_event_writes_local_redacted_envelope(tmp_path: Path) -> None:
     assert got[0].trace_id == event.trace_id
     assert got[0].span_id == event.span_id
     assert got[0].ctx_version == event.ctx_version
+
+
+def test_sanitize_payload_hashes_common_path_key_shapes() -> None:
+    payload = telemetry.sanitize_payload(
+        {
+            "paths": ["/Users/example/private-repo/a.py"],
+            "ctx.repo.path": "/Users/example/private-repo",
+            "file.paths": ["/Users/example/private-repo/b.py"],
+            "safe": "kept",
+        },
+        config={"mode": "local_redacted", "privacy": {"hash_salt": "test-salt"}},
+    )
+
+    assert payload["paths_hash"].startswith("sha256:")
+    assert payload["ctx.repo.path_hash"].startswith("sha256:")
+    assert payload["file.paths_hash"].startswith("sha256:")
+    assert payload["safe"] == "kept"
+    assert "paths" not in payload
+    assert "ctx.repo.path" not in payload
+    assert "file.paths" not in payload
+    assert "/Users/example/private-repo" not in json.dumps(payload)
 
 
 def test_telemetry_span_propagates_trace_to_nested_events(tmp_path: Path) -> None:
@@ -685,10 +710,7 @@ def test_export_events_posts_otlp_http_payload(
     assert log_record["body"] == {"stringValue": "ctx.mcp.request"}
     assert len(log_record["traceId"]) == 32
     assert len(log_record["spanId"]) == 16
-    attributes = {
-        item["key"]: item["value"]
-        for item in log_record["attributes"]
-    }
+    attributes = {item["key"]: item["value"] for item in log_record["attributes"]}
     assert attributes["event.name"] == {"stringValue": "ctx.mcp.request"}
     assert attributes["ctx.outcome"] == {"stringValue": "error"}
     assert attributes["error.type"] == {"stringValue": "method_not_found"}
@@ -753,10 +775,7 @@ def test_export_events_hashes_legacy_session_id_for_otlp(
     assert result.failed == 0
     payload = calls[0]
     log_record = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
-    attributes = {
-        item["key"]: item["value"]
-        for item in log_record["attributes"]
-    }
+    attributes = {item["key"]: item["value"] for item in log_record["attributes"]}
     assert "ctx.session_id" not in attributes
     assert attributes["ctx.session.hash"] == {
         "stringValue": hash_identifier("legacy-session-private", salt="tenant-a")
@@ -1906,9 +1925,7 @@ def test_telemetry_retention_cli_plans_then_enforces(
     assert enforced["dry_run"] is False
     assert enforced["results"][0]["status"] == "pruned"
     assert enforced["results"][0]["dropped_records"] == 1
-    assert [event.event_id for event in read_events(path, trusted_root=tmp_path)] == [
-        "event-2"
-    ]
+    assert [event.event_id for event in read_events(path, trusted_root=tmp_path)] == ["event-2"]
     assert json.loads(status_path.read_text(encoding="utf-8"))["schema_version"] == (
         RETENTION_STATUS_SCHEMA_VERSION
     )
@@ -1989,9 +2006,7 @@ def test_default_config_declares_local_only_export_disabled() -> None:
         assert telemetry["privacy"]["hash_salt_env"] == "CTX_TELEMETRY_HASH_SALT"
         assert telemetry["privacy"]["hash_salt_path"] == "~/.ctx/telemetry/hash-salt"
         assert telemetry["retention"]["enabled"] is True
-        assert telemetry["retention"]["status_path"] == (
-            "~/.ctx/telemetry/retention-status.json"
-        )
+        assert telemetry["retention"]["status_path"] == ("~/.ctx/telemetry/retention-status.json")
         assert telemetry["retention"]["min_keep_records"] == 1000
         assert telemetry["retention"]["drop_malformed"] is False
         assert telemetry["retention"]["events"]["max_age_days"] == 90

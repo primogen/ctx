@@ -31,6 +31,7 @@ from ctx.utils._fs_utils import atomic_write_text as _atomic_write_text
 
 try:
     from ctx_config import cfg as _cfg
+
     CLAUDE_DIR = _cfg.claude_dir
     INTENT_LOG = _cfg.intent_log
     MANIFEST_PATH = _cfg.skill_manifest
@@ -45,8 +46,11 @@ except ImportError:
     STALE_THRESHOLD = 30
     KEEP_DAYS = 5
 
-ENTITIES_DIR = WIKI_DIR / "entities" / "skills"
-LOG_PATH = WIKI_DIR / "log.md"
+_DEFAULT_ENTITIES_DIR = WIKI_DIR / "entities" / "skills"
+_DEFAULT_LOG_PATH = WIKI_DIR / "log.md"
+ENTITIES_DIR = _DEFAULT_ENTITIES_DIR
+LOG_PATH = _DEFAULT_LOG_PATH
+
 
 def _today() -> str:
     """Today's date in UTC, computed fresh per call.
@@ -156,7 +160,6 @@ def read_loaded_skills() -> list[str]:
         return []
 
 
-
 def _set_frontmatter_field(content: str, field: str, value: str) -> str:
     """Set a frontmatter field, inserting it if missing.
 
@@ -200,7 +203,7 @@ def _set_frontmatter_field(content: str, field: str, value: str) -> str:
         return content  # no frontmatter to extend
     prefix, body, suffix = fm_match.group(1), fm_match.group(2), fm_match.group(3)
     new_body = body + (f"\n{field}: {safe_value}" if body else f"{field}: {safe_value}")
-    return prefix + new_body + suffix + content[fm_match.end():]
+    return prefix + new_body + suffix + content[fm_match.end() :]
 
 
 PENDING_UNLOAD = CLAUDE_DIR / "pending-unload.json"
@@ -214,13 +217,28 @@ def _wiki_root(wiki_dir: Path | None) -> Path:
     return wiki_dir if wiki_dir else WIKI_DIR
 
 
+def _custom_entities_dir_active(wiki_dir: Path | None) -> bool:
+    return wiki_dir is None and ENTITIES_DIR != _DEFAULT_ENTITIES_DIR
+
+
+def _custom_log_path_active(wiki_dir: Path | None) -> bool:
+    return wiki_dir is None and LOG_PATH != _DEFAULT_LOG_PATH
+
+
 def _read_skill_page(
     skill_name: str,
     *,
     wiki_dir: Path | None = None,
 ) -> tuple[Path, str, str] | None:
-    wiki_root = _wiki_root(wiki_dir)
     relpath = _skill_page_relpath(skill_name)
+    entities_dir = (wiki_dir / "entities" / "skills") if wiki_dir else ENTITIES_DIR
+    if _custom_entities_dir_active(wiki_dir):
+        page_path = entities_dir / f"{skill_name}.md"
+        if not page_path.exists():
+            return None
+        return page_path, relpath, page_path.read_text(encoding="utf-8")
+
+    wiki_root = _wiki_root(wiki_dir)
     packs_dir = wiki_root / "wiki-packs"
     if packs_dir.is_dir():
         pages = load_merged_wiki_pages(packs_dir)
@@ -229,7 +247,6 @@ def _read_skill_page(
             return None
         return wiki_root / relpath, relpath, content
 
-    entities_dir = (wiki_dir / "entities" / "skills") if wiki_dir else ENTITIES_DIR
     page_path = entities_dir / f"{skill_name}.md"
     if not page_path.exists():
         return None
@@ -243,6 +260,10 @@ def _write_skill_page(
     *,
     wiki_dir: Path | None = None,
 ) -> None:
+    if _custom_entities_dir_active(wiki_dir):
+        _atomic_write_text(page_path, content)
+        return
+
     if page_path.exists():
         _atomic_write_text(page_path, content)
     packs_dir = _wiki_root(wiki_dir) / "wiki-packs"
@@ -266,20 +287,25 @@ def _queue_unload_suggestion(skill_name: str, session_count: int, use_count: int
     existing_names = {s["name"] for s in pending.get("suggestions", [])}
     newly_queued = skill_name not in existing_names
     if newly_queued:
-        pending.setdefault("suggestions", []).append({
-            "name": skill_name,
-            "reason": f"Loaded {session_count} sessions, used {use_count} times",
-            "session_count": session_count,
-            "use_count": use_count,
-        })
+        pending.setdefault("suggestions", []).append(
+            {
+                "name": skill_name,
+                "reason": f"Loaded {session_count} sessions, used {use_count} times",
+                "session_count": session_count,
+                "use_count": use_count,
+            }
+        )
     pending["generated_at"] = datetime.now(timezone.utc).isoformat()
     _atomic_write_text(PENDING_UNLOAD, json.dumps(pending, indent=2))
     return newly_queued
 
 
 def update_skill_page(
-    skill_name: str, used: bool, session_count_bump: bool = True,
-    *, wiki_dir: Path | None = None,
+    skill_name: str,
+    used: bool,
+    session_count_bump: bool = True,
+    *,
+    wiki_dir: Path | None = None,
 ) -> tuple[bool, bool]:
     """
     Update wiki entity page for a skill.
@@ -290,11 +316,11 @@ def update_skill_page(
         into pending-unload.json (so callers can count stale detections
         without re-reading the page).
 
-    Pass ``wiki_dir`` to target a non-default wiki; falls back to the
-    module-level ``ENTITIES_DIR`` for backward compatibility. Strix
-    vuln-0004: previously the ``--wiki`` CLI flag only gated the
-    existence check, then this function ignored it and silently wrote
-    into ``WIKI_DIR``.
+    Pass ``wiki_dir`` to target a non-default wiki. When ``wiki_dir`` is
+    omitted, a custom module-level ``ENTITIES_DIR`` takes precedence over the
+    default packed wiki fallback for backward compatibility. Strix vuln-0004:
+    previously the ``--wiki`` CLI flag only gated the existence check, then
+    this function ignored it and silently wrote into ``WIKI_DIR``.
     """
     if not SAFE_NAME_RE.match(skill_name):
         print(f"Warning: skipping invalid skill name: {skill_name!r}", file=sys.stderr)
@@ -336,12 +362,15 @@ def update_skill_page(
         return False, False
 
 
-def append_wiki_log(loaded_count: int, used_skills: set[str], stale_count: int,
-                    *, wiki_dir: Path | None = None) -> None:
+def append_wiki_log(
+    loaded_count: int, used_skills: set[str], stale_count: int, *, wiki_dir: Path | None = None
+) -> None:
     """Append session summary to wiki log.md.
 
     Honors ``wiki_dir`` if provided so Strix vuln-0004 (``--wiki`` flag
-    silently ignored) is closed end-to-end.
+    silently ignored) is closed end-to-end. When ``wiki_dir`` is omitted, a
+    custom module-level ``LOG_PATH`` takes precedence over the default packed
+    wiki fallback.
     """
     entry = (
         f"\n## [{_today()}] session-end | usage-sync\n"
@@ -351,6 +380,13 @@ def append_wiki_log(loaded_count: int, used_skills: set[str], stale_count: int,
     )
     if used_skills:
         entry += f"- Used: {', '.join(sorted(used_skills))}\n"
+
+    if _custom_log_path_active(wiki_dir):
+        if not LOG_PATH.exists():
+            return
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(entry)
+        return
 
     wiki_root = _wiki_root(wiki_dir)
     packs_dir = wiki_root / "wiki-packs"
@@ -397,11 +433,7 @@ def truncate_intent_log() -> None:
 
     # Keep last KEEP_DAYS dates
     sorted_dates = sorted(lines_by_date.keys())[-KEEP_DAYS:]
-    kept_lines = [
-        line
-        for date in sorted_dates
-        for line in lines_by_date[date]
-    ]
+    kept_lines = [line for date in sorted_dates for line in lines_by_date[date]]
 
     try:
         with open(INTENT_LOG, "w", encoding="utf-8") as f:
@@ -439,15 +471,13 @@ def main() -> None:
     wiki_override = wiki_dir if wiki_dir != WIKI_DIR else None
     for skill_name in loaded_skills:
         skill_used = skill_name in used_skills
-        updated, queued = update_skill_page(skill_name, used=skill_used,
-                                            wiki_dir=wiki_override)
+        updated, queued = update_skill_page(skill_name, used=skill_used, wiki_dir=wiki_override)
         if updated:
             updated_count += 1
             if queued:
                 stale_count += 1
 
-    append_wiki_log(len(loaded_skills), used_skills, stale_count,
-                    wiki_dir=wiki_override)
+    append_wiki_log(len(loaded_skills), used_skills, stale_count, wiki_dir=wiki_override)
     truncate_intent_log()
 
     print(

@@ -28,12 +28,12 @@ pytest --cov=src -q                # with coverage report
 
 ## Documentation changes
 
-Public docs surfaces are release-tracked in
+Public docs surfaces are release-tracked in the canonical
+`qa/feature_status.csv` tracker, with supporting feature rows in
 `docs/qa/feature-user-story-status.csv`. If you add, remove, or move a `.md`
 entry under `mkdocs.yml` `nav`, or change linked public assets under
 `docs/assets/javascripts/`, `docs/services/`, or `docs/toolbox/templates/`,
-update the canonical feature tracker with the exact path in
-`entrypoint_or_route` and run:
+update both tracker rows with the exact path in `entrypoint_or_route` and run:
 
 ```bash
 python -m pytest -q --no-cov \
@@ -58,6 +58,15 @@ Fix formatting in one shot:
 ruff format src/
 ruff check --fix src/
 ```
+
+## No-mistakes runner
+
+Maintainer no-mistakes agents can use `scripts/no_mistakes_codex_env.sh` as
+the Codex wrapper for this repo. It prepends the verified project Python venv
+when present and owner-only, plus Codex-bundled resources, without installing
+or upgrading system packages. Set `CTX_NO_MISTAKES_PYTHON_BIN` to override the
+Python venv explicitly; `CTX_NO_MISTAKES_CODEX_RESOURCES` and
+`CTX_NO_MISTAKES_REAL_CODEX` override the Codex resource directory or binary.
 
 ## Commit conventions
 

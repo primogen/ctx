@@ -31,12 +31,13 @@ with persistent memory that gets smarter every session.
     Optional extras: `pip install "claude-ctx[embeddings]"` for the
     semantic backend, `pip install "claude-ctx[harness]"` for local/API
     model harness runs, `pip install "claude-ctx[dev]"` for the
-    pytest/mypy/ruff toolchain. After install the `ctx-scan-repo`,
+    pytest/mypy/ruff toolchain. After install the `ctx`, `ctx-scan-repo`,
     `ctx-skill-quality`, `ctx-skill-health`, and `ctx-toolbox` console
-    scripts are on PATH. `ctx-init --graph` installs the fast pre-built
-    runtime graph that powers recommendations and harness dry-runs; source checkouts use
-    `graph/wiki-graph-runtime.tar.gz`, while pip installs download the
-    matching GitHub release asset. Use
+    scripts are on PATH; `python -m ctx --help` reaches the same
+    run/resume/sessions CLI as `ctx`. `ctx-init --graph` installs the fast
+    pre-built runtime graph that powers recommendations and harness dry-runs;
+    source checkouts use `graph/wiki-graph-runtime.tar.gz`, while pip installs
+    download the matching GitHub release asset. Use
     `ctx-init --graph --graph-install-mode full` when you want the full
     markdown LLM-wiki expanded locally.
 
@@ -59,9 +60,9 @@ with persistent memory that gets smarter every session.
     strict MkDocs build. Public docs surfaces are release-tracked: when
     `mkdocs.yml` adds, removes, or moves a nav `.md` page, or public linked
     assets under `docs/assets/javascripts/`, `docs/services/`, or
-    `docs/toolbox/templates/` change, update
-    `docs/qa/feature-user-story-status.csv` with the exact path in
-    `entrypoint_or_route`.
+    `docs/toolbox/templates/` change, update both
+    `docs/qa/feature-user-story-status.csv` and the canonical
+    `qa/feature_status.csv` with the exact path in `entrypoint_or_route`.
 
 ## Why this exists
 
@@ -216,7 +217,7 @@ ones are flagged. New ones self-ingest.
     ---
 
     Current main is **v1.0.20** — MIT, CI-matrixed (Ubuntu 3.12 plus Windows/macOS 3.11/3.12),
-    4,421 test inventory. Adds enterprise OpenTelemetry-ready telemetry and
+    4,429 test inventory. Adds enterprise OpenTelemetry-ready telemetry and
     ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
     skills, agents, and MCP servers, plus Harness Setup for user-owned LLMs),

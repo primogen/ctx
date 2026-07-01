@@ -14,7 +14,10 @@ custom-harness Python imports.
 from __future__ import annotations
 
 import importlib
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -120,6 +123,30 @@ def test_ctx_has_version() -> None:
     assert match.group(1) == data["project"]["version"]
 
 
+def test_python_m_ctx_delegates_to_console_cli() -> None:
+    """The flagship package supports the same entry surface as `ctx`."""
+    root = Path(__file__).resolve().parent.parent.parent
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(root / "src"),
+    }
+    result = subprocess.run(
+        [sys.executable, "-m", "ctx", "--help"],
+        cwd=root,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
+    assert "run" in result.stdout
+    assert "resume" in result.stdout
+
+
 def test_every_subpackage_has_docstring() -> None:
     """Each scaffolded __init__.py carries a docstring documenting its role.
     This is load-bearing during the R1-R6 migration — an empty __init__
@@ -130,10 +157,7 @@ def test_every_subpackage_has_docstring() -> None:
         mod = importlib.import_module(name)
         if not (mod.__doc__ and mod.__doc__.strip()):
             missing.append(name)
-    assert not missing, (
-        "The following ctx subpackages are missing module docstrings: "
-        f"{missing}"
-    )
+    assert not missing, f"The following ctx subpackages are missing module docstrings: {missing}"
 
 
 def test_pyproject_declares_all_subpackages() -> None:
@@ -152,9 +176,7 @@ def test_pyproject_declares_all_subpackages() -> None:
     declared = set(data["tool"]["setuptools"]["packages"])
     expected = set(_EXPECTED_SUBPACKAGES)
     missing = expected - declared
-    assert not missing, (
-        f"pyproject.toml packages list is missing: {sorted(missing)}"
-    )
+    assert not missing, f"pyproject.toml packages list is missing: {sorted(missing)}"
 
 
 def test_flat_console_scripts_are_packaged() -> None:
@@ -190,10 +212,7 @@ def test_flat_console_scripts_are_packaged() -> None:
         if "." not in target.split(":", 1)[0]
     }
     missing = flat_targets - packaged_modules
-    assert not missing, (
-        "Flat console script targets missing from py-modules: "
-        f"{sorted(missing)}"
-    )
+    assert not missing, f"Flat console script targets missing from py-modules: {sorted(missing)}"
 
 
 def test_no_legacy_flat_shadow() -> None:
@@ -205,6 +224,4 @@ def test_no_legacy_flat_shadow() -> None:
     and does NOT collide with the new package path."""
     src = Path(__file__).resolve().parent.parent
     collision = src / "ctx.py"
-    assert not collision.exists(), (
-        f"{collision} shadows the ctx package — rename or remove it."
-    )
+    assert not collision.exists(), f"{collision} shadows the ctx package — rename or remove it."

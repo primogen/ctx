@@ -30,12 +30,12 @@ from the per-repo file fall back to the global value.
       ],
 
       "scope": {
-        // "diff" | "dynamic" | "full"
+        // "diff" | "dynamic" | "graph-blast" | "full"
         "analysis": "dynamic",
         // Optional: restrict to these glob projects
         "projects": ["*"],
-        // Optional: restrict to these file globs
-        "files": ["src/**/*.py"]
+        // Optional: match intent signals
+        "signals": ["python"]
       },
 
       "budget": {
@@ -44,16 +44,16 @@ from the per-repo file fall back to the global value.
       },
 
       "dedup": {
-        // "fresh" = always re-run, "user-configurable" = skip
-        // if same files already reviewed this session
-        "policy": "user-configurable",
+        // "fresh" = always re-run, "cached" = reuse a matching
+        // plan within window_seconds
+        "policy": "cached",
         "window_seconds": 3600
       },
 
       "trigger": {
         "slash": true,
-        "session_start": false,
-        "file_save": false,
+        // Optional file-save glob; null disables file-save
+        "file_save": null,
         "pre_commit": true,
         "session_end": false
       },
@@ -84,26 +84,28 @@ Controls what files the council sees:
 | Value | Behavior |
 |---|---|
 | `diff` | Only files with uncommitted changes. Cheapest, fastest. |
-| `dynamic` | Diff + import graph blast radius. Catches downstream regressions. |
+| `dynamic` | Diff by default; expands one graph hop for tiny diffs when graph edges are available; falls back to full when no diff exists. |
+| `graph-blast` | Current diff plus one-hop graph expansion when a graph edge map is supplied; otherwise the changed set. |
 | `full` | Every tracked file. Most thorough; expensive — reserve for security sweeps. |
 
 ### `budget`
 
-Enforced by `council_runner`. When the plan would exceed `max_tokens`, the
-runner truncates the file list; when time exceeds `max_seconds`, the
-trigger exits 0 without running remaining agents.
+Copied into the `RunPlan` as `budget_tokens` and `budget_seconds`.
+Downstream council execution enforces those caps.
 
 ### `dedup`
 
-`fresh` always re-runs. `user-configurable` skips a council run when the
-same file set was reviewed within `window_seconds`. Dedup state lives at
-`~/.claude/toolbox-runs/<plan_hash>.json`.
+`fresh` always builds a new plan. `cached` reuses a matching plan when its
+deterministic `plan_hash` is still within `window_seconds`. Dedup state lives
+at `~/.claude/toolbox-runs/<plan_hash>.json`.
 
 ### `trigger`
 
-At least one trigger must be true. Multiple triggers are allowed — a
-`ship-it` toolbox typically enables `slash`, `pre_commit`, and
-`session_end`.
+Multiple triggers are allowed — a `ship-it` toolbox typically enables
+`slash`, `pre_commit`, and `session_end`. `file_save` is a glob string
+such as `"**/*.md"`; use `null` to disable file-save matching.
+`session-start` is not configured in the trigger map: any active toolbox
+with a non-empty `pre` list can preload those skills at session start.
 
 ### `guardrail`
 
@@ -133,11 +135,11 @@ ctx-toolbox import my-toolboxes.yaml
 
 ## Validation
 
-`toolbox_config.load()` validates on read:
+`toolbox_config` validates on read:
 
 - `version` must equal `1`.
-- Every toolbox needs at least one trigger.
-- `scope.analysis` must be one of `diff`, `dynamic`, `full`.
+- `scope.analysis` must be one of `diff`, `dynamic`, `graph-blast`, `full`.
+- `dedup.policy` must be one of `fresh`, `cached`.
 - `budget.max_tokens` and `budget.max_seconds` must be positive ints.
 
 Invalid entries raise `ValueError` with the offending key.

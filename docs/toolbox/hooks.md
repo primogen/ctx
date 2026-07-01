@@ -2,7 +2,8 @@
 
 [`src/toolbox_hooks.py`](https://github.com/stevesolun/ctx/blob/main/src/toolbox_hooks.py)
 is the bridge between Claude Code's hook system and the toolbox runner.
-It listens for four events plus one explicit slash command.
+It listens for four hook events. User-initiated slash wrappers use the same
+toolbox config but are not emitted by this hook runner.
 
 ## Event model
 
@@ -10,12 +11,14 @@ It listens for four events plus one explicit slash command.
 |---|---|---|
 | `session-start` | New Claude Code session | Skill preloaders, intent suggestions |
 | `file-save` | File written to disk | Linters, quick reviewers |
-| `pre-commit` | `git commit` before write | Guardrail councils (`ship-it`, `security-sweep`) |
+| `pre-commit` | `git commit` before write | `security-sweep` guardrail |
 | `session-end` | Session closes | Digest, behavior miner, retro |
-| `slash:/toolbox run <name>` | User-initiated | Anything |
 
-Each trigger in a toolbox's `trigger` map enables that toolbox on that
-event. Events with no matching toolbox emit nothing.
+`session-start` matches active toolboxes with a non-empty `pre` list.
+`file-save`, `pre-commit`, and `session-end` use the toolbox's `trigger`
+map. Events with no matching toolbox emit nothing. User-initiated slash
+wrappers are dispatched outside `toolbox_hooks.py` and select toolboxes from
+the same config with `trigger.slash`.
 
 ## Emission format
 
@@ -24,11 +27,11 @@ One JSON line per matching toolbox, on stdout:
 ```jsonc
 {
   "trigger": "pre-commit",
-  "toolbox": "ship-it",
+  "toolbox": "security-sweep",
   "plan_file": "/Users/steve/.claude/toolbox-runs/abc123.json",
-  "agents": ["code-reviewer", "security-reviewer", "architect-review"],
+  "agents": ["security-reviewer", "security-auditor", "penetration-tester"],
   "files": ["src/toolbox_verdict.py", "src/tests/test_toolbox_verdict.py"],
-  "source": "pre-commit",
+  "source": "fresh",
   "guardrail": true
 }
 ```
@@ -57,15 +60,13 @@ The `2` exit from `pre-commit` is what actually blocks `git commit`.
 ctx-toolbox run --event pre-commit
 ```
 
-Then point git at the directory once: `git config core.hooksPath .githooks`.
-
 Then `git config core.hooksPath .githooks`.
 
 ## file-save path matching
 
-`file-save` triggers honor `scope.files` globs. Without a `--path` arg
-the event matches nothing (there's no file to test). This is intentional:
-file-save toolboxes must be path-scoped.
+`file-save` triggers honor the `trigger.file_save` glob. Without a
+`--path` arg the event matches nothing (there's no file to test). This is
+intentional: file-save toolboxes must be path-scoped.
 
 ## session-end digest
 
