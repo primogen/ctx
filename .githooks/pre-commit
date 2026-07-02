@@ -14,15 +14,50 @@ set -u
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 UPDATER="$REPO_ROOT/src/update_repo_stats.py"
 
-PYTHON="${PYTHON:-python3}"
-command -v "$PYTHON" >/dev/null 2>&1 || PYTHON="python"
 STATS_TIMEOUT="${CTX_REPO_STATS_TIMEOUT:-240s}"
 
 STAGED_CHANGES=$(git diff --cached --name-only)
 log() { echo "[pre-commit] $*" >&2; }
 
+resolve_python() {
+  local candidates=()
+  if [[ -n "${PYTHON:-}" ]]; then
+    candidates=("$PYTHON")
+  else
+    candidates=(
+      "$REPO_ROOT/.venv/bin/python"
+      "python3.12"
+      "python3.11"
+      "python3"
+      "python"
+    )
+  fi
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ "$candidate" == */* ]]; then
+      [[ -x "$candidate" ]] || continue
+    else
+      command -v "$candidate" >/dev/null 2>&1 || continue
+    fi
+    if "$candidate" - <<'PY' >/dev/null 2>&1; then
+import sys
+
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
+PY
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 if echo "$STAGED_CHANGES" | grep -qE '^(README\.md|docs/(index|knowledge-graph|catalog)\.md|graph/(wiki-graph\.tar\.gz|communities\.json|skills-sh-catalog\.json\.gz)|src/update_repo_stats\.py|src/tests/.*\.py)$' ; then
   if [[ -f "$UPDATER" ]]; then
+    PYTHON="$(resolve_python)" || {
+      log "Python >=3.11 is required for repo stats; create .venv or install python3.12/python3.11"
+      exit 1
+    }
     STATS_CMD=("$PYTHON" "$UPDATER")
     if echo "$STAGED_CHANGES" | grep -qE '^src/tests/.*\.py$' ; then
       STATS_CMD=(env CTX_UPDATE_REPO_STATS_LIVE_TESTS=1 "${STATS_CMD[@]}")
