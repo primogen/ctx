@@ -342,6 +342,12 @@ def test_pre_commit_refreshes_all_repo_stats_outputs() -> None:
 
     assert "skills-sh-catalog\\.json\\.gz" in hook
     assert "docs/(index|knowledge-graph|catalog)\\.md" in hook
+    assert '"$REPO_ROOT/.venv/bin/python"' in hook
+    assert '"python3.12"' in hook
+    assert '"python3.11"' in hook
+    assert "sys.version_info >= (3, 11)" in hook
+    assert "Python >=3.11 is required for repo stats" in hook
+    assert 'PYTHON="${PYTHON:-python3}"' not in hook
     assert "git add README.md docs/index.md docs/knowledge-graph.md docs/catalog.md" in hook
     assert (
         "README.md, docs/index.md, docs/knowledge-graph.md, and docs/catalog.md refreshed"
