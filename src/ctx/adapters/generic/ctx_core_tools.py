@@ -156,6 +156,11 @@ def _safe_tool_payload(local_name: str, args: Mapping[str, Any]) -> dict[str, An
     if isinstance(seeds, (list, tuple)):
         payload["ctx.seeds.count"] = len(seeds)
         payload["ctx.seeds.hash"] = _hash_json_value(list(seeds))
+    for key in ("selected", "rejected"):
+        values = args.get(key)
+        if isinstance(values, (list, tuple)):
+            payload[f"ctx.selection.{key}.count"] = len(values)
+            payload[f"ctx.selection.{key}.hash"] = _hash_json_value(list(values))
     slug = args.get("slug")
     if isinstance(slug, str):
         payload["ctx.slug.hash"] = hash_identifier(slug)
@@ -230,6 +235,7 @@ def _record_core_tool_event(
 
 _CORE_EVENT_NAMES = {
     "recommend_bundle": "ctx.core.recommend_bundle",
+    "recommend_related": "ctx.core.recommend_related",
     "graph_query": "ctx.core.graph_query",
     "wiki_search": "ctx.core.wiki_search",
     "wiki_get": "ctx.core.wiki_get",
@@ -375,6 +381,48 @@ class CtxCoreToolbox:
                 },
             ),
             ToolDefinition(
+                name=f"{_NAMESPACE}recommend_related",
+                description=(
+                    "Recommend related skills / agents / MCP servers after "
+                    "the user selected a subset of an initial bundle. "
+                    "Filters out selected and rejected recommendation IDs."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "selected": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Selected recommendation IDs or names, such as "
+                                "'skill:fastapi-pro' or 'fastapi-pro'."
+                            ),
+                            "minItems": 1,
+                        },
+                        "rejected": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Rejected recommendation IDs or names to exclude.",
+                        },
+                        "max_hops": {
+                            "type": "integer",
+                            "description": "Graph walk depth. Default 2.",
+                            "minimum": 1,
+                            "maximum": 4,
+                        },
+                        "top_n": {
+                            "type": "integer",
+                            "description": "How many related recommendations. Default 5.",
+                            "minimum": 1,
+                            "maximum": 50,
+                        },
+                        "output_format": dict(_RESPONSE_FORMAT_PROPERTY),
+                        "_response_format": dict(_RESPONSE_FORMAT_PROPERTY),
+                    },
+                    "required": ["selected"],
+                },
+            ),
+            ToolDefinition(
                 name=f"{_NAMESPACE}wiki_search",
                 description=(
                     "Keyword search across the llm-wiki entity pages "
@@ -452,6 +500,8 @@ class CtxCoreToolbox:
             try:
                 if local_name == "recommend_bundle":
                     result = self._dispatch_recommend(args)
+                elif local_name == "recommend_related":
+                    result = self._dispatch_recommend_related(args)
                 elif local_name == "graph_query":
                     result = self._dispatch_graph_query(args)
                 elif local_name == "wiki_search":
@@ -596,6 +646,80 @@ class CtxCoreToolbox:
                 "tags": tags,
                 "results": results,
                 "companion_harnesses": companion_harnesses,
+            },
+            _response_format_from_args(args),
+        )
+
+    def _dispatch_recommend_related(self, args: dict[str, Any]) -> str:
+        selected_raw = args.get("selected") or []
+        if not isinstance(selected_raw, list) or not selected_raw:
+            return json.dumps({"error": "selected must be a non-empty list", "results": []})
+        selected = _recommendation_selection_values(selected_raw)
+        selected_names = _recommendation_selection_names(selected)
+        if not selected_names:
+            return json.dumps(
+                {
+                    "error": "selected must contain recommendation IDs or names",
+                    "results": [],
+                }
+            )
+
+        rejected_raw = args.get("rejected") or []
+        rejected = (
+            _recommendation_selection_values(rejected_raw) if isinstance(rejected_raw, list) else []
+        )
+        excluded = _recommendation_selection_keys(selected + rejected)
+        max_hops = _clamp_int(args.get("max_hops"), default=2, lo=1, hi=4)
+        top_n = _clamp_int(args.get("top_n"), default=5, lo=1, hi=50)
+
+        graph = self._ensure_graph()
+        if graph.number_of_nodes() == 0:
+            return json.dumps(
+                {
+                    "error": "knowledge graph not available; run ctx-wiki-graphify",
+                    "results": [],
+                }
+            )
+
+        from ctx.core.graph.resolve_graph import resolve_by_seeds  # noqa: PLC0415
+
+        raw = resolve_by_seeds(
+            graph,
+            selected_names,
+            max_hops=max_hops,
+            top_n=min(50, top_n + len(excluded) + 5),
+        )
+        results: list[dict[str, Any]] = []
+        for r in raw:
+            candidate_keys = _recommendation_selection_keys(
+                [_recommendation_identity(r), str(r.get("name") or "")]
+            )
+            if candidate_keys & excluded:
+                continue
+            shared_tags = r.get("shared_tags", [])
+            row = _with_recommendation_selection_metadata(
+                {
+                    "name": r["name"],
+                    "type": r["type"],
+                    "score": r["score"],
+                    "normalized_score": r.get("normalized_score"),
+                    "matching_tags": shared_tags,
+                    "shared_tags": shared_tags,
+                    "via": r.get("via", []),
+                }
+            )
+            row["selection_state"] = "suggested_related"
+            row["related_to"] = r.get("via", [])
+            row["reason"] = _related_recommendation_reason(row)
+            results.append(row)
+            if len(results) >= top_n:
+                break
+
+        return _encode_response(
+            {
+                "selected": selected,
+                "rejected": rejected,
+                "results": results,
             },
             _response_format_from_args(args),
         )
@@ -1157,6 +1281,73 @@ def _with_recommendation_selection_metadata(row: Mapping[str, Any]) -> dict[str,
     enriched["selected"] = False
     enriched["selection_state"] = "suggested"
     return enriched
+
+
+def _recommendation_selection_values(values: list[Any]) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, Mapping):
+            raw = value.get("id") or (
+                f"{value.get('type')}:{value.get('name')}"
+                if value.get("type") and value.get("name")
+                else value.get("name")
+            )
+        else:
+            raw = value
+        if not isinstance(raw, str):
+            continue
+        item = raw.strip()
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(item)
+    return selected
+
+
+def _recommendation_selection_names(values: list[str]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        name = value.split(":", 1)[-1].strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def _recommendation_selection_keys(values: list[str]) -> set[str]:
+    keys: set[str] = set()
+    for value in values:
+        item = str(value or "").strip().lower()
+        if not item:
+            continue
+        keys.add(item)
+        keys.add(item.split(":", 1)[-1])
+    return keys
+
+
+def _related_recommendation_reason(row: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    via = row.get("via", [])
+    if isinstance(via, list) and via:
+        parts.append(f"related via {', '.join(str(v) for v in via[:4])}")
+    tags = _recommendation_tags(row)
+    if tags:
+        parts.append(f"shares tags {', '.join(tags[:6])}")
+    normalized_score = row.get("normalized_score")
+    if isinstance(normalized_score, (int, float)):
+        parts.append(f"normalized score {float(normalized_score):.3f}")
+    if not parts:
+        return "Related by ctx recommendation graph."
+    return _clip_recommendation_text("; ".join(parts), max_chars=220)
 
 
 def _recommend_companion_harnesses(

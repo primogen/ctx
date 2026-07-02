@@ -55,6 +55,7 @@ from ctx.mcp_server.server import (
 _SRC_DIR = Path(__file__).resolve().parents[1]
 _EXPECTED_TOOL_NAMES = {
     "ctx__recommend_bundle",
+    "ctx__recommend_related",
     "ctx__graph_query",
     "ctx__wiki_search",
     "ctx__wiki_get",

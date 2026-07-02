@@ -500,6 +500,7 @@ class TestCtxCoreToolboxRexport:
         defs = toolbox.tool_definitions()
         assert {definition.name for definition in defs} == {
             "ctx__recommend_bundle",
+            "ctx__recommend_related",
             "ctx__graph_query",
             "ctx__wiki_search",
             "ctx__wiki_get",

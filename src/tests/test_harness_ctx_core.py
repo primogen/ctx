@@ -415,6 +415,7 @@ class TestToolDefinitions:
         names = [d.name for d in defs]
         assert set(names) == {
             "ctx__recommend_bundle",
+            "ctx__recommend_related",
             "ctx__graph_query",
             "ctx__wiki_search",
             "ctx__wiki_get",
@@ -449,6 +450,7 @@ class TestToolDefinitions:
     ) -> None:
         read_tools = {
             "ctx__recommend_bundle",
+            "ctx__recommend_related",
             "ctx__graph_query",
             "ctx__wiki_search",
             "ctx__wiki_get",
@@ -1345,6 +1347,30 @@ class TestGraphQuery:
         names = [r["name"] for r in result["results"]]
         # Direct neighbours: fastapi-pro + code-reviewer.
         assert "fastapi-pro" in names or "code-reviewer" in names
+
+        related = json.loads(
+            toolbox.dispatch(
+                ToolCall(
+                    id="c2",
+                    name="ctx__recommend_related",
+                    arguments={
+                        "selected": ["skill:python-patterns"],
+                        "rejected": ["skill:fastapi-pro"],
+                        "top_n": 5,
+                        "max_hops": 1,
+                    },
+                )
+            )
+        )
+        related_names = [r["name"] for r in related["results"]]
+        assert "python-patterns" not in related_names
+        assert "fastapi-pro" not in related_names
+        reviewer = next(r for r in related["results"] if r["name"] == "code-reviewer")
+        assert reviewer["id"] == "agent:code-reviewer"
+        assert reviewer["selected"] is False
+        assert reviewer["selection_state"] == "suggested_related"
+        assert reviewer["related_to"] == ["python-patterns"]
+        assert "python-patterns" in reviewer["reason"]
 
     def test_missing_seeds(self, toolbox: CtxCoreToolbox) -> None:
         result = json.loads(
