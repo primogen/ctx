@@ -58,6 +58,9 @@ jobs:
         run: |
           python -m mkdocs build --strict
 
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
@@ -74,10 +77,34 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deploy_attempt_1.outputs.page_url || steps.deploy_attempt_2.outputs.page_url || steps.deploy_attempt_3.outputs.page_url }}
     steps:
-      - name: Deploy
-        id: deployment
+      - name: Deploy (attempt 1)
+        id: deploy_attempt_1
+        continue-on-error: true
         uses: actions/deploy-pages@v5
         with:
-          timeout: 1200000
+          timeout: 600000
+
+      - name: Pause before deploy retry
+        if: steps.deploy_attempt_1.outcome == 'failure'
+        run: sleep 60
+
+      - name: Deploy (attempt 2)
+        id: deploy_attempt_2
+        if: steps.deploy_attempt_1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/deploy-pages@v5
+        with:
+          timeout: 600000
+
+      - name: Pause before final deploy retry
+        if: steps.deploy_attempt_1.outcome == 'failure' && steps.deploy_attempt_2.outcome == 'failure'
+        run: sleep 120
+
+      - name: Deploy (attempt 3)
+        id: deploy_attempt_3
+        if: steps.deploy_attempt_1.outcome == 'failure' && steps.deploy_attempt_2.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+        with:
+          timeout: 600000
