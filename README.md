@@ -44,9 +44,11 @@ Current shipped snapshot:
 
 The canonical QA tracker is
 [`qa/feature_status.csv`](qa/feature_status.csv). The supporting feature ledger
-[`docs/qa/feature-user-story-status.csv`](docs/qa/feature-user-story-status.csv)
-and dashboard-specific ledger
-[`docs/qa/dashboard-user-story-status.csv`](docs/qa/dashboard-user-story-status.csv)
+[`docs/qa/feature-user-story-status.csv`](docs/qa/feature-user-story-status.csv),
+dashboard-specific ledger
+[`docs/qa/dashboard-user-story-status.csv`](docs/qa/dashboard-user-story-status.csv),
+and tool-selection/token-history ledger
+[`qa/tool-selection-token-history/tracker.csv`](qa/tool-selection-token-history/tracker.csv)
 are supporting detail ledgers that feed that root tracker; canonical status and
 release readiness stay in `qa/feature_status.csv`.
 Rows for public MkDocs pages use the exact `docs/...md` path from `mkdocs.yml`
