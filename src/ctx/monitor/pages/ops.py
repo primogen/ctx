@@ -204,7 +204,7 @@ def render_status(
         ("wiki_packs", "wiki packs"),
         ("pack_compaction", "pack compaction"),
         ("wiki_graph_tar", "wiki-graph.tar.gz"),
-        ("skills_sh_catalog", "skill-index.json.gz"),
+        ("skills_sh_catalog", "skills-sh-catalog.json.gz"),
     )
     artifact_rows = "".join(
         "<tr>"

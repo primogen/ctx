@@ -13,7 +13,7 @@ name: ctx-shipped-graph
 type: compressed-runtime
 paths:
   graph: graph/wiki-graph-runtime.tar.gz
-  skills: graph/<skill-index>.json.gz
+  skills: graph/skills-sh-catalog.json.gz
 refresh: release-time
 priority: 1
 ```
@@ -45,7 +45,7 @@ still require an explicit review if replacement content is proposed.
 name: shipped-skills
 type: shipped-index
 shipped_entries: 67024
-local_index: graph/<skill-index>.json.gz
+local_index: graph/skills-sh-catalog.json.gz
 hydrated_wiki: external-catalogs/<source>/catalog.json
 refresh: on-demand
 priority: 3

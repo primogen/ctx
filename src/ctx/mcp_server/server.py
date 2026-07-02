@@ -22,13 +22,22 @@ Install into any MCP-aware host:
 
     <host-specific config pointing at the ``ctx-mcp-server`` binary>
 
-Tools exposed (same as ctx.adapters.generic.ctx_core_tools — the
-H6 module is the source of truth for the tool catalogue):
+Tools exposed (same as ctx.adapters.generic.ctx_core_tools — that
+module is the source of truth for the tool catalogue):
 
     ctx__recommend_bundle(query, top_k=5)
+    ctx__recommend_related(selected, rejected=None, top_n=5)
     ctx__graph_query(seeds, max_hops=2, top_n=10)
     ctx__wiki_search(query, top_n=15)
     ctx__wiki_get(slug)
+    ctx__observe_dev_event(...)
+    ctx__load_entity(...)
+    ctx__mark_entity_used(...)
+    ctx__record_validation(...)
+    ctx__record_escalation(...)
+    ctx__unload_entity(...)
+    ctx__session_end(...)
+    ctx__session_state(...)
 
 Protocol coverage mirrors H2's client implementation — the minimal
 operational subset: initialize + initialized notification +

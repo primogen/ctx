@@ -13,7 +13,7 @@ The target user is a programmer or AI engineer who receives ctx recommendations 
 Observed entry points:
 
 - `src/ctx/api.py` exposes `recommend_bundle(query, top_k=5)` as the public Python API. It wraps `ctx__recommend_bundle` and returns a list of recommendation dicts.
-- `src/ctx/adapters/generic/ctx_core_tools.py` exposes `ctx__recommend_bundle`, `ctx__graph_query`, `ctx__wiki_search`, and `ctx__wiki_get` through `CtxCoreToolbox`.
+- `src/ctx/adapters/generic/ctx_core_tools.py` exposes `ctx__recommend_bundle`, `ctx__recommend_related`, `ctx__graph_query`, `ctx__wiki_search`, `ctx__wiki_get`, and runtime lifecycle/session tools through `CtxCoreToolbox`.
 - `src/ctx/core/resolve/recommendations.py` provides `recommend_by_tags(...)`, which ranks graph entities by slug-token, tag overlap, graph degree, explicit entity match, optional semantic query score, and external catalog fallback.
 - `src/ctx/cli/recommend.py` provides `ctx-recommend`; text mode renders rows, and `--json` emits `{"query": ..., "results": [...]}`.
 - `src/ctx/mcp_server/server.py` exposes the shared toolbox through MCP `tools/list` and `tools/call`.
@@ -62,12 +62,12 @@ Observed lifecycle/telemetry persistence:
 - `src/ctx/telemetry/__init__.py` provides privacy-safe local event and metric spools, `record_event`, `record_counter`, `record_histogram`, `read_events`, and `read_metrics`.
 - Legacy `src/skill_telemetry.py` records load/unload events for skills, agents, and MCP servers under `~/.claude/skill-events.jsonl`.
 
-Missing pieces:
+Implemented pieces and remaining caveats:
 
-- No shared selection state contract on recommendation rows.
-- No persisted user-selected vs system-selected activation flag.
-- No per-tool token attribution store.
-- No dashboard/API aggregation of per-tool token history.
+- Recommendation rows expose the shared selection-state contract.
+- User-selected vs system-selected activation flags persist in the runtime lifecycle ledger.
+- Per-tool token attribution is stored when the host can provide exact, estimated, or unavailable evidence.
+- Dashboard/API aggregation of per-tool token history is implemented through the Runtime page and `/api/runtime.json`; final-loop validation covers the browser/API privacy contract.
 - Exact token counts are available for ctx generic harness runs, but not necessarily for arbitrary external MCP/host tool invocations. Unavailable or estimated states must be explicit.
 - Exact token counts are currently provider/session-level, not per-tool. A per-tool usage row may be marked `exact` only when the host/provider supplies usage for that specific tool or when the model/tool boundary is unambiguous and recorded with correlation evidence. Session totals must not be split across tools as if they were exact.
 
@@ -133,9 +133,9 @@ Preferred persisted record shape for activation and usage:
 - `correlation_id`: optional safe id linking model responses, tool calls, and lifecycle records when attribution is exact.
 - `created_at` and `created_at_epoch`.
 
-Open decision for implementation: extend `RuntimeLifecycleStore` with dedicated selection/token methods or add a small adjacent store in `ctx.adapters.generic`. Default preference is to extend the lifecycle store because it already owns session/entity history.
+Implementation decision: extend `RuntimeLifecycleStore` with selection and token usage fields because it already owns session/entity history.
 
-Persistence caveat: `RuntimeLifecycleStore` currently skips writes when telemetry is disabled. Enterprise privacy wants local lifecycle history even when export is disabled, so implementation must distinguish local runtime history from telemetry/export disablement before relying on the lifecycle ledger for required history.
+Persistence note: `RuntimeLifecycleStore` keeps local lifecycle history independent of telemetry/export disablement. Enterprise privacy keeps exporters opt-in, while local runtime history remains available for dashboard/API aggregation.
 
 ## Security And Privacy
 
