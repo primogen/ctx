@@ -879,6 +879,9 @@ class CtxCoreToolbox:
                     security_scan=(
                         _dict_arg(args.get("security_scan")) if "security_scan" in args else None
                     ),
+                    selected=_optional_bool(args.get("selected")),
+                    selection_source=str(args.get("selection_source") or "") or None,
+                    source_context=_dict_arg(args.get("source_context")),
                 )
             elif name == "mark_entity_used":
                 result = self._lifecycle.mark_entity_used(
@@ -1435,6 +1438,28 @@ def _lifecycle_tool_definitions(
                     "entity_type": entity_type,
                     "slug": slug,
                     "reason": {"type": "string"},
+                    "selected": {
+                        "type": "boolean",
+                        "description": (
+                            "True when the entity was explicitly selected from "
+                            "ctx recommendations. Defaults to true for user loads."
+                        ),
+                    },
+                    "selection_source": {
+                        "type": "string",
+                        "enum": ["user", "system", "host", "unknown"],
+                        "description": (
+                            "Who selected or activated the entity: user, system, "
+                            "host, or unknown. Default user."
+                        ),
+                    },
+                    "source_context": {
+                        "type": "object",
+                        "description": (
+                            "Optional privacy-sanitized context such as the "
+                            "recommendation surface or workflow that caused activation."
+                        ),
+                    },
                     "security_scan": {
                         "type": "object",
                         "description": (
@@ -1595,6 +1620,10 @@ def _float_arg(raw: Any) -> float:
         return float(raw) if raw is not None else 0.0
     except (TypeError, ValueError):
         return 0.0
+
+
+def _optional_bool(raw: Any) -> bool | None:
+    return raw if isinstance(raw, bool) else None
 
 
 def _excerpt(body: str, max_chars: int) -> str:

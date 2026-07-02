@@ -1476,6 +1476,11 @@ class TestResumeCommand:
         lifecycle_dir = tmp_path / "runtime"
         monkeypatch.setenv("CTX_RUNTIME_LIFECYCLE_DIR", str(lifecycle_dir))
         monkeypatch.setattr(runtime_lifecycle, "telemetry_enabled", lambda: False)
+        monkeypatch.setattr(
+            runtime_lifecycle,
+            "record_event",
+            lambda *args, **kwargs: pytest.fail("disabled telemetry should not emit"),
+        )
 
         exit_code = main(
             [
@@ -1494,7 +1499,15 @@ class TestResumeCommand:
 
         assert exit_code == 0
         capsys.readouterr()
-        assert not (lifecycle_dir / "events.jsonl").exists()
+        events = [
+            json.loads(line)
+            for line in (lifecycle_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert [event["action"] for event in events] == [
+            "dev_event",
+            "session_end",
+        ]
+        assert all(event["session_id"] == "lifecycle-disabled" for event in events)
 
     def test_resume_reuses_recorded_provider_settings(
         self,

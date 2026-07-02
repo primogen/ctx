@@ -640,6 +640,9 @@ class TestRuntimeLifecycle:
                     "session_id": "s-1",
                     "entity_type": "skill",
                     "slug": "fastapi-pro",
+                    "selected": True,
+                    "selection_source": "user",
+                    "source_context": {"surface": "ctx-recommend"},
                 },
             ),
             (
@@ -701,6 +704,9 @@ class TestRuntimeLifecycle:
             "unload_requested",
             "session_end",
         ]
+        assert events[1]["selected"] is True
+        assert events[1]["selection_source"] == "user"
+        assert events[1]["source_context"] == {"surface": "ctx-recommend"}
 
     def test_bound_session_id_is_hidden_and_enforced(self, tmp_path: Path) -> None:
         toolbox = CtxCoreToolbox(
@@ -821,6 +827,9 @@ class TestRuntimeLifecycle:
             )
         )
         assert state["loaded"][0]["security_scan"]["status"] == "not_provided"
+        assert state["loaded"][0]["selected"] is True
+        assert state["loaded"][0]["selection_source"] == "user"
+        assert state["loaded"][0]["source_context"] == {}
 
     def test_skill_load_accepts_security_scan_proof(
         self,

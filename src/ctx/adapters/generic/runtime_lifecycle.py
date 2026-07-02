@@ -27,6 +27,7 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _ENTITY_TYPES = set(RECOMMENDABLE_ENTITY_TYPES)
 _VALIDATION_STATUSES = {"passed", "failed", "skipped", "error"}
 _ESCALATION_STATUSES = {"open", "resolved", "ignored"}
+_SELECTION_SOURCES = {"user", "system", "host", "unknown"}
 _SECURITY_SCAN_STATUSES = {
     "passed",
     "findings",
@@ -69,9 +70,17 @@ class RuntimeLifecycleStore:
         slug: str,
         reason: str | None = None,
         security_scan: dict[str, Any] | None = None,
+        selected: bool | None = None,
+        selection_source: str | None = None,
+        source_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         entity_type = _validate_entity_type(entity_type)
         slug = _validate_slug(slug)
+        source = _validate_choice(
+            selection_source or "user",
+            _SELECTION_SOURCES,
+            "selection_source",
+        )
         return self._record(
             action="load_requested",
             session_id=session_id,
@@ -83,6 +92,9 @@ class RuntimeLifecycleStore:
                 entity_type=entity_type,
                 slug=slug,
             ),
+            selected=(source == "user" if selected is None else bool(selected)),
+            selection_source=source,
+            source_context=source_context or {},
         )
 
     def mark_entity_used(
@@ -216,6 +228,9 @@ class RuntimeLifecycleStore:
                     "loaded_at_epoch": float(event.get("created_at_epoch") or 0),
                     "reason": event.get("reason"),
                     "security_scan": event.get("security_scan"),
+                    "selected": bool(event.get("selected", False)),
+                    "selection_source": event.get("selection_source") or "unknown",
+                    "source_context": event.get("source_context") or {},
                     "used": False,
                     "use_count": 0,
                     "last_used_at": None,
@@ -273,12 +288,6 @@ class RuntimeLifecycleStore:
         event["session_id"] = session_id
         event["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         event["created_at_epoch"] = time.time()
-        if not telemetry_enabled():
-            return {
-                "ok": True,
-                "events_path": str(self.events_path),
-                "recorded": False,
-            }
         event = _sanitize_lifecycle_event(event)
         path = self.events_path
         reject_symlink_path(path)
@@ -316,6 +325,9 @@ def _sanitize_lifecycle_event(event: dict[str, Any]) -> dict[str, Any]:
     payload = redacted.get("payload")
     if isinstance(payload, dict):
         redacted["payload"] = sanitize_payload(payload)
+    source_context = redacted.get("source_context")
+    if isinstance(source_context, dict):
+        redacted["source_context"] = sanitize_payload(source_context)
     cwd = redacted.pop("cwd", None)
     if isinstance(cwd, str) and cwd:
         redacted["cwd_hash"] = hash_identifier(cwd)
@@ -330,6 +342,8 @@ def _validate_session_id(raw: str) -> str:
 
 
 def _record_runtime_lifecycle_telemetry(event: dict[str, Any]) -> None:
+    if not telemetry_enabled():
+        return
     payload: dict[str, Any] = {
         "ctx.lifecycle.action": str(event.get("action") or ""),
         "ctx.payload.present": bool(event.get("payload")),
@@ -344,6 +358,12 @@ def _record_runtime_lifecycle_telemetry(event: dict[str, Any]) -> None:
     status = event.get("status")
     if isinstance(status, str) and status:
         payload["ctx.status"] = status
+    selection_source = event.get("selection_source")
+    if isinstance(selection_source, str) and selection_source:
+        payload["ctx.selection.source"] = selection_source
+    selected = event.get("selected")
+    if isinstance(selected, bool):
+        payload["ctx.selection.selected"] = selected
     security_scan = event.get("security_scan")
     if isinstance(security_scan, dict):
         payload["ctx.security_scan.status"] = str(security_scan.get("status") or "")
