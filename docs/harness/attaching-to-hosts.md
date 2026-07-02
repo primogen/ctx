@@ -262,6 +262,8 @@ The adapter emits a JSON contract with:
   allows ctx-core tools;
 - ranked skill, agent, and MCP recommendations from the `ctx-recommend`
   engine;
+- `related_recommendations` after the loop passes selected and rejected
+  recommendation IDs;
 - optional harness recommendations only when the loop declares a user-owned,
   API, or local model.
 
@@ -277,6 +279,22 @@ Add `--last-failure-file .loopflow/last-failure.txt` only after the loop has
 written that file; omit it on the first run. The adapter uses that failure text
 for recommendation ranking and returns only `context.last_failure_present`, not
 the raw failure.
+
+After the loop accepts or rejects part of the first bundle, pass those decisions
+back before the next plan:
+
+```bash
+python -m ctx.adapters.loopflow \
+  --loop-file rate-limit.loop \
+  --permissions skills,agents,mcps \
+  --selected local-ollama-file-operations \
+  --rejected legacy-reviewer
+```
+
+Selected and rejected values may be recommendation IDs such as
+`mcp-server:ollama` or bare names. Returned `related_recommendations` exclude
+both sets and keep the same `id`, `tldr`, `reason`, `selected`, and
+`selection_state` semantics as the ctx API/core toolbox.
 
 The returned payload includes LoopFlow-ready hints for the granted groups:
 

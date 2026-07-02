@@ -45,6 +45,20 @@ Metrics use a separate spool, checkpoint, and status file:
 Metric checkpointing is independent from event/log checkpointing, so replaying
 or repairing one signal does not advance the other.
 
+Runtime lifecycle token usage emits OTel-style metric names when a host records
+`ctx__mark_entity_used.token_usage`:
+
+- `ctx.tool_usage.records` counts usage records by entity type and attribution.
+- `ctx.tool_usage.tokens` counts total tokens when the record has a
+  non-negative `total_tokens` value.
+- `ctx.tool_usage.tokens_per_record` observes the same total as a histogram.
+
+Attribution is always explicit through `ctx.usage.attribution`:
+`exact`, `estimated`, or `unavailable`. The built-in `ctx run` provider totals
+are session-scoped and are labeled as unavailable for per-tool attribution; ctx
+does not split session totals across selected tools. Exact per-tool rows require
+the host or runner to provide usage for that specific entity.
+
 ## Privacy Defaults
 
 The shipped config keeps telemetry local:
