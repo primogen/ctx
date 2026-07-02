@@ -65,6 +65,23 @@ _logger = logging.getLogger(__name__)
 # anything else falls back to its normal tool_executor.
 _NAMESPACE = f"ctx{TOOL_SEPARATOR}"
 _FILE_SIGNATURE_SAMPLE_BYTES = 64 * 1024
+_RECOMMENDATION_ENTITY_TYPE_ALIASES = {
+    "agent": "agent",
+    "harness": "harness",
+    "mcp": "mcp-server",
+    "mcp-server": "mcp-server",
+    "mcp-servers": "mcp-server",
+    "skill": "skill",
+}
+_RELATED_BLOCKED_STATUSES = {
+    "archived",
+    "deleted",
+    "deprecated",
+    "disabled",
+    "removed",
+    "stale",
+    "unavailable",
+}
 SUPPORTED_RESPONSE_FORMATS = ("json", "gcf")
 _RESPONSE_FORMAT_PROPERTY = {
     "type": "string",
@@ -655,8 +672,7 @@ class CtxCoreToolbox:
         if not isinstance(selected_raw, list) or not selected_raw:
             return json.dumps({"error": "selected must be a non-empty list", "results": []})
         selected = _recommendation_selection_values(selected_raw)
-        selected_names = _recommendation_selection_names(selected)
-        if not selected_names:
+        if not selected:
             return json.dumps(
                 {
                     "error": "selected must contain recommendation IDs or names",
@@ -681,11 +697,10 @@ class CtxCoreToolbox:
                 }
             )
 
-        from ctx.core.graph.resolve_graph import resolve_by_seeds  # noqa: PLC0415
-
-        raw = resolve_by_seeds(
+        seed_ids = _recommendation_selection_node_ids(graph, selected)
+        raw = _resolve_related_recommendation_rows(
             graph,
-            selected_names,
+            seed_ids,
             max_hops=max_hops,
             top_n=min(50, top_n + len(excluded) + 5),
         )
@@ -705,6 +720,7 @@ class CtxCoreToolbox:
                     "normalized_score": r.get("normalized_score"),
                     "matching_tags": shared_tags,
                     "shared_tags": shared_tags,
+                    "status": r.get("status"),
                     "via": r.get("via", []),
                 }
             )
@@ -1306,27 +1322,12 @@ def _recommendation_selection_values(values: list[Any]) -> list[str]:
         item = raw.strip()
         if not item:
             continue
-        key = item.lower()
+        key = _recommendation_selection_key(item)
         if key in seen:
             continue
         seen.add(key)
         selected.append(item)
     return selected
-
-
-def _recommendation_selection_names(values: list[str]) -> list[str]:
-    names: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        name = value.split(":", 1)[-1].strip()
-        if not name:
-            continue
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        names.append(name)
-    return names
 
 
 def _recommendation_selection_keys(values: list[str]) -> set[str]:
@@ -1335,9 +1336,124 @@ def _recommendation_selection_keys(values: list[str]) -> set[str]:
         item = str(value or "").strip().lower()
         if not item:
             continue
-        keys.add(item)
-        keys.add(item.split(":", 1)[-1])
+        keys.add(_recommendation_selection_key(item))
     return keys
+
+
+def _recommendation_selection_key(value: str) -> str:
+    entity_type, name = _recommendation_selection_parts(value)
+    if entity_type is not None:
+        return f"{entity_type}:{name.lower()}"
+    return name.lower()
+
+
+def _recommendation_selection_parts(value: str) -> tuple[str | None, str]:
+    item = str(value or "").strip()
+    if ":" not in item:
+        return None, item
+    raw_type, raw_name = item.split(":", 1)
+    entity_type = _RECOMMENDATION_ENTITY_TYPE_ALIASES.get(raw_type.strip().lower())
+    name = raw_name.strip()
+    if entity_type is None or not name:
+        return None, item
+    return entity_type, name
+
+
+def _recommendation_selection_node_ids(graph: Any, values: list[str]) -> set[str]:
+    node_ids: set[str] = set()
+    for value in values:
+        entity_type, name = _recommendation_selection_parts(value)
+        if not name:
+            continue
+        if entity_type is not None:
+            node_id = f"{entity_type}:{name}"
+            if node_id in graph:
+                node_ids.add(node_id)
+            continue
+        for candidate_type in RECOMMENDABLE_ENTITY_TYPES:
+            node_id = f"{candidate_type}:{name}"
+            if node_id in graph:
+                node_ids.add(node_id)
+    return node_ids
+
+
+def _resolve_related_recommendation_rows(
+    graph: Any,
+    seed_ids: set[str],
+    *,
+    max_hops: int,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    if not seed_ids:
+        return []
+    scores: dict[str, float] = {}
+    via: dict[str, list[str]] = {}
+    shared_tags_map: dict[str, list[str]] = {}
+    visited = set(seed_ids)
+    frontier = list(seed_ids)
+
+    for hop in range(max_hops):
+        next_frontier: list[str] = []
+        decay = 1.0 / (hop + 1)
+        for node_id in frontier:
+            for neighbor in graph.neighbors(node_id):
+                if neighbor in seed_ids or not _related_node_is_recommendable(graph, neighbor):
+                    continue
+                edge_data = graph[node_id][neighbor]
+                try:
+                    weight = float(edge_data.get("weight", 1)) * decay
+                except (TypeError, ValueError):
+                    weight = decay
+                scores[neighbor] = scores.get(neighbor, 0.0) + weight
+                seed_label = node_id.split(":", 1)[-1]
+                via.setdefault(neighbor, [])
+                if seed_label not in via[neighbor]:
+                    via[neighbor].append(seed_label)
+                shared_tags_map.setdefault(neighbor, [])
+                for tag in edge_data.get("shared_tags", []):
+                    if tag not in shared_tags_map[neighbor]:
+                        shared_tags_map[neighbor].append(tag)
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    next_frontier.append(neighbor)
+        frontier = next_frontier
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:top_n]
+    max_score = max((score for _, score in ranked), default=0.0) or 1.0
+    results: list[dict[str, Any]] = []
+    for node_id, score in ranked:
+        node_data = graph.nodes.get(node_id, {})
+        entity_type = str(node_data.get("type") or node_id.split(":", 1)[0])
+        name = str(node_data.get("label") or node_id.split(":", 1)[-1])
+        results.append(
+            {
+                "name": name,
+                "type": entity_type,
+                "score": round(score, 2),
+                "normalized_score": round(score / max_score, 4),
+                "shared_tags": shared_tags_map.get(node_id, [])[:8],
+                "via": via.get(node_id, [])[:4],
+                "status": node_data.get("status"),
+            }
+        )
+    return results
+
+
+def _related_node_is_recommendable(graph: Any, node_id: str) -> bool:
+    node_data = graph.nodes.get(node_id, {})
+    entity_type = str(node_data.get("type") or node_id.split(":", 1)[0])
+    if entity_type not in RECOMMENDABLE_ENTITY_TYPES:
+        return False
+    status = str(node_data.get("status") or "").strip().lower()
+    if status in _RELATED_BLOCKED_STATUSES:
+        return False
+    return not _truthy_recommendation_flag(node_data.get("never_load"))
+
+
+def _truthy_recommendation_flag(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
 
 
 def _related_recommendation_reason(row: Mapping[str, Any]) -> str:

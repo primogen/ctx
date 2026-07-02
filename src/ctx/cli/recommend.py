@@ -125,9 +125,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not results:
         print("No recommendations above the configured score threshold.", file=sys.stderr)
-        return 0
-    for index, row in enumerate(results, start=1):
-        print(_render_row(row, index=index))
+    else:
+        for index, row in enumerate(results, start=1):
+            print(_render_row(row, index=index))
     if selected:
         print("\nRelated recommendations:")
         if related_results:

@@ -68,20 +68,27 @@ def test_recommend_for_loop_respects_capability_permissions(
         assert selected == ["skill:playwright-debug"]
         assert rejected == ["mcp-server:filesystem"]
         assert max_hops == 2
-        assert top_n == 2
+        assert top_n == 50
         return [
-            {
-                "id": "skill:browser-test-plan",
-                "name": "browser-test-plan",
-                "type": "skill",
-                "reason": "related via playwright-debug",
-                "selection_state": "suggested_related",
-            },
             {
                 "id": "agent:browser-agent",
                 "name": "browser-agent",
                 "type": "agent",
                 "reason": "filtered by permissions",
+                "selection_state": "suggested_related",
+            },
+            {
+                "id": "agent:browser-helper",
+                "name": "browser-helper",
+                "type": "agent",
+                "reason": "filtered by permissions",
+                "selection_state": "suggested_related",
+            },
+            {
+                "id": "skill:browser-test-plan",
+                "name": "browser-test-plan",
+                "type": "skill",
+                "reason": "related via playwright-debug",
                 "selection_state": "suggested_related",
             },
         ]

@@ -95,6 +95,18 @@ def _tool_key(event: dict[str, Any]) -> tuple[str, str] | None:
     return entity_type, slug
 
 
+def _load_key(event: dict[str, Any]) -> tuple[str, str, str] | None:
+    key = _tool_key(event)
+    if key is None:
+        return None
+    return str(event.get("session_id") or "unknown"), key[0], key[1]
+
+
+def _selection_source(value: Any) -> str:
+    source = str(value or "unknown").lower()
+    return source if source in _SELECTION_SOURCES else "unknown"
+
+
 def _evidence_metadata(value: Any) -> dict[str, Any]:
     if not isinstance(value, str):
         return {"evidence_present": False, "evidence_length": 0}
@@ -102,10 +114,40 @@ def _evidence_metadata(value: Any) -> dict[str, Any]:
     return {"evidence_present": bool(text), "evidence_length": len(text)}
 
 
+def _usage_bucket(
+    buckets: dict[Any, dict[str, Any]],
+    key: Any,
+    **labels: Any,
+) -> dict[str, Any]:
+    bucket = buckets.get(key)
+    if bucket is None:
+        bucket = dict(labels)
+        bucket.update(_empty_token_usage_summary())
+        buckets[key] = bucket
+    return bucket
+
+
+def _usage_rows(buckets: dict[Any, dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        buckets.values(),
+        key=lambda row: (
+            -int(row.get("total_tokens") or 0),
+            str(row.get("entity_type") or ""),
+            str(row.get("slug") or ""),
+            str(row.get("session_id") or ""),
+            str(row.get("selection_source") or ""),
+        ),
+    )
+
+
 def _runtime_tool_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
-    active: dict[tuple[str, str], dict[str, Any]] = {}
+    active: dict[tuple[str, str, str], dict[str, Any]] = {}
     selection_sources = {key: 0 for key in _SELECTION_SOURCES}
     token_usage = _empty_token_usage_summary()
+    usage_by_tool: dict[Any, dict[str, Any]] = {}
+    usage_by_type: dict[Any, dict[str, Any]] = {}
+    usage_by_session: dict[Any, dict[str, Any]] = {}
+    usage_by_source: dict[Any, dict[str, Any]] = {}
     recent_tool_usage: list[dict[str, Any]] = []
     loaded_total = 0
     selected_total = 0
@@ -114,33 +156,65 @@ def _runtime_tool_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     for event in events:
         action = event.get("action")
         key = _tool_key(event)
-        if action == "load_requested" and key is not None:
+        load_key = _load_key(event)
+        if action == "load_requested" and key is not None and load_key is not None:
             loaded_total += 1
             selected = bool(event.get("selected", False))
             if selected:
                 selected_total += 1
-            source = str(event.get("selection_source") or "unknown").lower()
-            if source not in selection_sources:
-                source = "unknown"
+            source = _selection_source(event.get("selection_source"))
             selection_sources[source] += 1
-            active[key] = {
+            active[load_key] = {
+                "session_id": load_key[0],
                 "entity_type": key[0],
                 "slug": key[1],
                 "selected": selected,
                 "selection_source": source,
             }
-        elif action == "unload_requested" and key is not None:
-            active.pop(key, None)
+        elif action == "unload_requested" and load_key is not None:
+            active.pop(load_key, None)
         elif action == "used" and key is not None:
             used_total += 1
             raw_usage = event.get("token_usage")
             _merge_token_usage(token_usage, raw_usage)
+            session_id = str(event.get("session_id") or "unknown")
+            active_entry = active.get(load_key) if load_key is not None else None
+            source = _selection_source(
+                active_entry.get("selection_source") if active_entry is not None else None
+            )
+            if isinstance(raw_usage, dict):
+                _merge_token_usage(
+                    _usage_bucket(
+                        usage_by_tool,
+                        key,
+                        entity_type=key[0],
+                        slug=key[1],
+                    ),
+                    raw_usage,
+                )
+                _merge_token_usage(
+                    _usage_bucket(usage_by_type, key[0], entity_type=key[0]),
+                    raw_usage,
+                )
+                _merge_token_usage(
+                    _usage_bucket(usage_by_session, session_id, session_id=session_id),
+                    raw_usage,
+                )
+                _merge_token_usage(
+                    _usage_bucket(
+                        usage_by_source,
+                        source,
+                        selection_source=source,
+                    ),
+                    raw_usage,
+                )
             recent_tool_usage.append(
                 {
                     "created_at": event.get("created_at"),
-                    "session_id": event.get("session_id"),
+                    "session_id": session_id,
                     "entity_type": key[0],
                     "slug": key[1],
+                    "selection_source": source,
                     **_evidence_metadata(event.get("evidence")),
                     "token_usage": raw_usage if isinstance(raw_usage, dict) else None,
                 }
@@ -157,6 +231,12 @@ def _runtime_tool_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
             "used_total": used_total,
         },
         "token_usage": token_usage,
+        "token_usage_history": {
+            "by_tool": _usage_rows(usage_by_tool),
+            "by_type": _usage_rows(usage_by_type),
+            "by_session": _usage_rows(usage_by_session),
+            "by_source": _usage_rows(usage_by_source),
+        },
         "recent_tool_usage": recent_tool_usage[-20:],
     }
 

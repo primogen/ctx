@@ -367,7 +367,7 @@ def recommend_for_loop(
             ctx_api.recommend_related(
                 selected_ids,
                 rejected=rejected_ids,
-                top_n=safe_top_k,
+                top_n=50,
             ),
             permissions=granted,
             top_k=safe_top_k,

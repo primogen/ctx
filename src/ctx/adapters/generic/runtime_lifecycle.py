@@ -31,6 +31,7 @@ _VALIDATION_STATUSES = {"passed", "failed", "skipped", "error"}
 _ESCALATION_STATUSES = {"open", "resolved", "ignored"}
 _SELECTION_SOURCES = {"user", "system", "host", "unknown"}
 _TOKEN_ATTRIBUTIONS = {"exact", "estimated", "unavailable"}
+_LIFECYCLE_SANITIZER_CONFIG = {"enabled": True, "mode": "local_redacted"}
 _SECURITY_SCAN_STATUSES = {
     "passed",
     "findings",
@@ -334,10 +335,13 @@ def _sanitize_lifecycle_event(event: dict[str, Any]) -> dict[str, Any]:
     redacted = dict(event)
     payload = redacted.get("payload")
     if isinstance(payload, dict):
-        redacted["payload"] = sanitize_payload(payload)
+        redacted["payload"] = sanitize_payload(payload, config=_LIFECYCLE_SANITIZER_CONFIG)
     source_context = redacted.get("source_context")
     if isinstance(source_context, dict):
-        redacted["source_context"] = sanitize_payload(source_context)
+        redacted["source_context"] = sanitize_payload(
+            source_context,
+            config=_LIFECYCLE_SANITIZER_CONFIG,
+        )
     cwd = redacted.pop("cwd", None)
     if isinstance(cwd, str) and cwd:
         redacted["cwd_hash"] = hash_identifier(cwd)
