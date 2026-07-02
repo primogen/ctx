@@ -946,7 +946,7 @@ class TestRuntimeLifecycle:
         self,
         toolbox: CtxCoreToolbox,
     ) -> None:
-        for name, arguments in [
+        calls: list[tuple[str, dict[str, Any]]] = [
             (
                 "ctx__load_entity",
                 {
@@ -978,7 +978,8 @@ class TestRuntimeLifecycle:
                     },
                 },
             ),
-        ]:
+        ]
+        for name, arguments in calls:
             toolbox.dispatch(ToolCall(id="c1", name=name, arguments=arguments))
 
         result = json.loads(
