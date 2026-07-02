@@ -656,6 +656,30 @@ def test_read_test_count_live_mode_ignores_checked_in_count(
     assert urs.read_test_count(live=True) == 3982
 
 
+def test_read_test_count_live_mode_preserves_checked_in_count_without_pytest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    readme = tmp_path / "README.md"
+    docs_index = tmp_path / "docs" / "index.md"
+    docs_index.parent.mkdir()
+    readme.write_text(
+        "[![Tests](https://img.shields.io/badge/Tests-4435_inventory-brightgreen.svg)](#)",
+        encoding="utf-8",
+    )
+    docs_index.write_text("4,435 test inventory", encoding="utf-8")
+    monkeypatch.setattr(urs, "README", readme)
+    monkeypatch.setattr(urs, "DOCS_INDEX", docs_index)
+    monkeypatch.setattr(urs, "_pytest_collect", lambda _candidate: None)
+    monkeypatch.setattr(
+        urs,
+        "_static_test_count",
+        lambda: pytest.fail("checked-in count should protect against static undercount"),
+    )
+
+    assert urs.read_test_count(live=True) == 4435
+
+
 def test_patch_readme_check_uses_live_test_count(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
