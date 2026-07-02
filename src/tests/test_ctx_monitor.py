@@ -1041,6 +1041,59 @@ def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
     assert direct_summary == summary
 
 
+def test_runtime_lifecycle_summary_counts_mcp_token_usage_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = tmp_path / "runtime" / "events.jsonl"
+    monkeypatch.setattr(mt, "runtime_lifecycle_path", lambda: events)
+    _write_runtime_events(
+        events,
+        [
+            {
+                "action": "load_requested",
+                "session_id": "s-mcp",
+                "entity_type": "mcp-server",
+                "slug": "filesystem",
+                "selected": True,
+                "selection_source": "host",
+                "created_at": "2026-05-08T01:08:00Z",
+            },
+            {
+                "action": "used",
+                "session_id": "s-mcp",
+                "entity_type": "mcp-server",
+                "slug": "filesystem",
+                "token_usage": {
+                    "attribution": "unavailable",
+                    "attribution_reason": "host did not provide per-tool token usage",
+                },
+                "created_at": "2026-05-08T01:09:00Z",
+            },
+        ],
+    )
+
+    summary = mt.runtime_lifecycle_summary()
+
+    assert summary["tool_selection"]["used_total"] == 1
+    assert summary["token_usage"] == {
+        "records": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "by_attribution": {"exact": 0, "estimated": 0, "unavailable": 1},
+    }
+    history = summary["token_usage_history"]
+    assert history["by_tool"][0]["entity_type"] == "mcp-server"
+    assert history["by_tool"][0]["slug"] == "filesystem"
+    assert history["by_tool"][0]["by_attribution"]["unavailable"] == 1
+    assert history["by_type"][0]["entity_type"] == "mcp-server"
+    assert history["by_session"][0]["session_id"] == "s-mcp"
+    assert history["by_source"][0]["selection_source"] == "host"
+    assert summary["recent_tool_usage"][0]["token_usage"]["attribution"] == "unavailable"
+
+
 def test_runtime_lifecycle_summary_uses_full_history_for_open_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

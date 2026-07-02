@@ -391,6 +391,15 @@ def _record_runtime_lifecycle_telemetry(event: dict[str, Any]) -> None:
         payload["ctx.security_scan.status"] = str(security_scan.get("status") or "")
     if usage_attribution is not None:
         payload["ctx.usage.attribution"] = usage_attribution
+        for usage_key in ("input_tokens", "output_tokens", "total_tokens"):
+            usage_value = token_usage.get(usage_key) if isinstance(token_usage, dict) else None
+            payload[f"ctx.usage.{usage_key}"] = (
+                usage_value if isinstance(usage_value, int) else None
+            )
+        cost_value = token_usage.get("cost_usd") if isinstance(token_usage, dict) else None
+        payload["ctx.usage.cost_usd"] = (
+            float(cost_value) if isinstance(cost_value, (int, float)) else None
+        )
     if not telemetry_enabled():
         return
     try:
@@ -490,9 +499,12 @@ def _validation_state(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _token_usage_state(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+def _token_usage_state(raw: dict[str, Any] | None) -> dict[str, Any]:
     if not raw:
-        return None
+        raw = {
+            "attribution": "unavailable",
+            "attribution_reason": "host did not provide per-tool token usage",
+        }
     attribution = _validate_choice(
         str(raw.get("attribution") or "unavailable"),
         _TOKEN_ATTRIBUTIONS,
