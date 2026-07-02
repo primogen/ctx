@@ -58,11 +58,17 @@ def test_docs_pages_workflow_uses_node24_pages_artifact_action() -> None:
     text = (repo_root / ".github" / "workflows" / "docs.yml").read_text(encoding="utf-8")
 
     assert "actions/upload-pages-artifact@v5" in text
+    assert "actions/configure-pages@v5" in text
     assert "actions/upload-artifact@v4" not in text
     assert "path: site" in text
     assert "artifact.tar" not in text
     assert "overwrite: true" not in text
-    assert "timeout: 1200000" in text
+    assert "timeout: 1200000" not in text
+    assert "timeout: 600000" in text
+    assert "id: deploy_attempt_1" in text
+    assert "id: deploy_attempt_2" in text
+    assert "id: deploy_attempt_3" in text
+    assert "continue-on-error: true" in text
 
 
 def test_public_docs_render_current_graph_contract_totals() -> None:
