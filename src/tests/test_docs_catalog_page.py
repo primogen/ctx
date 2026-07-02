@@ -54,21 +54,29 @@ def test_public_catalog_page_does_not_link_to_local_dashboard() -> None:
     assert "../dashboard/#catalog-badge-links" in text
 
 
-def test_docs_pages_workflow_uses_node24_pages_artifact_action() -> None:
+def test_docs_pages_workflow_publishes_branch_without_deploy_pages_queue() -> None:
     text = (repo_root / ".github" / "workflows" / "docs.yml").read_text(encoding="utf-8")
 
-    assert "actions/upload-pages-artifact@v5" in text
-    assert "actions/configure-pages@v5" in text
+    assert "contents: read" in text
+    assert "Publish site to gh-pages" in text
+    assert "CTX_PAGES_DEPLOY_KEY" in text
+    assert "GIT_SSH_COMMAND" in text
+    assert "git@github.com:${GITHUB_REPOSITORY}.git" in text
+    assert "git ls-remote --exit-code --heads origin gh-pages" in text
+    assert "git checkout -B gh-pages origin/gh-pages" in text
+    assert "git checkout --orphan gh-pages" in text
+    assert 'cp -a "${GITHUB_WORKSPACE}/site/." .' in text
+    assert "touch .nojekyll" in text
+    assert "git push --force origin gh-pages" in text
+    assert "x-access-token" not in text
+    assert "secrets.GITHUB_TOKEN" not in text
+    assert "actions/configure-pages" not in text
+    assert "actions/upload-pages-artifact" not in text
+    assert "actions/deploy-pages" not in text
     assert "actions/upload-artifact@v4" not in text
-    assert "path: site" in text
     assert "artifact.tar" not in text
     assert "overwrite: true" not in text
-    assert "timeout: 1200000" not in text
-    assert "timeout: 600000" in text
-    assert "id: deploy_attempt_1" in text
-    assert "id: deploy_attempt_2" in text
-    assert "id: deploy_attempt_3" in text
-    assert "continue-on-error: true" in text
+    assert "deployment_queued" not in text
 
 
 def test_public_docs_render_current_graph_contract_totals() -> None:

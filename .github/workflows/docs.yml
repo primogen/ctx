@@ -26,8 +26,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build site
+  build-and-publish:
+    name: Build and publish site
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -58,53 +58,48 @@ jobs:
         run: |
           python -m mkdocs build --strict
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
+      - name: Publish site to gh-pages
+        env:
+          CTX_PAGES_DEPLOY_KEY: ${{ secrets.CTX_PAGES_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CTX_PAGES_DEPLOY_KEY}" ]; then
+            echo "::error::CTX_PAGES_DEPLOY_KEY secret is required for Pages branch publishing."
+            exit 1
+          fi
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
-          retention-days: 1
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-  deploy:
-    name: Deploy to GitHub Pages
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy_attempt_1.outputs.page_url || steps.deploy_attempt_2.outputs.page_url || steps.deploy_attempt_3.outputs.page_url }}
-    steps:
-      - name: Deploy (attempt 1)
-        id: deploy_attempt_1
-        continue-on-error: true
-        uses: actions/deploy-pages@v5
-        with:
-          timeout: 600000
+          install -m 700 -d "${HOME}/.ssh"
+          printf '%s\n' "${CTX_PAGES_DEPLOY_KEY}" > "${HOME}/.ssh/ctx_pages_deploy_key"
+          chmod 600 "${HOME}/.ssh/ctx_pages_deploy_key"
+          ssh-keyscan github.com >> "${HOME}/.ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/ctx_pages_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          trap 'rm -f "${HOME}/.ssh/ctx_pages_deploy_key"' EXIT
 
-      - name: Pause before deploy retry
-        if: steps.deploy_attempt_1.outcome == 'failure'
-        run: sleep 60
+          publish_dir="${RUNNER_TEMP}/ctx-gh-pages"
+          rm -rf "${publish_dir}"
+          git init "${publish_dir}"
+          cd "${publish_dir}"
+          git remote add origin "git@github.com:${GITHUB_REPOSITORY}.git"
 
-      - name: Deploy (attempt 2)
-        id: deploy_attempt_2
-        if: steps.deploy_attempt_1.outcome == 'failure'
-        continue-on-error: true
-        uses: actions/deploy-pages@v5
-        with:
-          timeout: 600000
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch --depth 1 origin gh-pages
+            git checkout -B gh-pages origin/gh-pages
+          else
+            git checkout --orphan gh-pages
+          fi
 
-      - name: Pause before final deploy retry
-        if: steps.deploy_attempt_1.outcome == 'failure' && steps.deploy_attempt_2.outcome == 'failure'
-        run: sleep 120
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a "${GITHUB_WORKSPACE}/site/." .
+          touch .nojekyll
 
-      - name: Deploy (attempt 3)
-        id: deploy_attempt_3
-        if: steps.deploy_attempt_1.outcome == 'failure' && steps.deploy_attempt_2.outcome == 'failure'
-        uses: actions/deploy-pages@v5
-        with:
-          timeout: 600000
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No documentation changes to publish."
+            exit 0
+          fi
+
+          git commit -m "Deploy docs for ${GITHUB_SHA}"
+          git push --force origin gh-pages
