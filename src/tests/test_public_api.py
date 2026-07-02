@@ -160,6 +160,7 @@ class TestPublicApiShape:
             "graph_query",
             "list_all_entities",
             "recommend_bundle",
+            "recommend_related",
             "wiki_get",
             "wiki_search",
         }
@@ -183,6 +184,7 @@ class TestPublicApiShape:
     def test_same_callable_after_reexport(self) -> None:
         """ctx.recommend_bundle must be the SAME object as ctx.api.recommend_bundle."""
         assert ctx.recommend_bundle is ctx.api.recommend_bundle
+        assert ctx.recommend_related is ctx.api.recommend_related
         assert ctx.graph_query is ctx.api.graph_query
         assert ctx.wiki_search is ctx.api.wiki_search
         assert ctx.wiki_get is ctx.api.wiki_get
@@ -206,6 +208,12 @@ class TestSignatures:
         assert list(sig.parameters)[0] == "seeds"
         assert sig.parameters["max_hops"].default == 2
         assert sig.parameters["top_n"].default == 10
+
+        related_sig = inspect.signature(ctx.recommend_related)
+        assert list(related_sig.parameters)[0] == "selected"
+        assert related_sig.parameters["rejected"].default is None
+        assert related_sig.parameters["max_hops"].default == 2
+        assert related_sig.parameters["top_n"].default == 5
 
     def test_wiki_search_signature(self) -> None:
         sig = inspect.signature(ctx.wiki_search)
@@ -292,6 +300,23 @@ class TestApiTelemetry:
         assert "query" not in payload
         assert raw_query not in json.dumps(payload)
 
+        captured_api_events.clear()
+        selected_id = "skill:python-patterns"
+        rejected_id = "skill:fastapi-pro"
+        related = ctx.recommend_related([selected_id], rejected=[rejected_id])
+
+        event = captured_api_events[-1]
+        assert event["event_name"] == "ctx.api.recommend_related"
+        assert event["outcome"] == "ok"
+        payload = event["payload"]
+        assert payload["ctx.tool.name"] == "ctx__recommend_related"
+        assert payload["ctx.arguments.keys"] == ["max_hops", "rejected", "selected", "top_n"]
+        assert payload["ctx.selection.selected.count"] == 1
+        assert payload["ctx.selection.rejected.count"] == 1
+        assert payload["ctx.result.count"] == len(related)
+        assert selected_id not in json.dumps(payload)
+        assert rejected_id not in json.dumps(payload)
+
     def test_recommend_bundle_error_telemetry_keeps_error_structured(
         self,
         synthetic_home: Path,
@@ -326,6 +351,19 @@ class TestGraphQuery:
         results = ctx.graph_query(["python-patterns"])
         names = [r["name"] for r in results]
         assert "fastapi-pro" in names or "code-reviewer" in names
+
+        related = ctx.recommend_related(
+            ["skill:python-patterns"],
+            rejected=["skill:fastapi-pro"],
+            max_hops=1,
+            top_n=5,
+        )
+        related_names = [r["name"] for r in related]
+        assert "python-patterns" not in related_names
+        assert "fastapi-pro" not in related_names
+        reviewer = next(r for r in related if r["name"] == "code-reviewer")
+        assert reviewer["id"] == "agent:code-reviewer"
+        assert reviewer["selection_state"] == "suggested_related"
 
     def test_empty_seeds_returns_empty(self, synthetic_home: Path) -> None:
         assert ctx.graph_query([]) == []
