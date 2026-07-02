@@ -7,7 +7,7 @@ import json
 import sys
 from typing import Any
 
-from ctx import recommend_bundle
+from ctx import recommend_bundle, recommend_related
 from ctx_config import cfg
 
 
@@ -28,10 +28,43 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Maximum results to show (default {cfg.recommendation_top_k}, max 5).",
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON.")
+    parser.add_argument(
+        "--selected",
+        action="append",
+        default=[],
+        help=(
+            "Selected recommendation ID/name. May be repeated or comma-separated; "
+            "enables related recommendations."
+        ),
+    )
+    parser.add_argument(
+        "--rejected",
+        action="append",
+        default=[],
+        help="Rejected recommendation ID/name. May be repeated or comma-separated.",
+    )
+    parser.add_argument(
+        "--related-top-n",
+        type=int,
+        default=cfg.recommendation_top_k,
+        help=f"Maximum related results to show (default {cfg.recommendation_top_k}, max 5).",
+    )
     return parser
 
 
-def _render_row(row: dict[str, Any]) -> str:
+def _split_selection_values(values: list[str] | None) -> list[str]:
+    selections: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        for part in value.split(","):
+            item = part.strip()
+            if item and item not in seen:
+                selections.append(item)
+                seen.add(item)
+    return selections
+
+
+def _render_row(row: dict[str, Any], *, index: int | None = None) -> str:
     name = str(row.get("name") or row.get("slug") or "")
     entity_type = str(row.get("type") or row.get("entity_type") or "skill")
     score = row.get("normalized_score", row.get("score", 0.0))
@@ -46,22 +79,62 @@ def _render_row(row: dict[str, Any]) -> str:
     action_text = f"  run={action}" if action else ""
     category = row.get("category")
     category_text = f"  category={category}" if category else ""
-    return f"{entity_type:>10}  {name:<40} score={score_text}{suffix}{category_text}{action_text}"
+    row_id = row.get("id")
+    row_id_text = f"  id={row_id}" if row_id else ""
+    state = row.get("selection_state")
+    state_text = f"  state={state}" if state else ""
+    related_to = row.get("related_to")
+    related_text = f"  related_to={related_to}" if related_to else ""
+    prefix = f"{index:>2}. " if index is not None else ""
+    lines = [
+        (
+            f"{prefix}{entity_type:>10}  {name:<40} "
+            f"score={score_text}{suffix}{category_text}{row_id_text}"
+            f"{state_text}{related_text}{action_text}"
+        )
+    ]
+    tldr = row.get("tldr")
+    if tldr:
+        lines.append(f"    {tldr}")
+    reason = row.get("reason")
+    if reason:
+        lines.append(f"    reason={reason}")
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     query = " ".join(args.query).strip()
     top_k = max(1, min(int(args.top_k), cfg.recommendation_top_k))
+    related_top_n = max(1, min(int(args.related_top_n), cfg.recommendation_top_k))
+    selected = _split_selection_values(args.selected)
+    rejected = _split_selection_values(args.rejected)
     results = recommend_bundle(query, top_k=top_k)
+    related_results = (
+        recommend_related(selected, rejected=rejected, top_n=related_top_n) if selected else []
+    )
     if args.json:
-        print(json.dumps({"query": query, "results": results}, indent=2))
+        payload: dict[str, Any] = {"query": query, "results": results}
+        if selected or rejected:
+            payload["selection"] = {
+                "selected": selected,
+                "rejected": rejected,
+                "related_results": related_results,
+            }
+        print(json.dumps(payload, indent=2))
         return 0
     if not results:
         print("No recommendations above the configured score threshold.", file=sys.stderr)
         return 0
-    for row in results:
-        print(_render_row(row))
+    for index, row in enumerate(results, start=1):
+        print(_render_row(row, index=index))
+    if selected:
+        print("\nRelated recommendations:")
+        if related_results:
+            for index, row in enumerate(related_results, start=1):
+                print(_render_row(row, index=index))
+        else:
+            print("  No related recommendations above the configured score threshold.")
     return 0
 
 

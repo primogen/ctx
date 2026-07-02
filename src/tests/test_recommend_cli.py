@@ -11,10 +11,14 @@ def test_recommend_cli_text(monkeypatch, capsys) -> None:
         "recommend_bundle",
         lambda query, *, top_k: [
             {
+                "id": "skill:fastapi-pro",
                 "name": "fastapi-pro",
                 "type": "skill",
                 "normalized_score": 0.91,
                 "matching_tags": ["python", "api"],
+                "selection_state": "suggested",
+                "tldr": "Build FastAPI services safely.",
+                "reason": "matches python, api",
             }
         ],
     )
@@ -25,6 +29,9 @@ def test_recommend_cli_text(monkeypatch, capsys) -> None:
     assert exit_code == 0
     assert "fastapi-pro" in captured.out
     assert "score=0.910" in captured.out
+    assert "id=skill:fastapi-pro" in captured.out
+    assert "Build FastAPI services safely." in captured.out
+    assert "reason=matches python, api" in captured.out
     assert captured.err == ""
 
 
@@ -66,6 +73,87 @@ def test_recommend_cli_json(monkeypatch, capsys) -> None:
     assert exit_code == 0
     assert payload["query"] == "review code"
     assert payload["results"][0]["name"] == "code-reviewer"
+
+
+def test_recommend_cli_json_includes_selection_payload(monkeypatch, capsys) -> None:
+    calls: list[tuple[list[str], list[str], int]] = []
+
+    monkeypatch.setattr(
+        recommend_cli,
+        "recommend_bundle",
+        lambda query, *, top_k: [{"id": "skill:fastapi-pro", "name": "fastapi-pro"}],
+    )
+
+    def fake_recommend_related(
+        selected: list[str],
+        *,
+        rejected: list[str],
+        top_n: int,
+    ) -> list[dict[str, str]]:
+        calls.append((selected, rejected, top_n))
+        return [{"id": "agent:api-reviewer", "name": "api-reviewer"}]
+
+    monkeypatch.setattr(recommend_cli, "recommend_related", fake_recommend_related)
+
+    exit_code = recommend_cli.main(
+        [
+            "build",
+            "api",
+            "--selected",
+            "skill:fastapi-pro, skill:fastapi-pro",
+            "--rejected",
+            "mcp:legacy-api",
+            "--related-top-n",
+            "2",
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert calls == [(["skill:fastapi-pro"], ["mcp:legacy-api"], 2)]
+    assert payload["selection"] == {
+        "selected": ["skill:fastapi-pro"],
+        "rejected": ["mcp:legacy-api"],
+        "related_results": [{"id": "agent:api-reviewer", "name": "api-reviewer"}],
+    }
+
+
+def test_recommend_cli_text_renders_related_recommendations(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        recommend_cli,
+        "recommend_bundle",
+        lambda query, *, top_k: [
+            {"id": "skill:fastapi-pro", "name": "fastapi-pro", "type": "skill"}
+        ],
+    )
+    monkeypatch.setattr(
+        recommend_cli,
+        "recommend_related",
+        lambda selected, *, rejected, top_n: [
+            {
+                "id": "agent:api-reviewer",
+                "name": "api-reviewer",
+                "type": "agent",
+                "normalized_score": 0.82,
+                "selection_state": "suggested_related",
+                "related_to": ["fastapi-pro"],
+                "reason": "related to selected skill",
+            }
+        ],
+    )
+
+    exit_code = recommend_cli.main(
+        ["build", "api", "--selected", "skill:fastapi-pro", "--rejected", "skill:skip"]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Related recommendations:" in captured.out
+    assert "api-reviewer" in captured.out
+    assert "state=suggested_related" in captured.out
+    assert "related_to=['fastapi-pro']" in captured.out
+    assert "reason=related to selected skill" in captured.out
 
 
 def test_recommend_cli_empty_prints_threshold_message(monkeypatch, capsys) -> None:
