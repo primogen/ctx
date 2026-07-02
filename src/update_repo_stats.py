@@ -678,6 +678,15 @@ def read_test_count(*, live: bool | None = None) -> int | None:
         if count is not None:
             return count
 
+    committed = _read_committed_test_count()
+    if committed is not None:
+        print(
+            "warning: pytest collection unavailable; preserving checked-in "
+            f"test inventory ({committed})",
+            file=sys.stderr,
+        )
+        return committed
+
     # Last resort: static scan. Emit a warning so callers know the number may
     # undercount parametrized tests.
     static = _static_test_count()

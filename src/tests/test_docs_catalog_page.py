@@ -62,6 +62,7 @@ def test_docs_pages_workflow_uses_node24_pages_artifact_action() -> None:
     assert "path: site" in text
     assert "artifact.tar" not in text
     assert "overwrite: true" not in text
+    assert "timeout: 1200000" in text
 
 
 def test_public_docs_render_current_graph_contract_totals() -> None:
