@@ -95,6 +95,13 @@ def _tool_key(event: dict[str, Any]) -> tuple[str, str] | None:
     return entity_type, slug
 
 
+def _evidence_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str):
+        return {"evidence_present": False, "evidence_length": 0}
+    text = value.strip()
+    return {"evidence_present": bool(text), "evidence_length": len(text)}
+
+
 def _runtime_tool_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     active: dict[tuple[str, str], dict[str, Any]] = {}
     selection_sources = {key: 0 for key in _SELECTION_SOURCES}
@@ -134,7 +141,7 @@ def _runtime_tool_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
                     "session_id": event.get("session_id"),
                     "entity_type": key[0],
                     "slug": key[1],
-                    "evidence": event.get("evidence"),
+                    **_evidence_metadata(event.get("evidence")),
                     "token_usage": raw_usage if isinstance(raw_usage, dict) else None,
                 }
             )

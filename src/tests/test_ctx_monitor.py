@@ -988,7 +988,7 @@ def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
                 "session_id": "s-3",
                 "entity_type": "skill",
                 "slug": "fastapi-pro",
-                "evidence": "generated endpoint",
+                "evidence": "generated endpoint at /Users/example/private.py",
                 "token_usage": {
                     "attribution": "exact",
                     "input_tokens": 10,
@@ -1032,7 +1032,12 @@ def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
         "cost_usd": 0.02,
         "by_attribution": {"exact": 1, "estimated": 0, "unavailable": 0},
     }
-    assert summary["recent_tool_usage"][0]["slug"] == "fastapi-pro"
+    recent_usage = summary["recent_tool_usage"][0]
+    assert recent_usage["slug"] == "fastapi-pro"
+    assert recent_usage["evidence_present"] is True
+    assert recent_usage["evidence_length"] == len("generated endpoint at /Users/example/private.py")
+    assert "evidence" not in recent_usage
+    assert "/Users/example/private.py" not in json.dumps(summary["recent_tool_usage"])
     assert direct_summary == summary
 
 
