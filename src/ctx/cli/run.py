@@ -58,6 +58,10 @@ from ctx.telemetry import record_event, record_exception, telemetry_span
 
 _logger = logging.getLogger(__name__)
 _CTX_SESSION_MARKER = "ctx runtime session id:"
+_SESSION_USAGE_ATTRIBUTION_REASON = (
+    "ctx run provider usage is aggregated across the session; exact per-tool "
+    "token attribution requires host-supplied ctx__mark_entity_used.token_usage."
+)
 _MODEL_PROFILE_NAME = "ctx-model-profile.json"
 _GITHUB_MCP_CREDENTIAL_ENV = (
     "GITHUB_PERSONAL_ACCESS_TOKEN",
@@ -450,7 +454,9 @@ def _with_ctx_session_instructions(system_prompt: str, session_id: str) -> str:
         + "Record ctx__load_entity when the user/host chooses a recommended "
         + "skill, agent, MCP server, or harness; record ctx__mark_entity_used "
         + "when it materially helps; call ctx__unload_entity only after user "
-        + "confirmation or an explicit skip/unload instruction.\n"
+        + "confirmation or an explicit skip/unload instruction. Include "
+        + "ctx__mark_entity_used.token_usage only when exact per-entity usage "
+        + "is available; do not allocate session totals across tools.\n"
     )
 
 
@@ -586,10 +592,30 @@ def _loop_result_payload(result: Any) -> dict[str, Any]:
     payload["ctx.iterations"] = int(getattr(result, "iterations", 0) or 0)
     usage = getattr(result, "usage", None)
     if usage is not None:
-        payload["ctx.usage.input_tokens"] = int(getattr(usage, "input_tokens", 0) or 0)
-        payload["ctx.usage.output_tokens"] = int(getattr(usage, "output_tokens", 0) or 0)
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        payload["ctx.usage.input_tokens"] = input_tokens
+        payload["ctx.usage.output_tokens"] = output_tokens
+        payload["ctx.usage.total_tokens"] = input_tokens + output_tokens
+        payload["ctx.usage.scope"] = "session"
+        payload["ctx.usage.attribution"] = "unavailable"
+        payload["ctx.usage.attribution_reason"] = _SESSION_USAGE_ATTRIBUTION_REASON
         payload["ctx.usage.cost_present"] = getattr(usage, "cost_usd", None) is not None
     return payload
+
+
+def _usage_attribution_summary(usage: Any) -> dict[str, Any]:
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    return {
+        "scope": "session",
+        "attribution": "unavailable",
+        "attribution_reason": _SESSION_USAGE_ATTRIBUTION_REASON,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "cost_usd": getattr(usage, "cost_usd", None),
+    }
 
 
 def _loop_result_outcome(result: Any) -> tuple[str, str | None]:
@@ -1550,6 +1576,7 @@ def _emit_result(
                 "output_tokens": result.usage.output_tokens,
                 "cost_usd": result.usage.cost_usd,
             },
+            "usage_attribution": _usage_attribution_summary(result.usage),
             "detail": result.detail,
         }
         if evaluator_rounds is not None:
@@ -1559,7 +1586,8 @@ def _emit_result(
         if not quiet:
             print(
                 f"\n[ctx] stop={result.stop_reason}  iterations={result.iterations}  "
-                f"tokens={result.usage.input_tokens + result.usage.output_tokens}",
+                f"tokens={result.usage.input_tokens + result.usage.output_tokens}  "
+                "usage_scope=session  per_tool_usage=unavailable",
                 file=sys.stderr,
             )
             if result.usage.cost_usd is not None:

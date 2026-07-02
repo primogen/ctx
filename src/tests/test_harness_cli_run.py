@@ -705,6 +705,15 @@ class TestRunCommand:
         assert payload["final_message"] == "final answer"
         assert "usage" in payload
         assert "session_id" in payload
+        assert payload["usage_attribution"] == {
+            "scope": "session",
+            "attribution": "unavailable",
+            "attribution_reason": run_cli._SESSION_USAGE_ATTRIBUTION_REASON,
+            "input_tokens": 5,
+            "output_tokens": 3,
+            "total_tokens": 8,
+            "cost_usd": None,
+        }
 
     def test_model_required(
         self,
@@ -922,8 +931,18 @@ class TestRunCommand:
             "finished",
         ]
         assert cli_events[0]["payload"]["ctx.task.length"] == len("hi")
-        assert cli_events[-1]["payload"]["ctx.stop_reason"] == "completed"
+        finished_payload = cli_events[-1]["payload"]
+        assert finished_payload["ctx.stop_reason"] == "completed"
+        assert finished_payload["ctx.usage.scope"] == "session"
+        assert finished_payload["ctx.usage.attribution"] == "unavailable"
+        assert (
+            finished_payload["ctx.usage.attribution_reason"]
+            == run_cli._SESSION_USAGE_ATTRIBUTION_REASON
+        )
         assert "hi" not in json.dumps([event["payload"] for event in cli_events])
+        system_prompt = fake_litellm._calls[0]["messages"][0]["content"]
+        assert "ctx__mark_entity_used.token_usage" in system_prompt
+        assert "do not allocate session totals across tools" in system_prompt
         tool = next(
             item
             for item in fake_litellm._calls[0]["tools"]
