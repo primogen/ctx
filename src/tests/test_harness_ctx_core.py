@@ -653,12 +653,115 @@ class TestRuntimeLifecycle:
             "ctx.tool_usage.tokens_per_record",
         ]
         assert {metric[4]["ctx.usage.attribution"] for metric in metrics} == {"exact"}
+        usage_payloads = [
+            event["payload"]
+            for event in events
+            if event["payload"].get("ctx.usage.attribution") == "exact"
+        ]
+        assert usage_payloads[0]["ctx.usage.total_tokens"] == 20
         for event in events:
             payload = event["payload"]
             assert payload["otel.status_code"] == "OK"
             assert payload["ctx.entity.type"] == "skill"
             assert payload["ctx.slug.hash"].startswith("sha256:")
             assert "fastapi-pro" not in json.dumps(payload)
+
+    def test_mcp_usage_without_host_tokens_is_counted_in_history_and_telemetry(
+        self,
+        toolbox: CtxCoreToolbox,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import ctx.adapters.generic.ctx_core_tools as core_tools
+        import ctx.adapters.generic.runtime_lifecycle as runtime_lifecycle
+
+        events: list[dict[str, Any]] = []
+        metrics: list[tuple[str, str, float, str, dict[str, Any]]] = []
+
+        def capture_record_event(event_name: str, **kwargs: Any) -> None:
+            events.append({"event_name": event_name, **kwargs})
+
+        def capture_counter(name: str, **kwargs: Any) -> None:
+            metrics.append(
+                ("counter", name, float(kwargs["value"]), kwargs["unit"], kwargs["attributes"])
+            )
+
+        def capture_histogram(name: str, **kwargs: Any) -> None:
+            metrics.append(
+                ("histogram", name, float(kwargs["value"]), kwargs["unit"], kwargs["attributes"])
+            )
+
+        monkeypatch.setattr(core_tools, "record_event", capture_record_event)
+        monkeypatch.setattr(runtime_lifecycle, "record_event", capture_record_event)
+        monkeypatch.setattr(runtime_lifecycle, "record_counter", capture_counter)
+        monkeypatch.setattr(runtime_lifecycle, "record_histogram", capture_histogram)
+
+        calls: list[tuple[str, dict[str, Any]]] = [
+            (
+                "ctx__load_entity",
+                {
+                    "session_id": "s-mcp",
+                    "entity_type": "mcp-server",
+                    "slug": "filesystem",
+                    "selected": True,
+                    "selection_source": "host",
+                },
+            ),
+            (
+                "ctx__mark_entity_used",
+                {
+                    "session_id": "s-mcp",
+                    "entity_type": "mcp-server",
+                    "slug": "filesystem",
+                    "evidence": "read workspace tree",
+                },
+            ),
+        ]
+        for tool_name, arguments in calls:
+            result = json.loads(
+                toolbox.dispatch(ToolCall(id="c1", name=tool_name, arguments=arguments))
+            )
+            assert result["ok"] is True
+
+        state = json.loads(
+            toolbox.dispatch(
+                ToolCall(
+                    id="c1",
+                    name="ctx__session_state",
+                    arguments={"session_id": "s-mcp"},
+                )
+            )
+        )
+
+        usage = state["used"][0]["token_usage"]
+        assert state["used"][0]["entity_type"] == "mcp-server"
+        assert usage == {
+            "records": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.0,
+            "by_attribution": {
+                "estimated": 0,
+                "exact": 0,
+                "unavailable": 1,
+            },
+        }
+
+        used_event = next(
+            event
+            for event in events
+            if event["event_name"] == "ctx.runtime_lifecycle.record"
+            and event["payload"].get("ctx.lifecycle.action") == "used"
+        )
+        payload = used_event["payload"]
+        assert payload["ctx.entity.type"] == "mcp-server"
+        assert payload["ctx.usage.attribution"] == "unavailable"
+        assert payload["ctx.usage.total_tokens"] is None
+        assert payload["ctx.slug.hash"].startswith("sha256:")
+        assert "filesystem" not in json.dumps(payload)
+        assert [metric[1] for metric in metrics] == ["ctx.tool_usage.records"]
+        assert metrics[0][4]["ctx.entity.type"] == "mcp-server"
+        assert metrics[0][4]["ctx.usage.attribution"] == "unavailable"
 
     def test_lifecycle_tools_append_events(
         self,
@@ -747,6 +850,8 @@ class TestRuntimeLifecycle:
         assert events[1]["selected"] is True
         assert events[1]["selection_source"] == "user"
         assert events[1]["source_context"] == {"surface": "ctx-recommend"}
+        assert events[2]["token_usage"]["attribution"] == "unavailable"
+        assert events[2]["token_usage"]["total_tokens"] is None
 
     def test_bound_session_id_is_hidden_and_enforced(self, tmp_path: Path) -> None:
         toolbox = CtxCoreToolbox(
