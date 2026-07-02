@@ -588,12 +588,25 @@ class TestRuntimeLifecycle:
         import ctx.adapters.generic.runtime_lifecycle as runtime_lifecycle
 
         events: list[dict[str, Any]] = []
+        metrics: list[tuple[str, str, float, str, dict[str, Any]]] = []
 
         def capture_record_event(event_name: str, **kwargs: Any) -> None:
             events.append({"event_name": event_name, **kwargs})
 
+        def capture_counter(name: str, **kwargs: Any) -> None:
+            metrics.append(
+                ("counter", name, float(kwargs["value"]), kwargs["unit"], kwargs["attributes"])
+            )
+
+        def capture_histogram(name: str, **kwargs: Any) -> None:
+            metrics.append(
+                ("histogram", name, float(kwargs["value"]), kwargs["unit"], kwargs["attributes"])
+            )
+
         monkeypatch.setattr(core_tools, "record_event", capture_record_event)
         monkeypatch.setattr(runtime_lifecycle, "record_event", capture_record_event)
+        monkeypatch.setattr(runtime_lifecycle, "record_counter", capture_counter)
+        monkeypatch.setattr(runtime_lifecycle, "record_histogram", capture_histogram)
 
         result = json.loads(
             toolbox.dispatch(
@@ -610,9 +623,36 @@ class TestRuntimeLifecycle:
         )
 
         assert result["ok"] is True
+        used = json.loads(
+            toolbox.dispatch(
+                ToolCall(
+                    id="c2",
+                    name="ctx__mark_entity_used",
+                    arguments={
+                        "session_id": "s-1",
+                        "entity_type": "skill",
+                        "slug": "fastapi-pro",
+                        "token_usage": {
+                            "attribution": "exact",
+                            "input_tokens": 12,
+                            "output_tokens": 8,
+                            "provider": "test",
+                            "model": "local-test",
+                        },
+                    },
+                )
+            )
+        )
+        assert used["event"]["token_usage"]["total_tokens"] == 20
         event_names = [event["event_name"] for event in events]
         assert "ctx.runtime_lifecycle.record" in event_names
         assert "ctx.core.lifecycle" in event_names
+        assert [metric[1] for metric in metrics] == [
+            "ctx.tool_usage.records",
+            "ctx.tool_usage.tokens",
+            "ctx.tool_usage.tokens_per_record",
+        ]
+        assert {metric[4]["ctx.usage.attribution"] for metric in metrics} == {"exact"}
         for event in events:
             payload = event["payload"]
             assert payload["otel.status_code"] == "OK"
@@ -930,6 +970,12 @@ class TestRuntimeLifecycle:
                     "entity_type": "agent",
                     "slug": "code-reviewer",
                     "evidence": "reviewed diff",
+                    "token_usage": {
+                        "attribution": "exact",
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cost_usd": 0.01,
+                    },
                 },
             ),
         ]:
@@ -947,6 +993,18 @@ class TestRuntimeLifecycle:
 
         assert result["ok"] is True
         assert [entry["slug"] for entry in result["used"]] == ["code-reviewer"]
+        assert result["used"][0]["token_usage"] == {
+            "records": 1,
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "cost_usd": 0.01,
+            "by_attribution": {
+                "estimated": 0,
+                "exact": 1,
+                "unavailable": 0,
+            },
+        }
         assert [entry["slug"] for entry in result["unload_candidates"]] == [
             "fastapi-pro",
         ]

@@ -889,6 +889,9 @@ class CtxCoreToolbox:
                     entity_type=str(args.get("entity_type") or ""),
                     slug=str(args.get("slug") or ""),
                     evidence=str(args.get("evidence") or "") or None,
+                    token_usage=(
+                        _dict_arg(args.get("token_usage")) if "token_usage" in args else None
+                    ),
                 )
             elif name == "unload_entity":
                 result = self._lifecycle.unload_entity(
@@ -1483,6 +1486,28 @@ def _lifecycle_tool_definitions(
                     "entity_type": entity_type,
                     "slug": slug,
                     "evidence": {"type": "string"},
+                    "token_usage": {
+                        "type": "object",
+                        "description": (
+                            "Optional per-tool usage evidence. Only pass exact "
+                            "token counts when the host/provider can attribute "
+                            "them to this entity; otherwise set attribution to "
+                            "estimated or unavailable."
+                        ),
+                        "properties": {
+                            "attribution": {
+                                "type": "string",
+                                "enum": ["exact", "estimated", "unavailable"],
+                            },
+                            "input_tokens": {"type": "integer", "minimum": 0},
+                            "output_tokens": {"type": "integer", "minimum": 0},
+                            "total_tokens": {"type": "integer", "minimum": 0},
+                            "cost_usd": {"type": "number", "minimum": 0},
+                            "attribution_reason": {"type": "string"},
+                            "provider": {"type": "string"},
+                            "model": {"type": "string"},
+                        },
+                    },
                 },
                 "required": ["session_id", "entity_type", "slug"],
             },
