@@ -555,25 +555,27 @@ class CtxCoreToolbox:
             semantic_cache_dir=semantic_cache_dir,
         )
         results = [
-            {
-                "name": r["name"],
-                "type": r["type"],
-                "score": r["score"],
-                "normalized_score": r.get("normalized_score"),
-                "matching_tags": r.get("matching_tags", []),
-                "external": r.get("external", False),
-                "external_catalog": r.get("external_catalog"),
-                "source_catalog": r.get("source_catalog"),
-                "status": r.get("status"),
-                "source": r.get("source"),
-                "skill_id": r.get("skill_id"),
-                "installs": r.get("installs"),
-                "detail_url": r.get("detail_url"),
-                "install_command": r.get("install_command"),
-                "category": r.get("category"),
-                "invoke_command": r.get("invoke_command"),
-                "security_review": r.get("security_review"),
-            }
+            _with_recommendation_selection_metadata(
+                {
+                    "name": r["name"],
+                    "type": r["type"],
+                    "score": r["score"],
+                    "normalized_score": r.get("normalized_score"),
+                    "matching_tags": r.get("matching_tags", []),
+                    "external": r.get("external", False),
+                    "external_catalog": r.get("external_catalog"),
+                    "source_catalog": r.get("source_catalog"),
+                    "status": r.get("status"),
+                    "source": r.get("source"),
+                    "skill_id": r.get("skill_id"),
+                    "installs": r.get("installs"),
+                    "detail_url": r.get("detail_url"),
+                    "install_command": r.get("install_command"),
+                    "category": r.get("category"),
+                    "invoke_command": r.get("invoke_command"),
+                    "security_review": r.get("security_review"),
+                }
+            )
             for r in raw
         ]
         model_provider = _optional_str(args.get("model_provider"))
@@ -1084,6 +1086,77 @@ def _optional_str(raw: Any) -> str | None:
         return None
     value = raw.strip()
     return value or None
+
+
+def _clip_recommendation_text(value: str, *, max_chars: int = 160) -> str:
+    text = " ".join(value.split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "..."
+
+
+def _recommendation_identity(row: Mapping[str, Any]) -> str:
+    entity_type = str(row.get("type") or "tool").strip() or "tool"
+    name = str(row.get("name") or "unknown").strip() or "unknown"
+    return f"{entity_type}:{name}"
+
+
+def _recommendation_tags(row: Mapping[str, Any]) -> list[str]:
+    raw = row.get("matching_tags", [])
+    if not isinstance(raw, list):
+        return []
+    return [str(tag).strip() for tag in raw if str(tag).strip()]
+
+
+def _recommendation_tldr(row: Mapping[str, Any]) -> str:
+    description = (
+        _optional_str(row.get("description"))
+        or _optional_str(row.get("summary"))
+        or _optional_str(row.get("title"))
+    )
+    if description:
+        return _clip_recommendation_text(description)
+
+    entity_type = str(row.get("type") or "tool").strip() or "tool"
+    category = _optional_str(row.get("category"))
+    tags = _recommendation_tags(row)
+    if tags:
+        prefix = f"{category} {entity_type}" if category else entity_type
+        return _clip_recommendation_text(f"{prefix} matching {', '.join(tags[:4])}.")
+
+    catalog = _optional_str(row.get("source_catalog")) or _optional_str(row.get("external_catalog"))
+    if bool(row.get("external")) and catalog:
+        return _clip_recommendation_text(f"External {entity_type} from {catalog}.")
+    return _clip_recommendation_text(f"{entity_type} recommendation.")
+
+
+def _recommendation_reason(row: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    tags = _recommendation_tags(row)
+    if tags:
+        parts.append(f"matches tags {', '.join(tags[:6])}")
+    category = _optional_str(row.get("category"))
+    if category:
+        parts.append(f"category {category}")
+    source = _optional_str(row.get("source_catalog")) or _optional_str(row.get("source"))
+    if source:
+        parts.append(f"source {source}")
+    normalized_score = row.get("normalized_score")
+    if isinstance(normalized_score, (int, float)):
+        parts.append(f"normalized score {float(normalized_score):.3f}")
+    if not parts:
+        return "Ranked by ctx recommendation graph."
+    return _clip_recommendation_text("; ".join(parts), max_chars=220)
+
+
+def _with_recommendation_selection_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    enriched = dict(row)
+    enriched["id"] = _recommendation_identity(row)
+    enriched["tldr"] = _recommendation_tldr(row)
+    enriched["reason"] = _recommendation_reason(row)
+    enriched["selected"] = False
+    enriched["selection_state"] = "suggested"
+    return enriched
 
 
 def _recommend_companion_harnesses(

@@ -137,6 +137,14 @@ def test_recommendation_surfaces_share_order_type_and_normalized_score(
         assert surface_results[0]["normalized_score"] == 1.0
         assert all("normalized_score" in row for row in surface_results)
 
+    for surface_results in (toolbox_results, public):
+        first = surface_results[0]
+        assert first["id"] == "skill:fastapi-python-async"
+        assert first["selected"] is False
+        assert first["selection_state"] == "suggested"
+        assert first["tldr"]
+        assert "fastapi" in first["reason"]
+
 
 def test_hook_uses_shared_query_min_score_and_top_k(
     tmp_path: Path,

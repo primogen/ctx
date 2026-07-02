@@ -243,6 +243,18 @@ class TestRecommendBundle:
         bundle = ctx.recommend_bundle("python", top_k=1)
         assert len(bundle) <= 1
 
+    def test_rows_include_selection_metadata(self, synthetic_home: Path) -> None:
+        bundle = ctx.recommend_bundle("fastapi web api")
+        fastapi = next(row for row in bundle if row["name"] == "fastapi-pro")
+
+        assert fastapi["id"] == f"{fastapi['type']}:{fastapi['name']}"
+        assert fastapi["selected"] is False
+        assert fastapi["selection_state"] == "suggested"
+        assert isinstance(fastapi["tldr"], str)
+        assert fastapi["tldr"]
+        assert isinstance(fastapi["reason"], str)
+        assert fastapi["reason"]
+
     def test_execution_bundle_excludes_harnesses_and_caps_to_five(
         self,
         synthetic_home: Path,
