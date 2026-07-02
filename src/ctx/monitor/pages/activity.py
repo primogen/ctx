@@ -161,6 +161,36 @@ def render_runtime_lifecycle(
         "</tr>"
         for event in reversed(summary["open_escalations"])
     )
+    selection = summary.get("tool_selection") or {}
+    sources = selection.get("selection_sources") or {}
+    source_rows = "".join(
+        f"<tr><td>{html.escape(str(source))}</td><td>{html.escape(str(count))}</td></tr>"
+        for source, count in sorted(sources.items())
+    )
+    token_usage = summary.get("token_usage") or {}
+    by_attribution = token_usage.get("by_attribution") or {}
+    attribution_rows = "".join(
+        f"<tr><td>{html.escape(str(attribution))}</td><td>{html.escape(str(count))}</td></tr>"
+        for attribution, count in sorted(by_attribution.items())
+    )
+
+    def usage_cell(row: dict[str, Any], key: str) -> str:
+        usage = row.get("token_usage")
+        if not isinstance(usage, dict):
+            return ""
+        return html.escape(str(usage.get(key) or ""))
+
+    recent_usage_rows = "".join(
+        "<tr>"
+        f"<td class='muted'>{event_cell(row, 'created_at')}</td>"
+        f"<td class='muted'>{event_cell(row, 'session_id')}</td>"
+        f"<td>{event_cell(row, 'entity_type')}</td>"
+        f"<td><code>{event_cell(row, 'slug')}</code></td>"
+        f"<td>{usage_cell(row, 'total_tokens')}</td>"
+        f"<td><span class='pill'>{usage_cell(row, 'attribution') or 'unavailable'}</span></td>"
+        "</tr>"
+        for row in reversed(summary.get("recent_tool_usage") or [])
+    )
 
     body = (
         "<h1>Runtime lifecycle</h1>"
@@ -171,6 +201,35 @@ def render_runtime_lifecycle(
         f"<br><span class='muted'>source: <code>{html.escape(summary['path'])}</code></span>"
         " / <a href='/api/runtime.json'>JSON</a>"
         "</div>"
+        "<div class='card'><strong>Tool selection</strong>"
+        f"<p><strong>{selection.get('loaded_total', 0)}</strong> loaded / "
+        f"<strong>{selection.get('active_loaded_total', 0)}</strong> active / "
+        f"<strong>{selection.get('selected_total', 0)}</strong> selected / "
+        f"<strong>{selection.get('used_total', 0)}</strong> used</p>"
+        + (
+            "<table><tr><th>Source</th><th>Loads</th></tr>" + source_rows + "</table>"
+            if source_rows
+            else "<p class='muted'>No tool selections recorded yet.</p>"
+        )
+        + "</div>"
+        "<div class='card'><strong>Token usage</strong>"
+        f"<p><strong>{token_usage.get('records', 0)}</strong> records / "
+        f"<strong>{token_usage.get('total_tokens', 0)}</strong> tokens / "
+        f"<strong>${float(token_usage.get('cost_usd') or 0.0):.4f}</strong> cost</p>"
+        + (
+            "<table><tr><th>Attribution</th><th>Records</th></tr>" + attribution_rows + "</table>"
+            if attribution_rows
+            else "<p class='muted'>No token usage records yet.</p>"
+        )
+        + "</div>"
+        "<div class='card'><strong>Recent tool usage</strong>"
+        + (
+            "<table><tr><th>Created</th><th>Session</th><th>Type</th><th>Slug</th>"
+            "<th>Tokens</th><th>Attribution</th></tr>" + recent_usage_rows + "</table>"
+            if recent_usage_rows
+            else "<p class='muted'>No tool usage recorded yet.</p>"
+        )
+        + "</div>"
         "<div class='card'><strong>Recent validations</strong>"
         + (
             "<table><tr><th>Created</th><th>Check</th><th>Status</th>"

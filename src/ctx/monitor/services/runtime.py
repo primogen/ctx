@@ -8,6 +8,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+_TOKEN_ATTRIBUTIONS = ("exact", "estimated", "unavailable")
+_SELECTION_SOURCES = ("user", "system", "host", "unknown")
+
 
 def read_jsonl(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
     if not path.exists():
@@ -36,6 +39,119 @@ def read_jsonl(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
 def lifecycle_events(path: Path, limit: int | None = 200) -> list[dict[str, Any]]:
     events = read_jsonl(path, limit=limit)
     return [event for event in events if event.get("action") in {"validation", "escalation"}]
+
+
+def _int_value(value: Any) -> int | None:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result >= 0 else None
+
+
+def _float_value(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result >= 0 else None
+
+
+def _empty_token_usage_summary() -> dict[str, Any]:
+    return {
+        "records": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "by_attribution": {key: 0 for key in _TOKEN_ATTRIBUTIONS},
+    }
+
+
+def _merge_token_usage(summary: dict[str, Any], raw: Any) -> None:
+    if not isinstance(raw, dict):
+        return
+    summary["records"] = int(summary.get("records") or 0) + 1
+    attribution = str(raw.get("attribution") or "unavailable").lower()
+    if attribution not in _TOKEN_ATTRIBUTIONS:
+        attribution = "unavailable"
+    summary["by_attribution"][attribution] = (
+        int(summary["by_attribution"].get(attribution) or 0) + 1
+    )
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        value = _int_value(raw.get(key))
+        if value is not None:
+            summary[key] = int(summary.get(key) or 0) + value
+    cost = _float_value(raw.get("cost_usd"))
+    if cost is not None:
+        summary["cost_usd"] = round(float(summary.get("cost_usd") or 0.0) + cost, 8)
+
+
+def _tool_key(event: dict[str, Any]) -> tuple[str, str] | None:
+    entity_type = str(event.get("entity_type") or "")
+    slug = str(event.get("slug") or "")
+    if not entity_type or not slug:
+        return None
+    return entity_type, slug
+
+
+def _runtime_tool_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    active: dict[tuple[str, str], dict[str, Any]] = {}
+    selection_sources = {key: 0 for key in _SELECTION_SOURCES}
+    token_usage = _empty_token_usage_summary()
+    recent_tool_usage: list[dict[str, Any]] = []
+    loaded_total = 0
+    selected_total = 0
+    used_total = 0
+
+    for event in events:
+        action = event.get("action")
+        key = _tool_key(event)
+        if action == "load_requested" and key is not None:
+            loaded_total += 1
+            selected = bool(event.get("selected", False))
+            if selected:
+                selected_total += 1
+            source = str(event.get("selection_source") or "unknown").lower()
+            if source not in selection_sources:
+                source = "unknown"
+            selection_sources[source] += 1
+            active[key] = {
+                "entity_type": key[0],
+                "slug": key[1],
+                "selected": selected,
+                "selection_source": source,
+            }
+        elif action == "unload_requested" and key is not None:
+            active.pop(key, None)
+        elif action == "used" and key is not None:
+            used_total += 1
+            raw_usage = event.get("token_usage")
+            _merge_token_usage(token_usage, raw_usage)
+            recent_tool_usage.append(
+                {
+                    "created_at": event.get("created_at"),
+                    "session_id": event.get("session_id"),
+                    "entity_type": key[0],
+                    "slug": key[1],
+                    "evidence": event.get("evidence"),
+                    "token_usage": raw_usage if isinstance(raw_usage, dict) else None,
+                }
+            )
+
+    active_values = list(active.values())
+    return {
+        "tool_selection": {
+            "loaded_total": loaded_total,
+            "active_loaded_total": len(active_values),
+            "selected_total": selected_total,
+            "active_selected_total": sum(1 for item in active_values if item["selected"]),
+            "selection_sources": selection_sources,
+            "used_total": used_total,
+        },
+        "token_usage": token_usage,
+        "recent_tool_usage": recent_tool_usage[-20:],
+    }
 
 
 def summarize_sessions(
@@ -182,7 +298,8 @@ def escalation_key(event: dict[str, Any]) -> str:
 
 
 def lifecycle_summary(path: Path, limit: int = 200) -> dict[str, Any]:
-    events = lifecycle_events(path, limit=None)
+    all_events = read_jsonl(path, limit=None)
+    events = [event for event in all_events if event.get("action") in {"validation", "escalation"}]
     validations = [event for event in events if event.get("action") == "validation"]
     escalations = [event for event in events if event.get("action") == "escalation"]
     open_by_key: dict[str, dict[str, Any]] = {}
@@ -202,7 +319,7 @@ def lifecycle_summary(path: Path, limit: int = 200) -> dict[str, Any]:
     sessions = sorted(
         {str(event.get("session_id") or "") for event in events if event.get("session_id")}
     )
-    return {
+    summary = {
         "path": str(path),
         "events_total": len(events),
         "validations_total": len(validations),
@@ -214,3 +331,5 @@ def lifecycle_summary(path: Path, limit: int = 200) -> dict[str, Any]:
         "open_escalations": open_escalations[-20:],
         "sessions": sessions,
     }
+    summary.update(_runtime_tool_summary(all_events))
+    return summary

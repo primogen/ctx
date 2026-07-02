@@ -964,6 +964,46 @@ def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
                 "severity": "info",
                 "created_at": "2026-05-08T01:07:00Z",
             },
+            {
+                "action": "load_requested",
+                "session_id": "s-3",
+                "entity_type": "skill",
+                "slug": "fastapi-pro",
+                "selected": True,
+                "selection_source": "user",
+                "created_at": "2026-05-08T01:08:00Z",
+            },
+            {
+                "action": "load_requested",
+                "session_id": "s-3",
+                "entity_type": "agent",
+                "slug": "api-reviewer",
+                "selected": False,
+                "selection_source": "system",
+                "created_at": "2026-05-08T01:09:00Z",
+            },
+            {
+                "action": "used",
+                "session_id": "s-3",
+                "entity_type": "skill",
+                "slug": "fastapi-pro",
+                "evidence": "generated endpoint",
+                "token_usage": {
+                    "attribution": "exact",
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "cost_usd": 0.02,
+                },
+                "created_at": "2026-05-08T01:10:00Z",
+            },
+            {
+                "action": "unload_requested",
+                "session_id": "s-3",
+                "entity_type": "agent",
+                "slug": "api-reviewer",
+                "created_at": "2026-05-08T01:11:00Z",
+            },
         ],
     )
 
@@ -975,6 +1015,23 @@ def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
     assert summary["open_escalations_total"] == 1
     assert summary["latest_validation"]["check_name"] == "mypy"
     assert summary["open_escalations"][0]["trigger"] == "validation-failed"
+    assert summary["tool_selection"] == {
+        "loaded_total": 2,
+        "active_loaded_total": 1,
+        "selected_total": 1,
+        "active_selected_total": 1,
+        "selection_sources": {"user": 1, "system": 1, "host": 0, "unknown": 0},
+        "used_total": 1,
+    }
+    assert summary["token_usage"] == {
+        "records": 1,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "cost_usd": 0.02,
+        "by_attribution": {"exact": 1, "estimated": 0, "unavailable": 0},
+    }
+    assert summary["recent_tool_usage"][0]["slug"] == "fastapi-pro"
     assert direct_summary == summary
 
 
@@ -1057,6 +1114,29 @@ def test_render_runtime_lifecycle_surfaces_checks_and_open_escalations(
                 "severity": "blocking",
                 "created_at": "2026-05-08T01:06:00Z",
             },
+            {
+                "action": "load_requested",
+                "session_id": "s-2",
+                "entity_type": "skill",
+                "slug": "<fastapi-pro>",
+                "selected": True,
+                "selection_source": "user",
+                "created_at": "2026-05-08T01:07:00Z",
+            },
+            {
+                "action": "used",
+                "session_id": "s-2",
+                "entity_type": "skill",
+                "slug": "<fastapi-pro>",
+                "token_usage": {
+                    "attribution": "exact",
+                    "input_tokens": 20,
+                    "output_tokens": 7,
+                    "total_tokens": 27,
+                    "cost_usd": 0.03,
+                },
+                "created_at": "2026-05-08T01:08:00Z",
+            },
         ],
     )
 
@@ -1067,6 +1147,12 @@ def test_render_runtime_lifecycle_surfaces_checks_and_open_escalations(
     assert "validation-failed" in html
     assert "&lt;type gate failed&gt;" in html
     assert "&lt;mypy failed&gt;" in html
+    assert "Tool selection" in html
+    assert "Token usage" in html
+    assert "Recent tool usage" in html
+    assert "&lt;fastapi-pro&gt;" in html
+    assert "<strong>27</strong> tokens" in html
+    assert "<span class='pill'>exact</span>" in html
 
 
 def test_render_logs_filters_and_renders(fake_claude: Path) -> None:
