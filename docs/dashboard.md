@@ -28,6 +28,9 @@ servers, and harness pages in wiki/graph views. Harness installation,
 update, and uninstall run through `ctx-harness-install`; dashboard
 load/unload POSTs reject harnesses with the exact dry-run command to use.
 Quality scoring is shown for sidecar-backed skills, agents, and MCP servers.
+The `/recommend` page exposes the same selectable recommendation flow as the
+CLI/API: query, top-k, selected and rejected IDs, select-all/select-none helpers,
+TLDR/reason text, and related suggestions for partially selected bundles.
 Generic/API/local harnesses that call ctx-core validation tools write to
 the runtime lifecycle ledger. The dashboard exposes that ledger at
 `/runtime` and as JSON at `/api/runtime.json`, including validation and
@@ -193,11 +196,11 @@ yet), the page shows a helpful empty-state pointing at
 
 ### Top navigation
 
-Every page shows the same nav bar. The eleven tabs cover the
+Every page shows the same nav bar. The tabs cover the
 dashboard-supported observable surface of ctx:
 
 ```
-Home · Loaded · Skills · Wiki · Graph · Manage · Harness Setup · Docs · Config · Status · KPIs · Runtime · Sessions · Logs · Live
+Home · Loaded · Skills · Wiki · Graph · Recommend · Manage · Harness Setup · Docs · Config · Status · KPIs · Runtime · Sessions · Logs · Live
 ```
 
 ### HTML views
@@ -220,6 +223,7 @@ per-process monitor token injected into the rendered page.
 | `/wiki/<slug>?type=<entity>` | Dashboard-supported wiki entity page rendered: markdown body + full frontmatter table + grade banner + deep links to sidecar and graph-neighborhood views. The optional `type` query disambiguates duplicate slugs such as `langgraph`. |
 | `/graph` | **Graph explorer landing page** - node/edge count header, a "Popular seed slugs" block (18 highest-degree skill/agent/MCP/harness entities as clickable chips), search box for any skill/agent/MCP/harness slug, and the built-in graph list panel. Clicking a seed chip navigates to `/graph?slug=<slug>&type=<entity>`. |
 | `/graph?slug=<slug>&type=<entity>` | **Built-in** 1-hop neighborhood around the target skill/agent/MCP/harness slug. Entity pills identify skill, agent, MCP server, and harness rows. Tap any node to navigate to that entity's typed wiki page. Type and tag filters run client-side. |
+| `/recommend` | Selectable recommendation page: query and top-k controls, repeated selected/rejected ID inputs, select-all/select-none helpers, recommendation state, TLDR/reason text, and graph-backed related suggestions for partial selections. |
 | `/manage` | Search, inspect, edit, delete, and manually import skill/agent/MCP/harness wiki entities through the same safe-name and mutation-token checks as live load/unload. Manual skill upserts run the required static SkillSpector gate before the wiki page is written or queued for graph refresh. |
 | `/harness` | Harness Setup wizard for non-Claude/custom API/local model users: collects model, goals, tool needs, safety constraints, and shows the harness recommendation/install path. |
 | `/docs` | Local repo docs rendered inside the dashboard with MkDocs-like tabs, sidebar table of contents, in-dashboard search, and source links. |
