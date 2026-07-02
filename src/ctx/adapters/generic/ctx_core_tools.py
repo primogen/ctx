@@ -2,9 +2,9 @@
 
 This is the integration point that makes the alive skill system
 available to ANY LLM running through the generic harness. The
-toolbox wraps the read-only query surface of ctx.core — graph
-walks, skill/agent/MCP recommendations, wiki search — as
-``ToolDefinition``/dispatcher pairs that slot into ``run_loop``.
+toolbox wraps ctx-core recommendation, graph/wiki, and runtime
+lifecycle surfaces as ``ToolDefinition``/dispatcher pairs that slot
+into ``run_loop``.
 
 Tools exposed (all namespaced under the ``ctx__`` prefix, matching
 the MCP router's separator convention so the harness can route to
@@ -13,7 +13,12 @@ MCP servers):
 
     ctx__recommend_bundle(query, top_k=5)
         Free-text → top-K cross-type bundle (skill + agent + MCP).
-        Tokenizes the query into tags, walks the graph.
+        Tokenizes the query into tags, walks the graph, and returns
+        enriched rows with id, tldr, reason, and selection metadata.
+
+    ctx__recommend_related(selected, rejected=None, max_hops=2, top_n=5)
+        Selected/rejected recommendation IDs → graph-related rows.
+        Excludes selected, rejected, unavailable, and deprecated nodes.
 
     ctx__graph_query(seeds, max_hops=2, top_n=10)
         Direct graph walk from a list of seed entity names.
@@ -28,9 +33,11 @@ MCP servers):
         Fetch a single entity page by slug — returns its full
         frontmatter + body for the model to reason about.
 
-Load/unload tools are explicit lifecycle records, not filesystem
+Load/unload/use tools are explicit lifecycle records, not filesystem
 auto-installs. The host remains responsible for asking the user and
-deciding how to place selected entities into context.
+deciding how to place selected entities into context. Per-entity
+token usage is recorded only when the host supplies explicit
+``ctx__mark_entity_used.token_usage`` attribution.
 
 Plan 001 Phase H6.
 """

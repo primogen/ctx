@@ -32,9 +32,11 @@ This puts `ctx-mcp-server` on your PATH. Then wire it into your host:
 claude mcp add ctx-wiki -- ctx-mcp-server
 ```
 
-The tools `ctx__recommend_bundle`, `ctx__graph_query`, `ctx__wiki_search`,
-`ctx__wiki_get` appear to Claude on the next turn. Ask
-"What skills help with FastAPI auth?" and it will call them.
+The tools `ctx__recommend_bundle`, `ctx__recommend_related`,
+`ctx__graph_query`, `ctx__wiki_search`, and `ctx__wiki_get` appear to
+Claude on the next turn, alongside runtime lifecycle tools such as
+`ctx__load_entity`, `ctx__mark_entity_used`, and `ctx__session_state`.
+Ask "What skills help with FastAPI auth?" and it will call them.
 
 ### Claude Agent SDK (Python)
 
@@ -149,6 +151,7 @@ For custom harnesses that aren't MCP-native but can import Python:
 ```python
 from ctx import (
     recommend_bundle,   # free-text → ranked skill/agent/MCP bundle
+    recommend_related,  # selected IDs → graph-related suggestions
     graph_query,        # walk from seed entities
     wiki_search,        # keyword search entity pages
     wiki_get,           # fetch one entity by slug
@@ -160,6 +163,10 @@ def on_user_turn(query: str):
     bundle = recommend_bundle(query, top_k=5)
     for entry in bundle:
         print(f"  [{entry['type']:>11}] {entry['name']}  (score {entry['score']:.1f})")
+
+    related = recommend_related(["skill:fastapi-pro"], rejected=[], top_n=3)
+    for entry in related:
+        print(f"  related: {entry['id']} - {entry['reason']}")
 
     # User asks about a specific slug you saw in the bundle:
     page = wiki_get("fastapi-pro")

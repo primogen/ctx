@@ -123,6 +123,7 @@ ctx-harness-install text-to-cad --dry-run   # inspect before cloning/running any
 ctx-harness-install text-to-cad             # install after reviewing the plan
 ctx-harness-install text-to-cad --update --dry-run
 ctx-harness-install text-to-cad --uninstall --dry-run
+ctx-recommend "fix FastAPI auth" --selected skill:fastapi-pro --json  # related suggestions
 python -m ctx --help      # same run/resume/sessions CLI as the ctx script
 python -m ctx.adapters.loopflow --goal "fix checkout e2e" --permissions skills,agents,mcps
 ctx-skill-quality list     # four-signal quality score for every skill
@@ -147,7 +148,7 @@ docs tracker checks before the strict MkDocs build. Use `--profile full` before
 release work to force the source/package gates even for docs-only or graph-only
 changes.
 
-The **`ctx-monitor`** dashboard shows currently loaded skills, agents, MCP servers, installed harness records, and generic-harness validation/escalation state. It provides load/unload buttons where ctx owns the live action, a graph view (`/graph?slug=...`), the LLM-wiki entity browser (`/wiki/<slug>`), a filterable skills grid, a session timeline, audit/runtime log views, and a live SSE event stream. Installed harness records appear in `/loaded`; harness pages appear in `/wiki` and `/graph`. Harness install/update/uninstall actions stay in `ctx-harness-install`.
+The **`ctx-monitor`** dashboard shows currently loaded skills, agents, MCP servers, installed harness records, selectable recommendations (`/recommend`), and generic-harness validation/escalation plus tool-selection/token-usage state (`/runtime`). It provides load/unload buttons where ctx owns the live action, a graph view (`/graph?slug=...`), the LLM-wiki entity browser (`/wiki/<slug>`), a filterable skills grid, a session timeline, audit/runtime log views, and a live SSE event stream. Installed harness records appear in `/loaded`; harness pages appear in `/wiki` and `/graph`. Harness install/update/uninstall actions stay in `ctx-harness-install`.
 
 When `ctx-skill-add`, `ctx-agent-add`, `ctx-mcp-add`, or `ctx-harness-add`
 finds an existing entity, ctx prints a benefits/risks update review and skips

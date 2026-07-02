@@ -12,15 +12,20 @@ or runs an export.
 Events use the `ctx.telemetry.v1` envelope and OpenTelemetry-style naming:
 
 - `ctx.api.recommend_bundle`
+- `ctx.api.recommend_related`
 - `ctx.mcp.request`
 - `ctx.core.recommend_bundle`
+- `ctx.core.recommend_related`
 - `ctx.runtime_lifecycle.record`
 - `ctx.cli.run`
 - `ctx.cli.resume`
 
 Outcome and dimensions live in attributes such as `otel.status_code`,
-`ctx.operation`, `ctx.tool.name`, `ctx.result.count`, and hashed identifiers like
-`ctx.query.hash`, `ctx.slug.hash`, or `ctx.session.hash`.
+`ctx.operation`, `ctx.tool.name`, `ctx.result.count`,
+`ctx.selection.selected.count`, `ctx.selection.rejected.count`,
+`ctx.selection.source`, `ctx.selection.selected`, `ctx.usage.attribution`, and
+hashed identifiers like `ctx.query.hash`, `ctx.slug.hash`, or
+`ctx.session.hash`.
 
 Every recorded event gets a generated OpenTelemetry-compatible `trace_id` and
 `span_id` when the caller does not provide one. OTLP export maps those to the

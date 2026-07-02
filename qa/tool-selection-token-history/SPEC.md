@@ -12,14 +12,14 @@ The target user is a programmer or AI engineer who receives ctx recommendations 
 
 Observed entry points:
 
-- `src/ctx/api.py` exposes `recommend_bundle(query, top_k=5)` as the public Python API. It wraps `ctx__recommend_bundle` and returns a list of recommendation dicts.
+- `src/ctx/api.py` exposes `recommend_bundle(query, top_k=5)` and `recommend_related(selected, rejected=None, max_hops=2, top_n=5)` as the public Python API. They wrap the shared ctx-core tools and return lists of recommendation dicts.
 - `src/ctx/adapters/generic/ctx_core_tools.py` exposes `ctx__recommend_bundle`, `ctx__recommend_related`, `ctx__graph_query`, `ctx__wiki_search`, `ctx__wiki_get`, and runtime lifecycle/session tools through `CtxCoreToolbox`.
 - `src/ctx/core/resolve/recommendations.py` provides `recommend_by_tags(...)`, which ranks graph entities by slug-token, tag overlap, graph degree, explicit entity match, optional semantic query score, and external catalog fallback.
-- `src/ctx/cli/recommend.py` provides `ctx-recommend`; text mode renders rows, and `--json` emits `{"query": ..., "results": [...]}`.
+- `src/ctx/cli/recommend.py` provides `ctx-recommend`; text mode renders enriched rows plus related rows when `--selected` is passed, and `--json` emits `{"query": ..., "results": [...]}` with a `selection` object when selected or rejected IDs are supplied.
 - `src/ctx/mcp_server/server.py` exposes the shared toolbox through MCP `tools/list` and `tools/call`.
 - `src/ctx/adapters/loopflow.py` emits permission-gated LoopFlow/agent-loop adapter payloads containing grouped `skills`, `agents`, `mcps`, `harnesses`, and ctx MCP metadata.
 
-Current recommendation result shape is list-oriented. Rows may include `name`, `type`, `score`, `normalized_score`, `matching_tags`, `external`, `source_catalog`, `status`, `source`, `skill_id`, `installs`, `detail_url`, `install_command`, `category`, `invoke_command`, and `security_review`.
+Current recommendation result shape is list-oriented. Rows may include `id`, `name`, `type`, `score`, `normalized_score`, `matching_tags`, `tldr`, `reason`, `selected`, `selection_state`, `external`, `source_catalog`, `status`, `source`, `skill_id`, `installs`, `detail_url`, `install_command`, `category`, `invoke_command`, and `security_review`.
 
 ## Existing Tool Model
 
@@ -88,11 +88,11 @@ Dashboard and any browser UI must:
 CLI must:
 
 - Keep existing `ctx-recommend` behavior compatible by default.
-- Add an explicit interactive or numbered selection mode for users who want to choose recommendations.
+- Add an explicit selection mode for users who want to choose recommendations.
 - Offer a non-interactive JSON mode exposing the same selection and related-recommendation semantics.
 - Show TL;DR descriptions and relevance reasons.
 - Record activation/selection only when the user confirms or when a caller explicitly passes selected identities.
-- Clearly label token usage as exact, estimated, or unavailable.
+- Clearly label session usage as session-scoped and per-tool attribution as exact, estimated, or unavailable when usage evidence is recorded.
 
 ## Required API And Backend Behavior
 
@@ -120,16 +120,14 @@ Dashboard must:
 
 Preferred persisted record shape for activation and usage:
 
-- `action`: `selection`, `load_requested`, `used`, `token_usage`, or compatible lifecycle action.
+- `action`: `load_requested`, `used`, `unload_requested`, `validation`, `escalation`, `session_end`, or compatible lifecycle action.
 - `session_id`: safe host-generated id; use existing validation and hashed telemetry identifiers.
 - `entity_type`: one of `skill`, `agent`, `mcp-server`, `harness`.
 - `slug` or `name`: safe entity identity.
-- `selection_source`: `user`, `system`, or `unknown`.
+- `selection_source`: `user`, `system`, `host`, or `unknown`.
 - `selected`: boolean where relevant.
 - `source_context`: bounded sanitized object.
-- `usage`: object with `input_tokens`, `output_tokens`, `total_tokens`, optional `cost_usd`, and `measurement`: `exact`, `estimated`, or `unavailable`.
-- `usage_reason`: required when measurement is `estimated` or `unavailable`.
-- `attribution`: `per-tool`, `session-total`, or `unavailable`.
+- `token_usage`: object with `input_tokens`, `output_tokens`, `total_tokens`, optional `cost_usd`, `provider`, `model`, `attribution`: `exact`, `estimated`, or `unavailable`, and optional `attribution_reason`.
 - `correlation_id`: optional safe id linking model responses, tool calls, and lifecycle records when attribution is exact.
 - `created_at` and `created_at_epoch`.
 

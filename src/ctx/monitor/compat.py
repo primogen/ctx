@@ -25,13 +25,13 @@ Routes:
     /config                     Editable ctx config with defaults fallback
     /status                     Durable queue + graph/wiki artifact state
     /kpi                        Grade / lifecycle / category KPIs
-    /runtime                    Generic harness validation/escalation ledger
+    /runtime                    Generic harness lifecycle, selection, and token ledger
     /logs                       Filterable tail of ctx-audit.jsonl
     /events                     Live SSE stream of new audit-log lines
     /api/sessions.json          JSON index for scripting
     /api/manifest.json          Raw ~/.claude/skill-manifest.json
     /api/status.json            Queue counts + artifact promotion metadata
-    /api/runtime.json           Generic harness validation/escalation summary
+    /api/runtime.json           Generic harness lifecycle, selection, and token summary
     /api/skillspector.json      SkillSpector audit records + filters
     /api/skill/<slug>.json      Sidecar passthrough
     /api/graph/<slug>.json      Dashboard-shaped neighborhood; accepts type
