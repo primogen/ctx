@@ -22,6 +22,7 @@ class RouteDispatchDeps:
     render_loaded: Callable[[bool], str]
     render_logs: Callable[[], str]
     render_graph: Callable[[str | None, str | None], str]
+    render_recommendations: Callable[[dict[str, str]], str]
     render_manage: Callable[[bool], str]
     render_harness_wizard: Callable[[], str]
     render_docs: Callable[[], str]
@@ -62,6 +63,8 @@ def handle_get_route(
         handler._send_html(deps.render_logs())
     elif name == "graph":
         handler._send_html(deps.render_graph(qs.get("slug"), qs.get("type")))
+    elif name == "recommend":
+        handler._send_html(deps.render_recommendations(qs))
     elif name == "manage":
         handler._send_html(deps.render_manage(handler._mutations_enabled()))
     elif name == "harness":

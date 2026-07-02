@@ -18,6 +18,7 @@ Routes:
     /wiki/<slug>?type=<entity>  One wiki entity page (frontmatter + body)
     /graph                      Built-in graph explorer + popular seeds
     /graph?slug=<slug>&type=... Focus graph view on a specific entity
+    /recommend                  Select ctx recommendations + related rows
     /manage                     Search/edit/delete/import catalog entities
     /harness                    Manual harness setup for user-owned LLMs
     /docs                       Local docs index + public docs handoff
@@ -68,6 +69,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from ctx import api as _ctx_api
 from ctx import dashboard_entities
 from ctx.core import entity_types as core_entity_types
 from ctx.core.quality.skillspector_service import render_scan_report
@@ -92,6 +94,7 @@ from ctx.monitor.pages import home as _home_page
 from ctx.monitor.pages import loaded as _loaded_page
 from ctx.monitor.pages import manage as _manage_page
 from ctx.monitor.pages import ops as _ops_page
+from ctx.monitor.pages import recommend as _recommend_page
 from ctx.monitor.pages import skills as _skills_page
 from ctx.monitor.pages import skillspector as _skillspector_page
 from ctx.monitor.pages import wiki as _wiki_page
@@ -1443,6 +1446,19 @@ def _render_runtime_lifecycle() -> str:
     )
 
 
+def _render_recommendations(qs: dict[str, str] | None = None) -> str:
+    return _recommend_page.render_recommendations(
+        layout=_layout,
+        query=qs or {},
+        recommend_bundle=lambda query, top_k: _ctx_api.recommend_bundle(query, top_k=top_k),
+        recommend_related=lambda selected, rejected, top_n: _ctx_api.recommend_related(
+            selected,
+            rejected=rejected,
+            top_n=top_n,
+        ),
+    )
+
+
 def _render_logs() -> str:
     return _activity_page.render_logs(
         layout=_layout,
@@ -1513,6 +1529,7 @@ def _route_dispatch_deps() -> _monitor_app.RouteDispatchDeps:
         render_loaded=_render_loaded,
         render_logs=_render_logs,
         render_graph=_render_graph,
+        render_recommendations=_render_recommendations,
         render_manage=_render_manage,
         render_harness_wizard=_render_harness_wizard,
         render_docs=_render_docs,

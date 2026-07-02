@@ -25,6 +25,7 @@ NAV_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("skillspector", "SkillSpector", "/skillspector"),
     ("wiki", "Wiki", "/wiki"),
     ("graph", "Graph", "/graph"),
+    ("recommend", "Recommend", "/recommend"),
     ("manage", "Manage", "/manage"),
     ("harness", "Harness Setup", "/harness"),
     ("docs", "Docs", "/docs"),
@@ -84,6 +85,7 @@ _GET_EXACT_ROUTES: dict[str, str] = {
     "/loaded": "loaded",
     "/logs": "logs",
     "/graph": "graph",
+    "/recommend": "recommend",
     "/manage": "manage",
     "/harness": "harness",
     "/docs": "docs",
@@ -120,7 +122,7 @@ _POST_EXACT_ROUTES: dict[str, str] = {
 
 def parse_request_target(request_path: str) -> ParsedRequestTarget:
     raw_path, _, raw_query = request_path.partition("?")
-    query = {key: values[0] for key, values in parse_qs(raw_query).items() if values}
+    query = {key: ",".join(values) for key, values in parse_qs(raw_query).items() if values}
     return ParsedRequestTarget(path=raw_path, query=query)
 
 

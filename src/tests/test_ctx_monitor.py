@@ -21,6 +21,7 @@ import pytest
 import ctx_init as ci
 from ctx import dashboard_entities
 from ctx import dashboard_docs
+from ctx import api as ctx_api
 from ctx.monitor import testing as mt
 from ctx.monitor.pages import config as config_page
 from ctx.monitor.pages import graph as graph_page
@@ -1740,6 +1741,7 @@ def test_monitor_route_inventory_covers_nav_and_api_routes() -> None:
         "/skillspector",
         "/wiki",
         "/graph",
+        "/recommend",
         "/manage",
         "/harness",
         "/docs",
@@ -1760,10 +1762,10 @@ def test_monitor_route_inventory_covers_nav_and_api_routes() -> None:
 
 def test_monitor_route_matchers_cover_dynamic_and_mutation_routes() -> None:
     parsed = monitor_routes.parse_request_target(
-        "/api/graph/github%2Fcli.json?type=mcp-server&limit=20",
+        "/api/graph/github%2Fcli.json?type=mcp-server&limit=20&selected=a&selected=b",
     )
     assert parsed.path == "/api/graph/github%2Fcli.json"
-    assert parsed.query == {"type": "mcp-server", "limit": "20"}
+    assert parsed.query == {"type": "mcp-server", "limit": "20", "selected": "a,b"}
 
     home = monitor_routes.match_get_route("/")
     catalog = monitor_routes.match_get_route("/catalog/")
@@ -1777,6 +1779,70 @@ def test_monitor_route_matchers_cover_dynamic_and_mutation_routes() -> None:
     entity_upsert = monitor_routes.match_post_route("/api/entity/upsert")
     assert entity_upsert is not None and entity_upsert.name == ("api_entity_upsert")
     assert monitor_routes.match_post_route("/api/nope") is None
+
+
+def test_render_recommendations_supports_selection_and_related(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_calls: list[tuple[str, int]] = []
+    related_calls: list[tuple[list[str], list[str], int]] = []
+
+    def fake_recommend_bundle(query: str, *, top_k: int) -> list[dict[str, object]]:
+        bundle_calls.append((query, top_k))
+        return [
+            {
+                "id": "skill:fastapi-pro",
+                "name": "fastapi-pro",
+                "type": "skill",
+                "normalized_score": 0.91,
+                "selection_state": "suggested",
+                "tldr": "Build FastAPI services safely.",
+                "reason": "matches api",
+            }
+        ]
+
+    def fake_recommend_related(
+        selected: list[str],
+        *,
+        rejected: list[str],
+        top_n: int,
+    ) -> list[dict[str, object]]:
+        related_calls.append((selected, rejected, top_n))
+        return [
+            {
+                "id": "mcp-server:ollama",
+                "name": "ollama",
+                "type": "mcp-server",
+                "normalized_score": 1.0,
+                "selection_state": "suggested_related",
+                "tldr": "Local model MCP.",
+                "reason": "related via selected tool",
+            }
+        ]
+
+    monkeypatch.setattr(ctx_api, "recommend_bundle", fake_recommend_bundle)
+    monkeypatch.setattr(ctx_api, "recommend_related", fake_recommend_related)
+
+    html_out = mt.render_recommendations(
+        {
+            "q": "build api",
+            "top_k": "2",
+            "selected": "skill:fastapi-pro",
+            "rejected": "agent:legacy-reviewer",
+        }
+    )
+
+    assert bundle_calls == [("build api", 2)]
+    assert related_calls == [(["skill:fastapi-pro"], ["agent:legacy-reviewer"], 2)]
+    assert "Recommendations" in html_out
+    assert "Related recommendations" in html_out
+    assert "skill:fastapi-pro" in html_out
+    assert "Build FastAPI services safely." in html_out
+    assert "matches api" in html_out
+    assert "mcp-server:ollama" in html_out
+    assert "suggested_related" in html_out
+    assert "Select all" in html_out
+    assert "Select none" in html_out
 
 
 def test_graph_api_invalid_params_return_400(
@@ -5690,6 +5756,7 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     assert "href='/docs'" in out
     assert "href='/kpi'" in out
     assert "href='/graph'" in out
+    assert "href='/recommend'" in out
     assert "href='/config'" in out
     assert "class='app-shell'" in out
     assert "class='app-header'" in out
@@ -5698,6 +5765,7 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     assert ">Harness Setup<" in out
     assert ">Docs<" in out
     assert ">KPIs<" in out
+    assert ">Recommend<" in out
     assert ">Config<" in out
     assert "--surface" in out
     assert "--accent" in out
