@@ -169,9 +169,10 @@ ones are flagged. New ones self-ingest.
 
     `ctx-monitor serve` opens a local HTTP dashboard with live graph,
     skill grades + four-signal scores, session timelines, one-click
-    load/unload for skills, agents, and MCP servers, plus harness wiki
-    and graph browsing. It is served by stdlib `http.server` and renders
-    repo docs with MkDocs-compatible Markdown extensions.
+    load/unload for skills, agents, and MCP servers, selectable
+    recommendations, runtime token history, plus harness wiki and graph
+    browsing. It is served by stdlib `http.server` and renders repo docs with
+    MkDocs-compatible Markdown extensions.
 
     [:octicons-arrow-right-24: Dashboard reference](dashboard.md)
 
@@ -218,7 +219,7 @@ ones are flagged. New ones self-ingest.
     ---
 
     Current main is **v1.0.20** — MIT, CI-matrixed (Ubuntu 3.12 plus Windows/macOS 3.11/3.12),
-    4,429 test inventory. Adds enterprise OpenTelemetry-ready telemetry and
+    4,433 test inventory. Adds enterprise OpenTelemetry-ready telemetry and
     ships console scripts including `ctx-init`,
     `ctx-monitor` (local dashboard with graph + wiki + load/unload for
     skills, agents, and MCP servers, plus Harness Setup for user-owned LLMs),

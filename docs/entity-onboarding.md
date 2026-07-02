@@ -61,7 +61,7 @@ the update is treated like a release step.
 
    ```bash
    python src/import_skills_sh_catalog.py --from-api-union <raw.json> \
-     --catalog-out graph/<skill-index>.json.gz \
+     --catalog-out graph/skills-sh-catalog.json.gz \
      --wiki-tar graph/wiki-graph.tar.gz \
      --update-wiki-tar
    ```

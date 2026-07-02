@@ -28,9 +28,14 @@ servers, and harness pages in wiki/graph views. Harness installation,
 update, and uninstall run through `ctx-harness-install`; dashboard
 load/unload POSTs reject harnesses with the exact dry-run command to use.
 Quality scoring is shown for sidecar-backed skills, agents, and MCP servers.
+The `/recommend` page exposes the same selectable recommendation flow as the
+CLI/API: query, top-k, selected and rejected IDs, select-all/select-none helpers,
+TLDR/reason text, and related suggestions for partially selected bundles.
 Generic/API/local harnesses that call ctx-core validation tools write to
 the runtime lifecycle ledger. The dashboard exposes that ledger at
-`/runtime` and as JSON at `/api/runtime.json`.
+`/runtime` and as JSON at `/api/runtime.json`, including validation and
+escalation state, tool-selection totals, selected-vs-system source counts, token
+usage totals, attribution counts, and recent per-tool usage rows.
 
 ### Smoke-test the dashboard
 
@@ -191,11 +196,11 @@ yet), the page shows a helpful empty-state pointing at
 
 ### Top navigation
 
-Every page shows the same nav bar. The eleven tabs cover the
+Every page shows the same nav bar. The tabs cover the
 dashboard-supported observable surface of ctx:
 
 ```
-Home · Loaded · Skills · Wiki · Graph · Manage · Harness Setup · Docs · Config · Status · KPIs · Runtime · Sessions · Logs · Live
+Home · Loaded · Skills · Wiki · Graph · Recommend · Manage · Harness Setup · Docs · Config · Status · KPIs · Runtime · Sessions · Logs · Live
 ```
 
 ### HTML views
@@ -218,13 +223,14 @@ per-process monitor token injected into the rendered page.
 | `/wiki/<slug>?type=<entity>` | Dashboard-supported wiki entity page rendered: markdown body + full frontmatter table + grade banner + deep links to sidecar and graph-neighborhood views. The optional `type` query disambiguates duplicate slugs such as `langgraph`. |
 | `/graph` | **Graph explorer landing page** - node/edge count header, a "Popular seed slugs" block (18 highest-degree skill/agent/MCP/harness entities as clickable chips), search box for any skill/agent/MCP/harness slug, and the built-in graph list panel. Clicking a seed chip navigates to `/graph?slug=<slug>&type=<entity>`. |
 | `/graph?slug=<slug>&type=<entity>` | **Built-in** 1-hop neighborhood around the target skill/agent/MCP/harness slug. Entity pills identify skill, agent, MCP server, and harness rows. Tap any node to navigate to that entity's typed wiki page. Type and tag filters run client-side. |
+| `/recommend` | Selectable recommendation page: query and top-k controls, repeated selected/rejected ID inputs, select-all/select-none helpers, recommendation state, TLDR/reason text, and graph-backed related suggestions for partial selections. |
 | `/manage` | Search, inspect, edit, delete, and manually import skill/agent/MCP/harness wiki entities through the same safe-name and mutation-token checks as live load/unload. Manual skill upserts run the required static SkillSpector gate before the wiki page is written or queued for graph refresh. |
 | `/harness` | Harness Setup wizard for non-Claude/custom API/local model users: collects model, goals, tool needs, safety constraints, and shows the harness recommendation/install path. |
 | `/docs` | Local repo docs rendered inside the dashboard with MkDocs-like tabs, sidebar table of contents, in-dashboard search, and source links. |
 | `/config` | Effective ctx config with defaults, required markers, field explanations, and editable user overrides where supported. |
 | `/status` | Durable queue, artifact, and telemetry status: job counts by state, recent queue jobs, graph/wiki artifact sizes, crash-safe promotion metadata, local spool counts, and exporter degradation details. |
 | `/kpi` | **KPI dashboard** — total entity count with subject breakdown, grade distribution pills, two-column tables for grade counts and lifecycle tiers (active · watch · demote · archive), hard-floor reasons with counts, **By category** table (count · avg score · A/B/C/D/F mix per category), **Top demotion candidates** (active/watch entries graded D or F, sorted by consecutive-D streak desc then score asc), and the **Archived** list. Same shape as `python -m kpi_dashboard render` but HTML |
-| `/runtime` | Generic harness runtime ledger from `CTX_RUNTIME_LIFECYCLE_DIR` or `~/.ctx/runtime/events.jsonl`: validation totals, failed/error checks, recent validation rows, and open escalations. |
+| `/runtime` | Generic harness runtime ledger from `CTX_RUNTIME_LIFECYCLE_DIR` or `~/.ctx/runtime/events.jsonl`: validation totals, failed/error checks, tool-selection totals, active selected loads, user/system/host source split, token totals, exact/estimated/unavailable attribution counts, recent tool usage rows, and open escalations. Grouped token history is available in `/api/runtime.json`. |
 | `/sessions` | Index of every session (audit + skill-events), first/last seen, counts of skills loaded/unloaded, agents loaded/unloaded, MCPs loaded/unloaded, and lifecycle transitions |
 | `/session/<id>` | Per-session audit timeline showing the load → score_updated → unload triad with timestamps |
 | `/logs` | Last 500 audit events in a filterable table (client-side filter on event name, subject, session id) |
@@ -240,7 +246,7 @@ per-process monitor token injected into the rendered page.
 | `GET /api/skill/<slug>.json` | Raw sidecar for one slug |
 | `GET /api/graph/<slug>.json?type=<entity>&hops=1&limit=40` | Dashboard-shaped skill/agent/MCP/harness `{nodes, edges, center}`; `type` is optional but recommended for duplicate slugs, `hops` is [1, 3], `limit` is [5, 150]. |
 | `GET /api/kpi.json` | `DashboardSummary` passthrough — `{total, by_subject, grade_counts, lifecycle_counts, category_breakdown, hard_floor_counts, low_quality_candidates, archived, generated_at}`. Returns `{total: 0, detail: "no sidecars yet"}` when the quality directory is empty |
-| `GET /api/runtime.json` | Runtime lifecycle summary: source path, validation count, failed/error count, open-escalation count, latest validation, recent validations, open escalations, and session IDs. |
+| `GET /api/runtime.json` | Runtime lifecycle summary: source path, validation count, failed/error count, open-escalation count, latest validation, recent validations, open escalations, session IDs, `tool_selection`, `token_usage`, `token_usage_history`, and `recent_tool_usage`. |
 | `GET /api/config.json` | Effective/default/user config payload used by the Config tab. |
 | `GET /api/entities/search.json?q=<text>&type=<entity>&limit=80` | Wiki entity search results for Manage, Config, and entity picker flows. |
 | `GET /api/entity/<slug>.json?type=<entity>` | Frontmatter and Markdown body for one wiki entity. |

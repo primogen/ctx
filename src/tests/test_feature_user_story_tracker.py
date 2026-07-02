@@ -18,6 +18,7 @@ from scripts.ci_preflight import select_checks  # noqa: E402
 
 TRACKER = repo_root / "docs" / "qa" / "feature-user-story-status.csv"
 DASHBOARD_TRACKER = repo_root / "docs" / "qa" / "dashboard-user-story-status.csv"
+TOOL_SELECTION_TRACKER = repo_root / "qa" / "tool-selection-token-history" / "tracker.csv"
 CANONICAL_TRACKER = repo_root / "qa" / "feature_status.csv"
 MKDOCS = repo_root / "mkdocs.yml"
 README = repo_root / "README.md"
@@ -49,6 +50,11 @@ def _tracker_rows() -> list[dict[str, str]]:
 
 def _dashboard_tracker_rows() -> list[dict[str, str]]:
     with DASHBOARD_TRACKER.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def _tool_selection_tracker_rows() -> list[dict[str, str]]:
+    with TOOL_SELECTION_TRACKER.open(newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
@@ -125,11 +131,15 @@ def test_canonical_feature_status_tracker_merges_supporting_ledgers() -> None:
     rows = _canonical_tracker_rows()
     feature_rows = _tracker_rows()
     dashboard_rows = _dashboard_tracker_rows()
-    expected_ids = {row["feature_id"] for row in feature_rows} | {
-        row["dashboard_id"] for row in dashboard_rows
-    }
+    tool_selection_rows = _tool_selection_tracker_rows()
+    expected_ids = (
+        {row["feature_id"] for row in feature_rows}
+        | {row["dashboard_id"] for row in dashboard_rows}
+        | {row["ID"] for row in tool_selection_rows}
+    )
     supporting_statuses = {row["feature_id"]: row["status"] for row in feature_rows}
     supporting_statuses.update({row["dashboard_id"]: row["status"] for row in dashboard_rows})
+    supporting_statuses.update({row["ID"]: row["Status"] for row in tool_selection_rows})
     required = (
         "feature_id",
         "source_tracker",
@@ -163,6 +173,7 @@ def test_canonical_feature_status_tracker_merges_supporting_ledgers() -> None:
         assert row["source_tracker"] in {
             "docs/qa/feature-user-story-status.csv",
             "docs/qa/dashboard-user-story-status.csv",
+            "qa/tool-selection-token-history/tracker.csv",
             "expert-lane/api-mcp-harness",
             "expert-lane/telemetry-release-governance",
             "expert-lane/cli-package-inventory",
@@ -337,6 +348,7 @@ def test_readme_shows_user_story_examples_from_tracker() -> None:
     assert "qa/feature_status.csv" in readme
     assert "docs/qa/feature-user-story-status.csv" in readme
     assert "docs/qa/dashboard-user-story-status.csv" in readme
+    assert "qa/tool-selection-token-history/tracker.csv" in readme
     assert "supporting detail ledger" in readme
     for feature_id in ("CLI-002", "CLI-026", "API-011"):
         assert feature_id in readme
@@ -347,7 +359,7 @@ def test_readme_shows_user_story_examples_from_tracker() -> None:
 
     required_surface_markers = (
         "ctx.api and ctx top-level re-exports",
-        "ctx__recommend_bundle, ctx__graph_query, ctx__wiki_search, ctx__wiki_get",
+        "ctx__recommend_bundle, ctx__recommend_related, ctx__graph_query, ctx__wiki_search, ctx__wiki_get",
         "ctx__observe_dev_event, ctx__load_entity, ctx__mark_entity_used",
         "McpClient and McpRouter",
         "output_format and _response_format",

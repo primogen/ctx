@@ -15,7 +15,9 @@ from ctx.core.wiki.wiki_utils import validate_skill_name
 from ctx.telemetry import (
     ensure_private_event_file,
     hash_identifier,
+    record_counter,
     record_event,
+    record_histogram,
     sanitize_payload,
     telemetry_span,
     telemetry_enabled,
@@ -27,6 +29,9 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _ENTITY_TYPES = set(RECOMMENDABLE_ENTITY_TYPES)
 _VALIDATION_STATUSES = {"passed", "failed", "skipped", "error"}
 _ESCALATION_STATUSES = {"open", "resolved", "ignored"}
+_SELECTION_SOURCES = {"user", "system", "host", "unknown"}
+_TOKEN_ATTRIBUTIONS = {"exact", "estimated", "unavailable"}
+_LIFECYCLE_SANITIZER_CONFIG = {"enabled": True, "mode": "local_redacted"}
 _SECURITY_SCAN_STATUSES = {
     "passed",
     "findings",
@@ -69,9 +74,17 @@ class RuntimeLifecycleStore:
         slug: str,
         reason: str | None = None,
         security_scan: dict[str, Any] | None = None,
+        selected: bool | None = None,
+        selection_source: str | None = None,
+        source_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         entity_type = _validate_entity_type(entity_type)
         slug = _validate_slug(slug)
+        source = _validate_choice(
+            selection_source or "user",
+            _SELECTION_SOURCES,
+            "selection_source",
+        )
         return self._record(
             action="load_requested",
             session_id=session_id,
@@ -83,6 +96,9 @@ class RuntimeLifecycleStore:
                 entity_type=entity_type,
                 slug=slug,
             ),
+            selected=(source == "user" if selected is None else bool(selected)),
+            selection_source=source,
+            source_context=source_context or {},
         )
 
     def mark_entity_used(
@@ -92,14 +108,17 @@ class RuntimeLifecycleStore:
         entity_type: str,
         slug: str,
         evidence: str | None = None,
+        token_usage: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self._record(
+        event = self._record(
             action="used",
             session_id=session_id,
             entity_type=entity_type,
             slug=slug,
             evidence=evidence,
+            token_usage=_token_usage_state(token_usage),
         )
+        return event
 
     def unload_entity(
         self,
@@ -216,11 +235,15 @@ class RuntimeLifecycleStore:
                     "loaded_at_epoch": float(event.get("created_at_epoch") or 0),
                     "reason": event.get("reason"),
                     "security_scan": event.get("security_scan"),
+                    "selected": bool(event.get("selected", False)),
+                    "selection_source": event.get("selection_source") or "unknown",
+                    "source_context": event.get("source_context") or {},
                     "used": False,
                     "use_count": 0,
                     "last_used_at": None,
                     "evidence": [],
                     "dev_event_epoch": latest_dev_event_epoch,
+                    "token_usage": _empty_token_usage_summary(),
                 }
             elif action == "used" and key in loaded:
                 loaded[key]["used"] = True
@@ -228,6 +251,9 @@ class RuntimeLifecycleStore:
                 loaded[key]["last_used_at"] = event.get("created_at")
                 if event.get("evidence"):
                     loaded[key]["evidence"].append(event["evidence"])
+                token_usage = event.get("token_usage")
+                if isinstance(token_usage, dict):
+                    _merge_token_usage(loaded[key]["token_usage"], token_usage)
             elif action == "unload_requested":
                 current = loaded.pop(key, None)
                 unloaded.append(
@@ -273,12 +299,6 @@ class RuntimeLifecycleStore:
         event["session_id"] = session_id
         event["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         event["created_at_epoch"] = time.time()
-        if not telemetry_enabled():
-            return {
-                "ok": True,
-                "events_path": str(self.events_path),
-                "recorded": False,
-            }
         event = _sanitize_lifecycle_event(event)
         path = self.events_path
         reject_symlink_path(path)
@@ -315,7 +335,13 @@ def _sanitize_lifecycle_event(event: dict[str, Any]) -> dict[str, Any]:
     redacted = dict(event)
     payload = redacted.get("payload")
     if isinstance(payload, dict):
-        redacted["payload"] = sanitize_payload(payload)
+        redacted["payload"] = sanitize_payload(payload, config=_LIFECYCLE_SANITIZER_CONFIG)
+    source_context = redacted.get("source_context")
+    if isinstance(source_context, dict):
+        redacted["source_context"] = sanitize_payload(
+            source_context,
+            config=_LIFECYCLE_SANITIZER_CONFIG,
+        )
     cwd = redacted.pop("cwd", None)
     if isinstance(cwd, str) and cwd:
         redacted["cwd_hash"] = hash_identifier(cwd)
@@ -330,6 +356,16 @@ def _validate_session_id(raw: str) -> str:
 
 
 def _record_runtime_lifecycle_telemetry(event: dict[str, Any]) -> None:
+    token_usage = event.get("token_usage")
+    usage_attribution: str | None = None
+    if isinstance(token_usage, dict):
+        usage_attribution = str(token_usage.get("attribution") or "unavailable")
+        total_tokens = token_usage.get("total_tokens")
+        _record_token_usage_metrics(
+            event,
+            attribution=usage_attribution,
+            total_tokens=total_tokens if isinstance(total_tokens, int) else None,
+        )
     payload: dict[str, Any] = {
         "ctx.lifecycle.action": str(event.get("action") or ""),
         "ctx.payload.present": bool(event.get("payload")),
@@ -344,9 +380,19 @@ def _record_runtime_lifecycle_telemetry(event: dict[str, Any]) -> None:
     status = event.get("status")
     if isinstance(status, str) and status:
         payload["ctx.status"] = status
+    selection_source = event.get("selection_source")
+    if isinstance(selection_source, str) and selection_source:
+        payload["ctx.selection.source"] = selection_source
+    selected = event.get("selected")
+    if isinstance(selected, bool):
+        payload["ctx.selection.selected"] = selected
     security_scan = event.get("security_scan")
     if isinstance(security_scan, dict):
         payload["ctx.security_scan.status"] = str(security_scan.get("status") or "")
+    if usage_attribution is not None:
+        payload["ctx.usage.attribution"] = usage_attribution
+    if not telemetry_enabled():
+        return
     try:
         with telemetry_span():
             record_event(
@@ -358,6 +404,50 @@ def _record_runtime_lifecycle_telemetry(event: dict[str, Any]) -> None:
                 payload=payload,
             )
     except Exception:  # noqa: BLE001 - lifecycle writes must not depend on telemetry.
+        pass
+
+
+def _record_token_usage_metrics(
+    event: dict[str, Any],
+    *,
+    attribution: str,
+    total_tokens: int | None,
+) -> None:
+    attrs: dict[str, Any] = {
+        "ctx.lifecycle.action": str(event.get("action") or ""),
+        "ctx.usage.attribution": attribution,
+    }
+    entity_type = event.get("entity_type")
+    if isinstance(entity_type, str) and entity_type:
+        attrs["ctx.entity.type"] = entity_type
+    session_id = str(event.get("session_id") or "") or None
+    try:
+        record_counter(
+            "ctx.tool_usage.records",
+            value=1,
+            unit="1",
+            attributes=attrs,
+            source="ctx-runtime-lifecycle",
+            session_id=session_id,
+        )
+        if total_tokens is not None:
+            record_counter(
+                "ctx.tool_usage.tokens",
+                value=total_tokens,
+                unit="tokens",
+                attributes=attrs,
+                source="ctx-runtime-lifecycle",
+                session_id=session_id,
+            )
+            record_histogram(
+                "ctx.tool_usage.tokens_per_record",
+                value=total_tokens,
+                unit="tokens",
+                attributes=attrs,
+                source="ctx-runtime-lifecycle",
+                session_id=session_id,
+            )
+    except Exception:  # noqa: BLE001 - metrics must not break lifecycle writes.
         pass
 
 
@@ -398,6 +488,84 @@ def _validation_state(event: dict[str, Any]) -> dict[str, Any]:
         "slug": event.get("slug"),
         "payload": event.get("payload") or {},
     }
+
+
+def _token_usage_state(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    attribution = _validate_choice(
+        str(raw.get("attribution") or "unavailable"),
+        _TOKEN_ATTRIBUTIONS,
+        "token_usage.attribution",
+    )
+    input_tokens = _nonnegative_int(raw.get("input_tokens"), "token_usage.input_tokens")
+    output_tokens = _nonnegative_int(raw.get("output_tokens"), "token_usage.output_tokens")
+    total_tokens = _nonnegative_int(raw.get("total_tokens"), "token_usage.total_tokens")
+    if total_tokens is None and (input_tokens is not None or output_tokens is not None):
+        total_tokens = int(input_tokens or 0) + int(output_tokens or 0)
+    cost_usd = _nonnegative_float(raw.get("cost_usd"), "token_usage.cost_usd")
+    return {
+        "attribution": attribution,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cost_usd": cost_usd,
+        "attribution_reason": str(raw.get("attribution_reason") or "").strip() or None,
+        "model": str(raw.get("model") or "").strip() or None,
+        "provider": str(raw.get("provider") or "").strip() or None,
+    }
+
+
+def _empty_token_usage_summary() -> dict[str, Any]:
+    return {
+        "records": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "by_attribution": {key: 0 for key in sorted(_TOKEN_ATTRIBUTIONS)},
+    }
+
+
+def _merge_token_usage(summary: dict[str, Any], usage: dict[str, Any]) -> None:
+    summary["records"] = int(summary.get("records") or 0) + 1
+    attribution = str(usage.get("attribution") or "unavailable")
+    by_attribution = summary.setdefault(
+        "by_attribution",
+        {key: 0 for key in sorted(_TOKEN_ATTRIBUTIONS)},
+    )
+    by_attribution[attribution] = int(by_attribution.get(attribution) or 0) + 1
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int):
+            summary[key] = int(summary.get(key) or 0) + value
+    cost = usage.get("cost_usd")
+    if isinstance(cost, (int, float)):
+        summary["cost_usd"] = round(float(summary.get("cost_usd") or 0.0) + float(cost), 8)
+
+
+def _nonnegative_int(raw: Any, field: str) -> int | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a non-negative integer") from exc
+    if value < 0:
+        raise ValueError(f"{field} must be a non-negative integer")
+    return value
+
+
+def _nonnegative_float(raw: Any, field: str) -> float | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a non-negative number") from exc
+    if value < 0:
+        raise ValueError(f"{field} must be a non-negative number")
+    return value
 
 
 def _security_scan_state(

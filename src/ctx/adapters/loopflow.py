@@ -129,8 +129,11 @@ def _build_query(
 def _compact_row(row: dict[str, Any]) -> dict[str, Any]:
     compact: dict[str, Any] = {}
     for key in (
+        "id",
         "name",
         "type",
+        "tldr",
+        "reason",
         "score",
         "normalized_score",
         "fit_score",
@@ -145,6 +148,9 @@ def _compact_row(row: dict[str, Any]) -> dict[str, Any]:
         "category",
         "invoke_command",
         "security_review",
+        "selected",
+        "selection_state",
+        "related_to",
     ):
         value = row.get(key)
         if value not in (None, "", [], {}):
@@ -183,6 +189,29 @@ def _group_bundle(
         if len(grouped[group]) < top_k:
             grouped[group].append(_compact_row(row))
     return grouped
+
+
+def _filter_related_rows(
+    rows: list[dict[str, Any]],
+    *,
+    permissions: set[str],
+    top_k: int,
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        group = _ENTITY_TO_GROUP.get(str(row.get("type") or ""))
+        name = str(row.get("name") or "").strip()
+        if group is None or group not in permissions or not name:
+            continue
+        identity = (group, name)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        filtered.append(_compact_row(row))
+        if len(filtered) >= top_k:
+            break
+    return filtered
 
 
 def _harness_command(
@@ -279,6 +308,8 @@ def recommend_for_loop(
     model_provider: str | None = None,
     model: str | None = None,
     harness_requirements: dict[str, str] | None = None,
+    selected: list[str] | None = None,
+    rejected: list[str] | None = None,
     top_k: int = 5,
 ) -> dict[str, Any]:
     """Return a permissioned ctx adapter payload for a DSL or agent loop.
@@ -328,6 +359,19 @@ def recommend_for_loop(
             top_k=safe_top_k,
         )
         capability_bundle.update(_group_bundle(rows, permissions=granted, top_k=safe_top_k))
+    selected_ids = [value.strip() for value in (selected or []) if value.strip()]
+    rejected_ids = [value.strip() for value in (rejected or []) if value.strip()]
+    related_recommendations: list[dict[str, Any]] = []
+    if selected_ids and granted.intersection({"skills", "agents", "mcps"}):
+        related_recommendations = _filter_related_rows(
+            ctx_api.recommend_related(
+                selected_ids,
+                rejected=rejected_ids,
+                top_n=50,
+            ),
+            permissions=granted,
+            top_k=safe_top_k,
+        )
 
     warnings: list[str] = []
     if unknown_requirement_keys:
@@ -393,6 +437,7 @@ def recommend_for_loop(
             "tools": mcp_server_tools,
         },
         "capabilities": capability_bundle,
+        "related_recommendations": related_recommendations,
         "loopflow": {
             "use_tools": use_tools,
             "use_skills": use_skills,
@@ -425,6 +470,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--done-when", action="append", default=[], help="Verification/check hint.")
     parser.add_argument("--last-failure", default="", help="Previous failure text.")
     parser.add_argument("--last-failure-file", type=Path, help="Read previous failure from a file.")
+    parser.add_argument(
+        "--selected",
+        action="append",
+        default=[],
+        help="Comma-separated selected ctx recommendation IDs or names.",
+    )
+    parser.add_argument(
+        "--rejected",
+        action="append",
+        default=[],
+        help="Comma-separated rejected ctx recommendation IDs or names.",
+    )
     parser.add_argument(
         "--permissions",
         action="append",
@@ -499,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
         model_provider=args.model_provider,
         model=args.model,
         harness_requirements={key: value for key, value in requirements.items() if value},
+        selected=_split_csv(args.selected),
+        rejected=_split_csv(args.rejected),
         top_k=args.top_k,
     )
     json.dump(payload, sys.stdout, indent=None if args.compact else 2, sort_keys=True)

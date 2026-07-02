@@ -49,6 +49,7 @@ from ctx.api import (
     graph_query,
     list_all_entities,
     recommend_bundle,
+    recommend_related,
     wiki_get,
     wiki_search,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "graph_query",
     "list_all_entities",
     "recommend_bundle",
+    "recommend_related",
     "wiki_get",
     "wiki_search",
     "__version__",

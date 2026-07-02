@@ -58,12 +58,50 @@ def test_recommend_for_loop_respects_capability_permissions(
             {"name": "filesystem", "type": "mcp-server", "score": 80},
         ]
 
+    def fake_recommend_related(
+        selected: list[str],
+        *,
+        rejected: list[str] | None = None,
+        max_hops: int = 2,
+        top_n: int = 5,
+    ) -> list[dict[str, Any]]:
+        assert selected == ["skill:playwright-debug"]
+        assert rejected == ["mcp-server:filesystem"]
+        assert max_hops == 2
+        assert top_n == 50
+        return [
+            {
+                "id": "agent:browser-agent",
+                "name": "browser-agent",
+                "type": "agent",
+                "reason": "filtered by permissions",
+                "selection_state": "suggested_related",
+            },
+            {
+                "id": "agent:browser-helper",
+                "name": "browser-helper",
+                "type": "agent",
+                "reason": "filtered by permissions",
+                "selection_state": "suggested_related",
+            },
+            {
+                "id": "skill:browser-test-plan",
+                "name": "browser-test-plan",
+                "type": "skill",
+                "reason": "related via playwright-debug",
+                "selection_state": "suggested_related",
+            },
+        ]
+
     monkeypatch.setattr(loopflow, "_recommend_capability_rows", fake_recommend_rows)
+    monkeypatch.setattr(loopflow.ctx_api, "recommend_related", fake_recommend_related)
 
     payload = loopflow.recommend_for_loop(
         goal="fix checkout e2e",
         loop_kind="agent-loop",
         permissions={"skills", "mcps"},
+        selected=["skill:playwright-debug"],
+        rejected=["mcp-server:filesystem"],
         top_k=2,
     )
 
@@ -77,6 +115,15 @@ def test_recommend_for_loop_respects_capability_permissions(
     assert [row["name"] for row in payload["capabilities"]["skills"]] == ["playwright-debug"]
     assert payload["capabilities"]["agents"] == []
     assert [row["name"] for row in payload["capabilities"]["mcps"]] == ["filesystem"]
+    assert payload["related_recommendations"] == [
+        {
+            "id": "skill:browser-test-plan",
+            "name": "browser-test-plan",
+            "type": "skill",
+            "reason": "related via playwright-debug",
+            "selection_state": "suggested_related",
+        }
+    ]
     assert payload["mcp_server"] == {
         "name": "ctx",
         "command": None,

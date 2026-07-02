@@ -21,6 +21,7 @@ import pytest
 import ctx_init as ci
 from ctx import dashboard_entities
 from ctx import dashboard_docs
+from ctx import api as ctx_api
 from ctx.monitor import testing as mt
 from ctx.monitor.pages import config as config_page
 from ctx.monitor.pages import graph as graph_page
@@ -964,6 +965,46 @@ def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
                 "severity": "info",
                 "created_at": "2026-05-08T01:07:00Z",
             },
+            {
+                "action": "load_requested",
+                "session_id": "s-3",
+                "entity_type": "skill",
+                "slug": "fastapi-pro",
+                "selected": True,
+                "selection_source": "user",
+                "created_at": "2026-05-08T01:08:00Z",
+            },
+            {
+                "action": "load_requested",
+                "session_id": "s-3",
+                "entity_type": "agent",
+                "slug": "api-reviewer",
+                "selected": False,
+                "selection_source": "system",
+                "created_at": "2026-05-08T01:09:00Z",
+            },
+            {
+                "action": "used",
+                "session_id": "s-3",
+                "entity_type": "skill",
+                "slug": "fastapi-pro",
+                "evidence": "generated endpoint at /Users/example/private.py",
+                "token_usage": {
+                    "attribution": "exact",
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "cost_usd": 0.02,
+                },
+                "created_at": "2026-05-08T01:10:00Z",
+            },
+            {
+                "action": "unload_requested",
+                "session_id": "s-3",
+                "entity_type": "agent",
+                "slug": "api-reviewer",
+                "created_at": "2026-05-08T01:11:00Z",
+            },
         ],
     )
 
@@ -975,6 +1016,28 @@ def test_runtime_lifecycle_summary_reads_validation_and_escalation_events(
     assert summary["open_escalations_total"] == 1
     assert summary["latest_validation"]["check_name"] == "mypy"
     assert summary["open_escalations"][0]["trigger"] == "validation-failed"
+    assert summary["tool_selection"] == {
+        "loaded_total": 2,
+        "active_loaded_total": 1,
+        "selected_total": 1,
+        "active_selected_total": 1,
+        "selection_sources": {"user": 1, "system": 1, "host": 0, "unknown": 0},
+        "used_total": 1,
+    }
+    assert summary["token_usage"] == {
+        "records": 1,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "cost_usd": 0.02,
+        "by_attribution": {"exact": 1, "estimated": 0, "unavailable": 0},
+    }
+    recent_usage = summary["recent_tool_usage"][0]
+    assert recent_usage["slug"] == "fastapi-pro"
+    assert recent_usage["evidence_present"] is True
+    assert recent_usage["evidence_length"] == len("generated endpoint at /Users/example/private.py")
+    assert "evidence" not in recent_usage
+    assert "/Users/example/private.py" not in json.dumps(summary["recent_tool_usage"])
     assert direct_summary == summary
 
 
@@ -1057,6 +1120,29 @@ def test_render_runtime_lifecycle_surfaces_checks_and_open_escalations(
                 "severity": "blocking",
                 "created_at": "2026-05-08T01:06:00Z",
             },
+            {
+                "action": "load_requested",
+                "session_id": "s-2",
+                "entity_type": "skill",
+                "slug": "<fastapi-pro>",
+                "selected": True,
+                "selection_source": "user",
+                "created_at": "2026-05-08T01:07:00Z",
+            },
+            {
+                "action": "used",
+                "session_id": "s-2",
+                "entity_type": "skill",
+                "slug": "<fastapi-pro>",
+                "token_usage": {
+                    "attribution": "exact",
+                    "input_tokens": 20,
+                    "output_tokens": 7,
+                    "total_tokens": 27,
+                    "cost_usd": 0.03,
+                },
+                "created_at": "2026-05-08T01:08:00Z",
+            },
         ],
     )
 
@@ -1067,6 +1153,12 @@ def test_render_runtime_lifecycle_surfaces_checks_and_open_escalations(
     assert "validation-failed" in html
     assert "&lt;type gate failed&gt;" in html
     assert "&lt;mypy failed&gt;" in html
+    assert "Tool selection" in html
+    assert "Token usage" in html
+    assert "Recent tool usage" in html
+    assert "&lt;fastapi-pro&gt;" in html
+    assert "<strong>27</strong> tokens" in html
+    assert "<span class='pill'>exact</span>" in html
 
 
 def test_render_logs_filters_and_renders(fake_claude: Path) -> None:
@@ -1654,6 +1746,7 @@ def test_monitor_route_inventory_covers_nav_and_api_routes() -> None:
         "/skillspector",
         "/wiki",
         "/graph",
+        "/recommend",
         "/manage",
         "/harness",
         "/docs",
@@ -1674,10 +1767,10 @@ def test_monitor_route_inventory_covers_nav_and_api_routes() -> None:
 
 def test_monitor_route_matchers_cover_dynamic_and_mutation_routes() -> None:
     parsed = monitor_routes.parse_request_target(
-        "/api/graph/github%2Fcli.json?type=mcp-server&limit=20",
+        "/api/graph/github%2Fcli.json?type=mcp-server&limit=20&selected=a&selected=b",
     )
     assert parsed.path == "/api/graph/github%2Fcli.json"
-    assert parsed.query == {"type": "mcp-server", "limit": "20"}
+    assert parsed.query == {"type": "mcp-server", "limit": "20", "selected": "a,b"}
 
     home = monitor_routes.match_get_route("/")
     catalog = monitor_routes.match_get_route("/catalog/")
@@ -1691,6 +1784,70 @@ def test_monitor_route_matchers_cover_dynamic_and_mutation_routes() -> None:
     entity_upsert = monitor_routes.match_post_route("/api/entity/upsert")
     assert entity_upsert is not None and entity_upsert.name == ("api_entity_upsert")
     assert monitor_routes.match_post_route("/api/nope") is None
+
+
+def test_render_recommendations_supports_selection_and_related(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_calls: list[tuple[str, int]] = []
+    related_calls: list[tuple[list[str], list[str], int]] = []
+
+    def fake_recommend_bundle(query: str, *, top_k: int) -> list[dict[str, object]]:
+        bundle_calls.append((query, top_k))
+        return [
+            {
+                "id": "skill:fastapi-pro",
+                "name": "fastapi-pro",
+                "type": "skill",
+                "normalized_score": 0.91,
+                "selection_state": "suggested",
+                "tldr": "Build FastAPI services safely.",
+                "reason": "matches api",
+            }
+        ]
+
+    def fake_recommend_related(
+        selected: list[str],
+        *,
+        rejected: list[str],
+        top_n: int,
+    ) -> list[dict[str, object]]:
+        related_calls.append((selected, rejected, top_n))
+        return [
+            {
+                "id": "mcp-server:ollama",
+                "name": "ollama",
+                "type": "mcp-server",
+                "normalized_score": 1.0,
+                "selection_state": "suggested_related",
+                "tldr": "Local model MCP.",
+                "reason": "related via selected tool",
+            }
+        ]
+
+    monkeypatch.setattr(ctx_api, "recommend_bundle", fake_recommend_bundle)
+    monkeypatch.setattr(ctx_api, "recommend_related", fake_recommend_related)
+
+    html_out = mt.render_recommendations(
+        {
+            "q": "build api",
+            "top_k": "2",
+            "selected": "skill:fastapi-pro",
+            "rejected": "agent:legacy-reviewer",
+        }
+    )
+
+    assert bundle_calls == [("build api", 2)]
+    assert related_calls == [(["skill:fastapi-pro"], ["agent:legacy-reviewer"], 2)]
+    assert "Recommendations" in html_out
+    assert "Related recommendations" in html_out
+    assert "skill:fastapi-pro" in html_out
+    assert "Build FastAPI services safely." in html_out
+    assert "matches api" in html_out
+    assert "mcp-server:ollama" in html_out
+    assert "suggested_related" in html_out
+    assert "Select all" in html_out
+    assert "Select none" in html_out
 
 
 def test_graph_api_invalid_params_return_400(
@@ -5604,6 +5761,7 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     assert "href='/docs'" in out
     assert "href='/kpi'" in out
     assert "href='/graph'" in out
+    assert "href='/recommend'" in out
     assert "href='/config'" in out
     assert "class='app-shell'" in out
     assert "class='app-header'" in out
@@ -5612,6 +5770,7 @@ def test_layout_nav_includes_wiki_and_kpi() -> None:
     assert ">Harness Setup<" in out
     assert ">Docs<" in out
     assert ">KPIs<" in out
+    assert ">Recommend<" in out
     assert ">Config<" in out
     assert "--surface" in out
     assert "--accent" in out

@@ -33,6 +33,9 @@ Public functions:
     recommend_bundle(query, *, top_k=5)
         Free-text → ranked skill/agent/MCP execution bundle.
 
+    recommend_related(selected, *, rejected=None, max_hops=2, top_n=5)
+        Selected recommendation IDs → related filtered recommendations.
+
     graph_query(seeds, *, max_hops=2, top_n=10)
         Walk the knowledge graph from seed entity names.
 
@@ -76,6 +79,7 @@ from ctx.telemetry import hash_identifier, record_event, record_exception, telem
 
 __all__ = [
     "recommend_bundle",
+    "recommend_related",
     "graph_query",
     "wiki_search",
     "wiki_get",
@@ -90,6 +94,7 @@ __all__ = [
 _default_toolbox: CtxCoreToolbox | None = None
 _TOOL_EVENT_NAMES = {
     "ctx__recommend_bundle": "ctx.api.recommend_bundle",
+    "ctx__recommend_related": "ctx.api.recommend_related",
     "ctx__graph_query": "ctx.api.graph_query",
     "ctx__wiki_search": "ctx.api.wiki_search",
     "ctx__wiki_get": "ctx.api.wiki_get",
@@ -130,6 +135,11 @@ def _safe_argument_payload(tool_name: str, arguments: dict[str, Any]) -> dict[st
     if isinstance(seeds, (list, tuple)):
         payload["ctx.seeds.count"] = len(seeds)
         payload["ctx.seeds.hash"] = _hash_json_value(list(seeds))
+    for key in ("selected", "rejected"):
+        values = arguments.get(key)
+        if isinstance(values, (list, tuple)):
+            payload[f"ctx.selection.{key}.count"] = len(values)
+            payload[f"ctx.selection.{key}.hash"] = _hash_json_value(list(values))
     slug = arguments.get("slug")
     if isinstance(slug, str):
         payload["ctx.slug.hash"] = hash_identifier(slug)
@@ -247,6 +257,33 @@ def recommend_bundle(
     payload = _call(
         "ctx__recommend_bundle",
         {"query": query, "top_k": top_k},
+    )
+    return payload.get("results", []) if "error" not in payload else []
+
+
+def recommend_related(
+    selected: list[str],
+    *,
+    rejected: list[str] | None = None,
+    max_hops: int = 2,
+    top_n: int = 5,
+) -> list[dict[str, Any]]:
+    """Return graph-related recommendations after a partial selection.
+
+    ``selected`` and ``rejected`` accept recommendation IDs such as
+    ``skill:fastapi-pro`` or bare entity names such as ``fastapi-pro``.
+    Returned rows use the same enriched recommendation contract as
+    ``recommend_bundle`` and are marked ``selection_state='suggested_related'``.
+    Empty list on missing graph or invalid inputs.
+    """
+    payload = _call(
+        "ctx__recommend_related",
+        {
+            "selected": selected,
+            "rejected": rejected or [],
+            "max_hops": max_hops,
+            "top_n": top_n,
+        },
     )
     return payload.get("results", []) if "error" not in payload else []
 

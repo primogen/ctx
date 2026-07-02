@@ -14,6 +14,8 @@ return a read-only JSON contract:
 
 - what the loop is allowed to load;
 - which skills, agents, MCP servers, and harnesses fit the current goal;
+- which related recommendations fit after the loop accepts or rejects part of a
+  previous bundle;
 - the `ctx-mcp-server` command and tool list for MCP-aware runners;
 - a dry-run harness install command only when the user declares their own
   local/API model.
@@ -41,6 +43,8 @@ python -m ctx.adapters.loopflow \
   --own-llm \
   --model-provider ollama \
   --model ollama/llama3.1 \
+  --selected local-ollama-file-operations \
+  --rejected legacy-reviewer \
   --top-k 2
 ```
 
@@ -86,6 +90,7 @@ stable.
     "tools": [
       "ctx__recommend_bundle",
       "ctx__graph_query",
+      "ctx__recommend_related",
       "ctx__wiki_search",
       "ctx__wiki_get",
       "ctx__observe_dev_event",
@@ -122,6 +127,17 @@ stable.
       {"name": "langfuse", "type": "harness", "fit_score": 1.0}
     ]
   },
+  "related_recommendations": [
+    {
+      "id": "mcp-server:ollama",
+      "name": "ollama",
+      "type": "mcp-server",
+      "tldr": "mcp-server recommendation.",
+      "reason": "related via local-ollama-file-operations; normalized score 1.000",
+      "selected": false,
+      "selection_state": "suggested_related"
+    }
+  ],
   "agent_loop": {
     "before_act": "Load only the granted capability groups from capabilities.*.",
     "on_failure": "Pass the latest failure back as last_failure before the next plan.",
@@ -145,6 +161,8 @@ ctx_payload = recommend_for_loop(
     look_at=loop.look_at,
     done_when=loop.done_when,
     last_failure=loop.last_failure_text,
+    selected=loop.selected_ctx_ids,
+    rejected=loop.rejected_ctx_ids,
     permissions={"skills", "agents", "mcps", "harnesses"},
     own_llm=runner.uses_user_owned_model,
     model_provider=runner.model_provider,
@@ -161,6 +179,9 @@ if ctx_payload["mcp_server"]["command"]:
 
 if ctx_payload["loopflow"]["use_skills"]:
     loop.add_planning_hint(ctx_payload["loopflow"]["use_skills"])
+
+for row in ctx_payload["related_recommendations"]:
+    loop.add_planning_hint(f"consider related ctx recommendation: {row['id']}")
 ```
 
 After a failed observe step, LoopFlow passes the new failure text back into the

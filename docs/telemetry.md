@@ -12,15 +12,20 @@ or runs an export.
 Events use the `ctx.telemetry.v1` envelope and OpenTelemetry-style naming:
 
 - `ctx.api.recommend_bundle`
+- `ctx.api.recommend_related`
 - `ctx.mcp.request`
 - `ctx.core.recommend_bundle`
+- `ctx.core.recommend_related`
 - `ctx.runtime_lifecycle.record`
 - `ctx.cli.run`
 - `ctx.cli.resume`
 
 Outcome and dimensions live in attributes such as `otel.status_code`,
-`ctx.operation`, `ctx.tool.name`, `ctx.result.count`, and hashed identifiers like
-`ctx.query.hash`, `ctx.slug.hash`, or `ctx.session.hash`.
+`ctx.operation`, `ctx.tool.name`, `ctx.result.count`,
+`ctx.selection.selected.count`, `ctx.selection.rejected.count`,
+`ctx.selection.source`, `ctx.selection.selected`, `ctx.usage.attribution`, and
+hashed identifiers like `ctx.query.hash`, `ctx.slug.hash`, or
+`ctx.session.hash`.
 
 Every recorded event gets a generated OpenTelemetry-compatible `trace_id` and
 `span_id` when the caller does not provide one. OTLP export maps those to the
@@ -44,6 +49,20 @@ Metrics use a separate spool, checkpoint, and status file:
 
 Metric checkpointing is independent from event/log checkpointing, so replaying
 or repairing one signal does not advance the other.
+
+Runtime lifecycle token usage emits OTel-style metric names when a host records
+`ctx__mark_entity_used.token_usage`:
+
+- `ctx.tool_usage.records` counts usage records by entity type and attribution.
+- `ctx.tool_usage.tokens` counts total tokens when the record has a
+  non-negative `total_tokens` value.
+- `ctx.tool_usage.tokens_per_record` observes the same total as a histogram.
+
+Attribution is always explicit through `ctx.usage.attribution`:
+`exact`, `estimated`, or `unavailable`. The built-in `ctx run` provider totals
+are session-scoped and are labeled as unavailable for per-tool attribution; ctx
+does not split session totals across selected tools. Exact per-tool rows require
+the host or runner to provide usage for that specific entity.
 
 ## Privacy Defaults
 

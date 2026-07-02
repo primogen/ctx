@@ -2,9 +2,9 @@
 
 This is the integration point that makes the alive skill system
 available to ANY LLM running through the generic harness. The
-toolbox wraps the read-only query surface of ctx.core — graph
-walks, skill/agent/MCP recommendations, wiki search — as
-``ToolDefinition``/dispatcher pairs that slot into ``run_loop``.
+toolbox wraps ctx-core recommendation, graph/wiki, and runtime
+lifecycle surfaces as ``ToolDefinition``/dispatcher pairs that slot
+into ``run_loop``.
 
 Tools exposed (all namespaced under the ``ctx__`` prefix, matching
 the MCP router's separator convention so the harness can route to
@@ -13,7 +13,12 @@ MCP servers):
 
     ctx__recommend_bundle(query, top_k=5)
         Free-text → top-K cross-type bundle (skill + agent + MCP).
-        Tokenizes the query into tags, walks the graph.
+        Tokenizes the query into tags, walks the graph, and returns
+        enriched rows with id, tldr, reason, and selection metadata.
+
+    ctx__recommend_related(selected, rejected=None, max_hops=2, top_n=5)
+        Selected/rejected recommendation IDs → graph-related rows.
+        Excludes selected, rejected, unavailable, and deprecated nodes.
 
     ctx__graph_query(seeds, max_hops=2, top_n=10)
         Direct graph walk from a list of seed entity names.
@@ -28,9 +33,11 @@ MCP servers):
         Fetch a single entity page by slug — returns its full
         frontmatter + body for the model to reason about.
 
-Load/unload tools are explicit lifecycle records, not filesystem
+Load/unload/use tools are explicit lifecycle records, not filesystem
 auto-installs. The host remains responsible for asking the user and
-deciding how to place selected entities into context.
+deciding how to place selected entities into context. Per-entity
+token usage is recorded only when the host supplies explicit
+``ctx__mark_entity_used.token_usage`` attribution.
 
 Plan 001 Phase H6.
 """
@@ -65,6 +72,23 @@ _logger = logging.getLogger(__name__)
 # anything else falls back to its normal tool_executor.
 _NAMESPACE = f"ctx{TOOL_SEPARATOR}"
 _FILE_SIGNATURE_SAMPLE_BYTES = 64 * 1024
+_RECOMMENDATION_ENTITY_TYPE_ALIASES = {
+    "agent": "agent",
+    "harness": "harness",
+    "mcp": "mcp-server",
+    "mcp-server": "mcp-server",
+    "mcp-servers": "mcp-server",
+    "skill": "skill",
+}
+_RELATED_BLOCKED_STATUSES = {
+    "archived",
+    "deleted",
+    "deprecated",
+    "disabled",
+    "removed",
+    "stale",
+    "unavailable",
+}
 SUPPORTED_RESPONSE_FORMATS = ("json", "gcf")
 _RESPONSE_FORMAT_PROPERTY = {
     "type": "string",
@@ -156,6 +180,11 @@ def _safe_tool_payload(local_name: str, args: Mapping[str, Any]) -> dict[str, An
     if isinstance(seeds, (list, tuple)):
         payload["ctx.seeds.count"] = len(seeds)
         payload["ctx.seeds.hash"] = _hash_json_value(list(seeds))
+    for key in ("selected", "rejected"):
+        values = args.get(key)
+        if isinstance(values, (list, tuple)):
+            payload[f"ctx.selection.{key}.count"] = len(values)
+            payload[f"ctx.selection.{key}.hash"] = _hash_json_value(list(values))
     slug = args.get("slug")
     if isinstance(slug, str):
         payload["ctx.slug.hash"] = hash_identifier(slug)
@@ -230,6 +259,7 @@ def _record_core_tool_event(
 
 _CORE_EVENT_NAMES = {
     "recommend_bundle": "ctx.core.recommend_bundle",
+    "recommend_related": "ctx.core.recommend_related",
     "graph_query": "ctx.core.graph_query",
     "wiki_search": "ctx.core.wiki_search",
     "wiki_get": "ctx.core.wiki_get",
@@ -375,6 +405,48 @@ class CtxCoreToolbox:
                 },
             ),
             ToolDefinition(
+                name=f"{_NAMESPACE}recommend_related",
+                description=(
+                    "Recommend related skills / agents / MCP servers after "
+                    "the user selected a subset of an initial bundle. "
+                    "Filters out selected and rejected recommendation IDs."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "selected": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Selected recommendation IDs or names, such as "
+                                "'skill:fastapi-pro' or 'fastapi-pro'."
+                            ),
+                            "minItems": 1,
+                        },
+                        "rejected": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Rejected recommendation IDs or names to exclude.",
+                        },
+                        "max_hops": {
+                            "type": "integer",
+                            "description": "Graph walk depth. Default 2.",
+                            "minimum": 1,
+                            "maximum": 4,
+                        },
+                        "top_n": {
+                            "type": "integer",
+                            "description": "How many related recommendations. Default 5.",
+                            "minimum": 1,
+                            "maximum": 50,
+                        },
+                        "output_format": dict(_RESPONSE_FORMAT_PROPERTY),
+                        "_response_format": dict(_RESPONSE_FORMAT_PROPERTY),
+                    },
+                    "required": ["selected"],
+                },
+            ),
+            ToolDefinition(
                 name=f"{_NAMESPACE}wiki_search",
                 description=(
                     "Keyword search across the llm-wiki entity pages "
@@ -452,6 +524,8 @@ class CtxCoreToolbox:
             try:
                 if local_name == "recommend_bundle":
                     result = self._dispatch_recommend(args)
+                elif local_name == "recommend_related":
+                    result = self._dispatch_recommend_related(args)
                 elif local_name == "graph_query":
                     result = self._dispatch_graph_query(args)
                 elif local_name == "wiki_search":
@@ -555,25 +629,27 @@ class CtxCoreToolbox:
             semantic_cache_dir=semantic_cache_dir,
         )
         results = [
-            {
-                "name": r["name"],
-                "type": r["type"],
-                "score": r["score"],
-                "normalized_score": r.get("normalized_score"),
-                "matching_tags": r.get("matching_tags", []),
-                "external": r.get("external", False),
-                "external_catalog": r.get("external_catalog"),
-                "source_catalog": r.get("source_catalog"),
-                "status": r.get("status"),
-                "source": r.get("source"),
-                "skill_id": r.get("skill_id"),
-                "installs": r.get("installs"),
-                "detail_url": r.get("detail_url"),
-                "install_command": r.get("install_command"),
-                "category": r.get("category"),
-                "invoke_command": r.get("invoke_command"),
-                "security_review": r.get("security_review"),
-            }
+            _with_recommendation_selection_metadata(
+                {
+                    "name": r["name"],
+                    "type": r["type"],
+                    "score": r["score"],
+                    "normalized_score": r.get("normalized_score"),
+                    "matching_tags": r.get("matching_tags", []),
+                    "external": r.get("external", False),
+                    "external_catalog": r.get("external_catalog"),
+                    "source_catalog": r.get("source_catalog"),
+                    "status": r.get("status"),
+                    "source": r.get("source"),
+                    "skill_id": r.get("skill_id"),
+                    "installs": r.get("installs"),
+                    "detail_url": r.get("detail_url"),
+                    "install_command": r.get("install_command"),
+                    "category": r.get("category"),
+                    "invoke_command": r.get("invoke_command"),
+                    "security_review": r.get("security_review"),
+                }
+            )
             for r in raw
         ]
         model_provider = _optional_str(args.get("model_provider"))
@@ -594,6 +670,79 @@ class CtxCoreToolbox:
                 "tags": tags,
                 "results": results,
                 "companion_harnesses": companion_harnesses,
+            },
+            _response_format_from_args(args),
+        )
+
+    def _dispatch_recommend_related(self, args: dict[str, Any]) -> str:
+        selected_raw = args.get("selected") or []
+        if not isinstance(selected_raw, list) or not selected_raw:
+            return json.dumps({"error": "selected must be a non-empty list", "results": []})
+        selected = _recommendation_selection_values(selected_raw)
+        if not selected:
+            return json.dumps(
+                {
+                    "error": "selected must contain recommendation IDs or names",
+                    "results": [],
+                }
+            )
+
+        rejected_raw = args.get("rejected") or []
+        rejected = (
+            _recommendation_selection_values(rejected_raw) if isinstance(rejected_raw, list) else []
+        )
+        excluded = _recommendation_selection_keys(selected + rejected)
+        max_hops = _clamp_int(args.get("max_hops"), default=2, lo=1, hi=4)
+        top_n = _clamp_int(args.get("top_n"), default=5, lo=1, hi=50)
+
+        graph = self._ensure_graph()
+        if graph.number_of_nodes() == 0:
+            return json.dumps(
+                {
+                    "error": "knowledge graph not available; run ctx-wiki-graphify",
+                    "results": [],
+                }
+            )
+
+        seed_ids = _recommendation_selection_node_ids(graph, selected)
+        raw = _resolve_related_recommendation_rows(
+            graph,
+            seed_ids,
+            max_hops=max_hops,
+            top_n=min(50, top_n + len(excluded) + 5),
+        )
+        results: list[dict[str, Any]] = []
+        for r in raw:
+            candidate_keys = _recommendation_selection_keys(
+                [_recommendation_identity(r), str(r.get("name") or "")]
+            )
+            if candidate_keys & excluded:
+                continue
+            shared_tags = r.get("shared_tags", [])
+            row = _with_recommendation_selection_metadata(
+                {
+                    "name": r["name"],
+                    "type": r["type"],
+                    "score": r["score"],
+                    "normalized_score": r.get("normalized_score"),
+                    "matching_tags": shared_tags,
+                    "shared_tags": shared_tags,
+                    "status": r.get("status"),
+                    "via": r.get("via", []),
+                }
+            )
+            row["selection_state"] = "suggested_related"
+            row["related_to"] = r.get("via", [])
+            row["reason"] = _related_recommendation_reason(row)
+            results.append(row)
+            if len(results) >= top_n:
+                break
+
+        return _encode_response(
+            {
+                "selected": selected,
+                "rejected": rejected,
+                "results": results,
             },
             _response_format_from_args(args),
         )
@@ -753,6 +902,9 @@ class CtxCoreToolbox:
                     security_scan=(
                         _dict_arg(args.get("security_scan")) if "security_scan" in args else None
                     ),
+                    selected=_optional_bool(args.get("selected")),
+                    selection_source=str(args.get("selection_source") or "") or None,
+                    source_context=_dict_arg(args.get("source_context")),
                 )
             elif name == "mark_entity_used":
                 result = self._lifecycle.mark_entity_used(
@@ -760,6 +912,9 @@ class CtxCoreToolbox:
                     entity_type=str(args.get("entity_type") or ""),
                     slug=str(args.get("slug") or ""),
                     evidence=str(args.get("evidence") or "") or None,
+                    token_usage=(
+                        _dict_arg(args.get("token_usage")) if "token_usage" in args else None
+                    ),
                 )
             elif name == "unload_entity":
                 result = self._lifecycle.unload_entity(
@@ -1086,6 +1241,244 @@ def _optional_str(raw: Any) -> str | None:
     return value or None
 
 
+def _clip_recommendation_text(value: str, *, max_chars: int = 160) -> str:
+    text = " ".join(value.split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "..."
+
+
+def _recommendation_identity(row: Mapping[str, Any]) -> str:
+    entity_type = str(row.get("type") or "tool").strip() or "tool"
+    name = str(row.get("name") or "unknown").strip() or "unknown"
+    return f"{entity_type}:{name}"
+
+
+def _recommendation_tags(row: Mapping[str, Any]) -> list[str]:
+    raw = row.get("matching_tags", [])
+    if not isinstance(raw, list):
+        return []
+    return [str(tag).strip() for tag in raw if str(tag).strip()]
+
+
+def _recommendation_tldr(row: Mapping[str, Any]) -> str:
+    description = (
+        _optional_str(row.get("description"))
+        or _optional_str(row.get("summary"))
+        or _optional_str(row.get("title"))
+    )
+    if description:
+        return _clip_recommendation_text(description)
+
+    entity_type = str(row.get("type") or "tool").strip() or "tool"
+    category = _optional_str(row.get("category"))
+    tags = _recommendation_tags(row)
+    if tags:
+        prefix = f"{category} {entity_type}" if category else entity_type
+        return _clip_recommendation_text(f"{prefix} matching {', '.join(tags[:4])}.")
+
+    catalog = _optional_str(row.get("source_catalog")) or _optional_str(row.get("external_catalog"))
+    if bool(row.get("external")) and catalog:
+        return _clip_recommendation_text(f"External {entity_type} from {catalog}.")
+    return _clip_recommendation_text(f"{entity_type} recommendation.")
+
+
+def _recommendation_reason(row: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    tags = _recommendation_tags(row)
+    if tags:
+        parts.append(f"matches tags {', '.join(tags[:6])}")
+    category = _optional_str(row.get("category"))
+    if category:
+        parts.append(f"category {category}")
+    source = _optional_str(row.get("source_catalog")) or _optional_str(row.get("source"))
+    if source:
+        parts.append(f"source {source}")
+    normalized_score = row.get("normalized_score")
+    if isinstance(normalized_score, (int, float)):
+        parts.append(f"normalized score {float(normalized_score):.3f}")
+    if not parts:
+        return "Ranked by ctx recommendation graph."
+    return _clip_recommendation_text("; ".join(parts), max_chars=220)
+
+
+def _with_recommendation_selection_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    enriched = dict(row)
+    enriched["id"] = _recommendation_identity(row)
+    enriched["tldr"] = _recommendation_tldr(row)
+    enriched["reason"] = _recommendation_reason(row)
+    enriched["selected"] = False
+    enriched["selection_state"] = "suggested"
+    return enriched
+
+
+def _recommendation_selection_values(values: list[Any]) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, Mapping):
+            raw = value.get("id") or (
+                f"{value.get('type')}:{value.get('name')}"
+                if value.get("type") and value.get("name")
+                else value.get("name")
+            )
+        else:
+            raw = value
+        if not isinstance(raw, str):
+            continue
+        item = raw.strip()
+        if not item:
+            continue
+        key = _recommendation_selection_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(item)
+    return selected
+
+
+def _recommendation_selection_keys(values: list[str]) -> set[str]:
+    keys: set[str] = set()
+    for value in values:
+        item = str(value or "").strip().lower()
+        if not item:
+            continue
+        keys.add(_recommendation_selection_key(item))
+    return keys
+
+
+def _recommendation_selection_key(value: str) -> str:
+    entity_type, name = _recommendation_selection_parts(value)
+    if entity_type is not None:
+        return f"{entity_type}:{name.lower()}"
+    return name.lower()
+
+
+def _recommendation_selection_parts(value: str) -> tuple[str | None, str]:
+    item = str(value or "").strip()
+    if ":" not in item:
+        return None, item
+    raw_type, raw_name = item.split(":", 1)
+    entity_type = _RECOMMENDATION_ENTITY_TYPE_ALIASES.get(raw_type.strip().lower())
+    name = raw_name.strip()
+    if entity_type is None or not name:
+        return None, item
+    return entity_type, name
+
+
+def _recommendation_selection_node_ids(graph: Any, values: list[str]) -> set[str]:
+    node_ids: set[str] = set()
+    for value in values:
+        entity_type, name = _recommendation_selection_parts(value)
+        if not name:
+            continue
+        if entity_type is not None:
+            node_id = f"{entity_type}:{name}"
+            if node_id in graph:
+                node_ids.add(node_id)
+            continue
+        for candidate_type in RECOMMENDABLE_ENTITY_TYPES:
+            node_id = f"{candidate_type}:{name}"
+            if node_id in graph:
+                node_ids.add(node_id)
+    return node_ids
+
+
+def _resolve_related_recommendation_rows(
+    graph: Any,
+    seed_ids: set[str],
+    *,
+    max_hops: int,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    if not seed_ids:
+        return []
+    scores: dict[str, float] = {}
+    via: dict[str, list[str]] = {}
+    shared_tags_map: dict[str, list[str]] = {}
+    visited = set(seed_ids)
+    frontier = list(seed_ids)
+
+    for hop in range(max_hops):
+        next_frontier: list[str] = []
+        decay = 1.0 / (hop + 1)
+        for node_id in frontier:
+            for neighbor in graph.neighbors(node_id):
+                if neighbor in seed_ids or not _related_node_is_recommendable(graph, neighbor):
+                    continue
+                edge_data = graph[node_id][neighbor]
+                try:
+                    weight = float(edge_data.get("weight", 1)) * decay
+                except (TypeError, ValueError):
+                    weight = decay
+                scores[neighbor] = scores.get(neighbor, 0.0) + weight
+                seed_label = node_id.split(":", 1)[-1]
+                via.setdefault(neighbor, [])
+                if seed_label not in via[neighbor]:
+                    via[neighbor].append(seed_label)
+                shared_tags_map.setdefault(neighbor, [])
+                for tag in edge_data.get("shared_tags", []):
+                    if tag not in shared_tags_map[neighbor]:
+                        shared_tags_map[neighbor].append(tag)
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    next_frontier.append(neighbor)
+        frontier = next_frontier
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:top_n]
+    max_score = max((score for _, score in ranked), default=0.0) or 1.0
+    results: list[dict[str, Any]] = []
+    for node_id, score in ranked:
+        node_data = graph.nodes.get(node_id, {})
+        entity_type = str(node_data.get("type") or node_id.split(":", 1)[0])
+        name = str(node_data.get("label") or node_id.split(":", 1)[-1])
+        results.append(
+            {
+                "name": name,
+                "type": entity_type,
+                "score": round(score, 2),
+                "normalized_score": round(score / max_score, 4),
+                "shared_tags": shared_tags_map.get(node_id, [])[:8],
+                "via": via.get(node_id, [])[:4],
+                "status": node_data.get("status"),
+            }
+        )
+    return results
+
+
+def _related_node_is_recommendable(graph: Any, node_id: str) -> bool:
+    node_data = graph.nodes.get(node_id, {})
+    entity_type = str(node_data.get("type") or node_id.split(":", 1)[0])
+    if entity_type not in RECOMMENDABLE_ENTITY_TYPES:
+        return False
+    status = str(node_data.get("status") or "").strip().lower()
+    if status in _RELATED_BLOCKED_STATUSES:
+        return False
+    return not _truthy_recommendation_flag(node_data.get("never_load"))
+
+
+def _truthy_recommendation_flag(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _related_recommendation_reason(row: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    via = row.get("via", [])
+    if isinstance(via, list) and via:
+        parts.append(f"related via {', '.join(str(v) for v in via[:4])}")
+    tags = _recommendation_tags(row)
+    if tags:
+        parts.append(f"shares tags {', '.join(tags[:6])}")
+    normalized_score = row.get("normalized_score")
+    if isinstance(normalized_score, (int, float)):
+        parts.append(f"normalized score {float(normalized_score):.3f}")
+    if not parts:
+        return "Related by ctx recommendation graph."
+    return _clip_recommendation_text("; ".join(parts), max_chars=220)
+
+
 def _recommend_companion_harnesses(
     query: str,
     *,
@@ -1171,6 +1564,28 @@ def _lifecycle_tool_definitions(
                     "entity_type": entity_type,
                     "slug": slug,
                     "reason": {"type": "string"},
+                    "selected": {
+                        "type": "boolean",
+                        "description": (
+                            "True when the entity was explicitly selected from "
+                            "ctx recommendations. Defaults to true for user loads."
+                        ),
+                    },
+                    "selection_source": {
+                        "type": "string",
+                        "enum": ["user", "system", "host", "unknown"],
+                        "description": (
+                            "Who selected or activated the entity: user, system, "
+                            "host, or unknown. Default user."
+                        ),
+                    },
+                    "source_context": {
+                        "type": "object",
+                        "description": (
+                            "Optional privacy-sanitized context such as the "
+                            "recommendation surface or workflow that caused activation."
+                        ),
+                    },
                     "security_scan": {
                         "type": "object",
                         "description": (
@@ -1194,6 +1609,28 @@ def _lifecycle_tool_definitions(
                     "entity_type": entity_type,
                     "slug": slug,
                     "evidence": {"type": "string"},
+                    "token_usage": {
+                        "type": "object",
+                        "description": (
+                            "Optional per-tool usage evidence. Only pass exact "
+                            "token counts when the host/provider can attribute "
+                            "them to this entity; otherwise set attribution to "
+                            "estimated or unavailable."
+                        ),
+                        "properties": {
+                            "attribution": {
+                                "type": "string",
+                                "enum": ["exact", "estimated", "unavailable"],
+                            },
+                            "input_tokens": {"type": "integer", "minimum": 0},
+                            "output_tokens": {"type": "integer", "minimum": 0},
+                            "total_tokens": {"type": "integer", "minimum": 0},
+                            "cost_usd": {"type": "number", "minimum": 0},
+                            "attribution_reason": {"type": "string"},
+                            "provider": {"type": "string"},
+                            "model": {"type": "string"},
+                        },
+                    },
                 },
                 "required": ["session_id", "entity_type", "slug"],
             },
@@ -1331,6 +1768,10 @@ def _float_arg(raw: Any) -> float:
         return float(raw) if raw is not None else 0.0
     except (TypeError, ValueError):
         return 0.0
+
+
+def _optional_bool(raw: Any) -> bool | None:
+    return raw if isinstance(raw, bool) else None
 
 
 def _excerpt(body: str, max_chars: int) -> str:

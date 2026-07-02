@@ -197,9 +197,10 @@ The helper `resolve_graph.load_graph()` does this for you.
 
 The graph backs these recommendation paths:
 
-- Execution recommendation surfaces (`ctx.recommend_bundle`, MCP
-  `ctx__recommend_bundle`, generic harness tools, LoopFlow/agent-loop
-  adapter capability recommendations, Claude Code hook suggestions, and
+- Execution recommendation surfaces (`ctx.recommend_bundle`,
+  `ctx.recommend_related`, MCP `ctx__recommend_bundle` /
+  `ctx__recommend_related`, generic harness tools, LoopFlow/agent-loop
+  adapter capability and related recommendations, Claude Code hook suggestions, and
   repo-scan advisory output) share
   `ctx.core.resolve.recommendations.recommend_by_tags` for skills,
   agents, and MCP servers. That engine ranks candidates by

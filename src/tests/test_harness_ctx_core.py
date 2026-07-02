@@ -415,6 +415,7 @@ class TestToolDefinitions:
         names = [d.name for d in defs]
         assert set(names) == {
             "ctx__recommend_bundle",
+            "ctx__recommend_related",
             "ctx__graph_query",
             "ctx__wiki_search",
             "ctx__wiki_get",
@@ -449,6 +450,7 @@ class TestToolDefinitions:
     ) -> None:
         read_tools = {
             "ctx__recommend_bundle",
+            "ctx__recommend_related",
             "ctx__graph_query",
             "ctx__wiki_search",
             "ctx__wiki_get",
@@ -586,12 +588,25 @@ class TestRuntimeLifecycle:
         import ctx.adapters.generic.runtime_lifecycle as runtime_lifecycle
 
         events: list[dict[str, Any]] = []
+        metrics: list[tuple[str, str, float, str, dict[str, Any]]] = []
 
         def capture_record_event(event_name: str, **kwargs: Any) -> None:
             events.append({"event_name": event_name, **kwargs})
 
+        def capture_counter(name: str, **kwargs: Any) -> None:
+            metrics.append(
+                ("counter", name, float(kwargs["value"]), kwargs["unit"], kwargs["attributes"])
+            )
+
+        def capture_histogram(name: str, **kwargs: Any) -> None:
+            metrics.append(
+                ("histogram", name, float(kwargs["value"]), kwargs["unit"], kwargs["attributes"])
+            )
+
         monkeypatch.setattr(core_tools, "record_event", capture_record_event)
         monkeypatch.setattr(runtime_lifecycle, "record_event", capture_record_event)
+        monkeypatch.setattr(runtime_lifecycle, "record_counter", capture_counter)
+        monkeypatch.setattr(runtime_lifecycle, "record_histogram", capture_histogram)
 
         result = json.loads(
             toolbox.dispatch(
@@ -608,9 +623,36 @@ class TestRuntimeLifecycle:
         )
 
         assert result["ok"] is True
+        used = json.loads(
+            toolbox.dispatch(
+                ToolCall(
+                    id="c2",
+                    name="ctx__mark_entity_used",
+                    arguments={
+                        "session_id": "s-1",
+                        "entity_type": "skill",
+                        "slug": "fastapi-pro",
+                        "token_usage": {
+                            "attribution": "exact",
+                            "input_tokens": 12,
+                            "output_tokens": 8,
+                            "provider": "test",
+                            "model": "local-test",
+                        },
+                    },
+                )
+            )
+        )
+        assert used["event"]["token_usage"]["total_tokens"] == 20
         event_names = [event["event_name"] for event in events]
         assert "ctx.runtime_lifecycle.record" in event_names
         assert "ctx.core.lifecycle" in event_names
+        assert [metric[1] for metric in metrics] == [
+            "ctx.tool_usage.records",
+            "ctx.tool_usage.tokens",
+            "ctx.tool_usage.tokens_per_record",
+        ]
+        assert {metric[4]["ctx.usage.attribution"] for metric in metrics} == {"exact"}
         for event in events:
             payload = event["payload"]
             assert payload["otel.status_code"] == "OK"
@@ -638,6 +680,9 @@ class TestRuntimeLifecycle:
                     "session_id": "s-1",
                     "entity_type": "skill",
                     "slug": "fastapi-pro",
+                    "selected": True,
+                    "selection_source": "user",
+                    "source_context": {"surface": "ctx-recommend"},
                 },
             ),
             (
@@ -699,6 +744,9 @@ class TestRuntimeLifecycle:
             "unload_requested",
             "session_end",
         ]
+        assert events[1]["selected"] is True
+        assert events[1]["selection_source"] == "user"
+        assert events[1]["source_context"] == {"surface": "ctx-recommend"}
 
     def test_bound_session_id_is_hidden_and_enforced(self, tmp_path: Path) -> None:
         toolbox = CtxCoreToolbox(
@@ -819,6 +867,9 @@ class TestRuntimeLifecycle:
             )
         )
         assert state["loaded"][0]["security_scan"]["status"] == "not_provided"
+        assert state["loaded"][0]["selected"] is True
+        assert state["loaded"][0]["selection_source"] == "user"
+        assert state["loaded"][0]["source_context"] == {}
 
     def test_skill_load_accepts_security_scan_proof(
         self,
@@ -895,7 +946,7 @@ class TestRuntimeLifecycle:
         self,
         toolbox: CtxCoreToolbox,
     ) -> None:
-        for name, arguments in [
+        calls: list[tuple[str, dict[str, Any]]] = [
             (
                 "ctx__load_entity",
                 {
@@ -919,9 +970,16 @@ class TestRuntimeLifecycle:
                     "entity_type": "agent",
                     "slug": "code-reviewer",
                     "evidence": "reviewed diff",
+                    "token_usage": {
+                        "attribution": "exact",
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cost_usd": 0.01,
+                    },
                 },
             ),
-        ]:
+        ]
+        for name, arguments in calls:
             toolbox.dispatch(ToolCall(id="c1", name=name, arguments=arguments))
 
         result = json.loads(
@@ -936,6 +994,18 @@ class TestRuntimeLifecycle:
 
         assert result["ok"] is True
         assert [entry["slug"] for entry in result["used"]] == ["code-reviewer"]
+        assert result["used"][0]["token_usage"] == {
+            "records": 1,
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "cost_usd": 0.01,
+            "by_attribution": {
+                "estimated": 0,
+                "exact": 1,
+                "unavailable": 0,
+            },
+        }
         assert [entry["slug"] for entry in result["unload_candidates"]] == [
             "fastapi-pro",
         ]
@@ -1345,6 +1415,30 @@ class TestGraphQuery:
         names = [r["name"] for r in result["results"]]
         # Direct neighbours: fastapi-pro + code-reviewer.
         assert "fastapi-pro" in names or "code-reviewer" in names
+
+        related = json.loads(
+            toolbox.dispatch(
+                ToolCall(
+                    id="c2",
+                    name="ctx__recommend_related",
+                    arguments={
+                        "selected": ["skill:python-patterns"],
+                        "rejected": ["skill:fastapi-pro"],
+                        "top_n": 5,
+                        "max_hops": 1,
+                    },
+                )
+            )
+        )
+        related_names = [r["name"] for r in related["results"]]
+        assert "python-patterns" not in related_names
+        assert "fastapi-pro" not in related_names
+        reviewer = next(r for r in related["results"] if r["name"] == "code-reviewer")
+        assert reviewer["id"] == "agent:code-reviewer"
+        assert reviewer["selected"] is False
+        assert reviewer["selection_state"] == "suggested_related"
+        assert reviewer["related_to"] == ["python-patterns"]
+        assert "python-patterns" in reviewer["reason"]
 
     def test_missing_seeds(self, toolbox: CtxCoreToolbox) -> None:
         result = json.loads(

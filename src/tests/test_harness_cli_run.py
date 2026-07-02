@@ -705,6 +705,15 @@ class TestRunCommand:
         assert payload["final_message"] == "final answer"
         assert "usage" in payload
         assert "session_id" in payload
+        assert payload["usage_attribution"] == {
+            "scope": "session",
+            "attribution": "unavailable",
+            "attribution_reason": run_cli._SESSION_USAGE_ATTRIBUTION_REASON,
+            "input_tokens": 5,
+            "output_tokens": 3,
+            "total_tokens": 8,
+            "cost_usd": None,
+        }
 
     def test_model_required(
         self,
@@ -922,8 +931,18 @@ class TestRunCommand:
             "finished",
         ]
         assert cli_events[0]["payload"]["ctx.task.length"] == len("hi")
-        assert cli_events[-1]["payload"]["ctx.stop_reason"] == "completed"
+        finished_payload = cli_events[-1]["payload"]
+        assert finished_payload["ctx.stop_reason"] == "completed"
+        assert finished_payload["ctx.usage.scope"] == "session"
+        assert finished_payload["ctx.usage.attribution"] == "unavailable"
+        assert (
+            finished_payload["ctx.usage.attribution_reason"]
+            == run_cli._SESSION_USAGE_ATTRIBUTION_REASON
+        )
         assert "hi" not in json.dumps([event["payload"] for event in cli_events])
+        system_prompt = fake_litellm._calls[0]["messages"][0]["content"]
+        assert "ctx__mark_entity_used.token_usage" in system_prompt
+        assert "do not allocate session totals across tools" in system_prompt
         tool = next(
             item
             for item in fake_litellm._calls[0]["tools"]
@@ -1476,6 +1495,11 @@ class TestResumeCommand:
         lifecycle_dir = tmp_path / "runtime"
         monkeypatch.setenv("CTX_RUNTIME_LIFECYCLE_DIR", str(lifecycle_dir))
         monkeypatch.setattr(runtime_lifecycle, "telemetry_enabled", lambda: False)
+        monkeypatch.setattr(
+            runtime_lifecycle,
+            "record_event",
+            lambda *args, **kwargs: pytest.fail("disabled telemetry should not emit"),
+        )
 
         exit_code = main(
             [
@@ -1494,7 +1518,15 @@ class TestResumeCommand:
 
         assert exit_code == 0
         capsys.readouterr()
-        assert not (lifecycle_dir / "events.jsonl").exists()
+        events = [
+            json.loads(line)
+            for line in (lifecycle_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert [event["action"] for event in events] == [
+            "dev_event",
+            "session_end",
+        ]
+        assert all(event["session_id"] == "lifecycle-disabled" for event in events)
 
     def test_resume_reuses_recorded_provider_settings(
         self,

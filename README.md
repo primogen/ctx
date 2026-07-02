@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![PyPI](https://img.shields.io/pypi/v/claude-ctx.svg)](https://pypi.org/project/claude-ctx/)
-[![Tests](https://img.shields.io/badge/Tests-4429_inventory-brightgreen.svg)](https://github.com/stevesolun/ctx/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/Tests-4433_inventory-brightgreen.svg)](https://github.com/stevesolun/ctx/actions/workflows/test.yml)
 [![Graph](https://img.shields.io/badge/Graph-79%2C958_nodes_/_1%2C778%2C069_edges-red.svg)](https://stevesolun.github.io/ctx/knowledge-graph/)
 [![Skills](https://img.shields.io/badge/Skills-68%2C494-blue.svg)](https://stevesolun.github.io/ctx/catalog/?type=skill)
 [![Agents](https://img.shields.io/badge/Agents-467-purple.svg)](https://stevesolun.github.io/ctx/catalog/?type=agent)
@@ -44,9 +44,11 @@ Current shipped snapshot:
 
 The canonical QA tracker is
 [`qa/feature_status.csv`](qa/feature_status.csv). The supporting feature ledger
-[`docs/qa/feature-user-story-status.csv`](docs/qa/feature-user-story-status.csv)
-and dashboard-specific ledger
-[`docs/qa/dashboard-user-story-status.csv`](docs/qa/dashboard-user-story-status.csv)
+[`docs/qa/feature-user-story-status.csv`](docs/qa/feature-user-story-status.csv),
+dashboard-specific ledger
+[`docs/qa/dashboard-user-story-status.csv`](docs/qa/dashboard-user-story-status.csv),
+and tool-selection/token-history ledger
+[`qa/tool-selection-token-history/tracker.csv`](qa/tool-selection-token-history/tracker.csv)
 are supporting detail ledgers that feed that root tracker; canonical status and
 release readiness stay in `qa/feature_status.csv`.
 Rows for public MkDocs pages use the exact `docs/...md` path from `mkdocs.yml`
@@ -121,6 +123,7 @@ ctx-harness-install text-to-cad --dry-run   # inspect before cloning/running any
 ctx-harness-install text-to-cad             # install after reviewing the plan
 ctx-harness-install text-to-cad --update --dry-run
 ctx-harness-install text-to-cad --uninstall --dry-run
+ctx-recommend "fix FastAPI auth" --selected skill:fastapi-pro --json  # related suggestions
 python -m ctx --help      # same run/resume/sessions CLI as the ctx script
 python -m ctx.adapters.loopflow --goal "fix checkout e2e" --permissions skills,agents,mcps
 ctx-skill-quality list     # four-signal quality score for every skill
@@ -145,7 +148,7 @@ docs tracker checks before the strict MkDocs build. Use `--profile full` before
 release work to force the source/package gates even for docs-only or graph-only
 changes.
 
-The **`ctx-monitor`** dashboard shows currently loaded skills, agents, MCP servers, installed harness records, and generic-harness validation/escalation state. It provides load/unload buttons where ctx owns the live action, a graph view (`/graph?slug=...`), the LLM-wiki entity browser (`/wiki/<slug>`), a filterable skills grid, a session timeline, audit/runtime log views, and a live SSE event stream. Installed harness records appear in `/loaded`; harness pages appear in `/wiki` and `/graph`. Harness install/update/uninstall actions stay in `ctx-harness-install`.
+The **`ctx-monitor`** dashboard shows currently loaded skills, agents, MCP servers, installed harness records, selectable recommendations (`/recommend`), and generic-harness validation/escalation plus tool-selection/token-usage state (`/runtime`). It provides load/unload buttons where ctx owns the live action, a graph view (`/graph?slug=...`), the LLM-wiki entity browser (`/wiki/<slug>`), a filterable skills grid, a session timeline, audit/runtime log views, and a live SSE event stream. Installed harness records appear in `/loaded`; harness pages appear in `/wiki` and `/graph`. Harness install/update/uninstall actions stay in `ctx-harness-install`.
 
 When `ctx-skill-add`, `ctx-agent-add`, `ctx-mcp-add`, or `ctx-harness-add`
 finds an existing entity, ctx prints a benefits/risks update review and skips

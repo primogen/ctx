@@ -32,9 +32,11 @@ This puts `ctx-mcp-server` on your PATH. Then wire it into your host:
 claude mcp add ctx-wiki -- ctx-mcp-server
 ```
 
-The tools `ctx__recommend_bundle`, `ctx__graph_query`, `ctx__wiki_search`,
-`ctx__wiki_get` appear to Claude on the next turn. Ask
-"What skills help with FastAPI auth?" and it will call them.
+The tools `ctx__recommend_bundle`, `ctx__recommend_related`,
+`ctx__graph_query`, `ctx__wiki_search`, and `ctx__wiki_get` appear to
+Claude on the next turn, alongside runtime lifecycle tools such as
+`ctx__load_entity`, `ctx__mark_entity_used`, and `ctx__session_state`.
+Ask "What skills help with FastAPI auth?" and it will call them.
 
 ### Claude Agent SDK (Python)
 
@@ -149,6 +151,7 @@ For custom harnesses that aren't MCP-native but can import Python:
 ```python
 from ctx import (
     recommend_bundle,   # free-text → ranked skill/agent/MCP bundle
+    recommend_related,  # selected IDs → graph-related suggestions
     graph_query,        # walk from seed entities
     wiki_search,        # keyword search entity pages
     wiki_get,           # fetch one entity by slug
@@ -160,6 +163,10 @@ def on_user_turn(query: str):
     bundle = recommend_bundle(query, top_k=5)
     for entry in bundle:
         print(f"  [{entry['type']:>11}] {entry['name']}  (score {entry['score']:.1f})")
+
+    related = recommend_related(["skill:fastapi-pro"], rejected=[], top_n=3)
+    for entry in related:
+        print(f"  related: {entry['id']} - {entry['reason']}")
 
     # User asks about a specific slug you saw in the bundle:
     page = wiki_get("fastapi-pro")
@@ -262,6 +269,8 @@ The adapter emits a JSON contract with:
   allows ctx-core tools;
 - ranked skill, agent, and MCP recommendations from the `ctx-recommend`
   engine;
+- `related_recommendations` after the loop passes selected and rejected
+  recommendation IDs;
 - optional harness recommendations only when the loop declares a user-owned,
   API, or local model.
 
@@ -277,6 +286,22 @@ Add `--last-failure-file .loopflow/last-failure.txt` only after the loop has
 written that file; omit it on the first run. The adapter uses that failure text
 for recommendation ranking and returns only `context.last_failure_present`, not
 the raw failure.
+
+After the loop accepts or rejects part of the first bundle, pass those decisions
+back before the next plan:
+
+```bash
+python -m ctx.adapters.loopflow \
+  --loop-file rate-limit.loop \
+  --permissions skills,agents,mcps \
+  --selected local-ollama-file-operations \
+  --rejected legacy-reviewer
+```
+
+Selected and rejected values may be recommendation IDs such as
+`mcp-server:ollama` or bare names. Returned `related_recommendations` exclude
+both sets and keep the same `id`, `tldr`, `reason`, `selected`, and
+`selection_state` semantics as the ctx API/core toolbox.
 
 The returned payload includes LoopFlow-ready hints for the granted groups:
 
